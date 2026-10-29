@@ -392,8 +392,13 @@ extension Toolbox {
                 "as": Schema.string("Name for the clip or effect this operation creates"),
             ], required: ["tool"]), "Edits to apply in order"),
             "dry_run": Schema.bool("Report what would change without applying it"),
+            "if_history": Schema.string("Apply only if the current history entry is this id (guards against edits made since you last looked)"),
+            "verify": Schema.numbers("Timeline times to render after applying; the frames come back with the result"),
         ], required: ["operations"])) { [unowned self] args in
             guard let ops = args.raw["operations"]?.array, !ops.isEmpty else { throw EditError("operations is empty") }
+            if let expected = args.optString("if_history"), let current = try session.requireBundle().loadHistory().current?.id, current != expected {
+                throw EditError("The project changed since \(expected) (now at \(current)); call history diff id:\"\(expected)\" and retry")
+            }
             var lines: [String] = []
             var vars: [String: String] = [:]
             let label = args.optString("label") ?? "Batch of \(ops.count) edits"
@@ -428,7 +433,14 @@ extension Toolbox {
                 return .text("Dry run, nothing changed.\n" + lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before))
             }
             let p = try session.edit(label, run)
-            return .text(lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before) + "\n" + footer(p))
+            var result = ToolResult.text(lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before) + newIssues(p, before) + "\n" + footer(p))
+            if let times = args.raw["verify"]?.array?.compactMap(\.double), !times.isEmpty {
+                let built = try await session.timeline(for: p)
+                let cell = Toolbox.cellWidth(width: p.canvas.width, height: p.canvas.height, count: times.count)
+                let frames = try await Frames.timeline(built, times: Array(times.prefix(12)), maxSize: CGSize(width: cell * 1.5, height: cell * 1.5))
+                if let jpeg = Frames.contactSheet(frames, cellWidth: cell) { result.addImage(jpeg) }
+            }
+            return result
         })
     }
 

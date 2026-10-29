@@ -102,7 +102,15 @@ extension Toolbox {
             "type": Schema.string("Effect or transition type id such as stylize.vignette or wipe"),
             "search": Schema.string("Word to search for, e.g. \"blur\" or \"warm\""),
             "paths": Schema.bool("List every clip and track parameter path"),
+            "recipe": Schema.string("A recipe's arguments, or \"all\""),
         ])) { args in
+            if let r = args.optString("recipe") {
+                let split = Toolbox.recipeDocs.replacingOccurrences(of: #"\. (?=[a-z_]+: )"#, with: ".\n", options: .regularExpression)
+                let docs = split.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                let hits = r == "all" ? docs : docs.filter { $0.hasPrefix(r + ":") }
+                guard !hits.isEmpty else { throw EditError("No recipe \(r). Recipes: \(Toolbox.recipeNames.joined(separator: ", "))") }
+                return .text(hits.map { $0.hasSuffix(".") ? $0 : $0 + "." }.joined(separator: "\n"))
+            }
             if let id = args.optString("type") {
                 if let t = TransitionCatalog.type(id) { return .text(Toolbox.describeTransitionType(t)) }
                 guard let t = EffectCatalog.type(id) else { throw EditError("No effect or transition \(id). Effects: \(EffectCatalog.all.map(\.id).joined(separator: ", ")). Transitions: \(TransitionCatalog.all.map(\.id).joined(separator: ", "))") }
