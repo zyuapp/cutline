@@ -25,6 +25,8 @@ final class ProjectDocument {
     private(set) var buildError: String?
     /// Set briefly when an agent edit lands, for the tally light.
     private(set) var lastEditAt: Date?
+    /// Analysis the MCP server is running in the background, e.g. "Analyzing shots of lake-tahoe 40%".
+    private(set) var analysisStatus: String?
     private(set) var exportState: ExportState?
     /// Clips added or changed by the latest edit, for a brief highlight on the timeline.
     private(set) var changedClips: Set<String> = []
@@ -78,6 +80,7 @@ final class ProjectDocument {
             history = bundle.loadHistory()
             if !first { lastEditAt = Date() }
         }
+        analysisStatus = Self.jobsSummary(url.appendingPathComponent("jobs.json"))
         let analysisChanged = loadAnalysis()
         guard force || projectData != lastProjectData || analysisChanged else { return }
         lastProjectData = projectData
@@ -136,6 +139,14 @@ final class ProjectDocument {
                 self?.buildError = error.localizedDescription
             }
         }
+    }
+
+    static func jobsSummary(_ url: URL) -> String? {
+        struct Job: Decodable { var mediaId: String; var features: [String]; var status: String; var progress: Double }
+        guard let data = try? Data(contentsOf: url), let jobs = try? JSONDecoder().decode([Job].self, from: data) else { return nil }
+        guard let job = jobs.first(where: { $0.status == "running" }) ?? jobs.first(where: { $0.status == "queued" }) else { return nil }
+        let waiting = jobs.filter { $0.status == "queued" || $0.status == "running" }.count - 1
+        return "Analyzing \(job.mediaId) \(Int(job.progress * 100))%" + (waiting > 0 ? " +\(waiting)" : "")
     }
 
     private func watch() {

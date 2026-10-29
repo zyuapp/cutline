@@ -30,6 +30,8 @@ final class Session {
         let b = ProjectBundle(url: url)
         bundle = b
         built = nil
+        // Jobs from a server that has exited will never finish.
+        if jobs.active.isEmpty { try? FileManager.default.removeItem(at: url.appendingPathComponent("jobs.json")) }
         var recent = Session.recentProjects.filter { $0 != url.path }
         recent.insert(url.path, at: 0)
         try? JSONEncoder().encode(Array(recent.prefix(10))).write(to: Session.stateURL)

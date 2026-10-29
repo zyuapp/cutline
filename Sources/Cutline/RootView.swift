@@ -167,6 +167,13 @@ struct Tally: View {
                         .foregroundStyle(Theme.ink3)
                         .lineLimit(1)
                         .fixedSize()
+                    if let status = doc.analysisStatus {
+                        Text(status)
+                            .font(Typeface.font(13))
+                            .foregroundStyle(Theme.claude)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
                 }
                 .padding(.horizontal, 16)
                 .fixedSize()

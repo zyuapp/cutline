@@ -2,8 +2,8 @@
 
 A macOS video editor that Claude drives through MCP. You don't edit: you watch the preview, scrub, and pin notes on frames. Claude reads the notes and changes the edit.
 
-- **Agent-native editing**: 38 MCP tools for timelines, transcripts, frames, captions, history and export.
-- **The agent can see and hear**: on-device word-level transcripts, pause and filler detection, scene cuts, and rendered frames sent back as images.
+- **Agent-native editing**: 44 MCP tools cover what Premiere or Final Cut can do: effects, color grading, transitions, speed ramps, masks, keying, nesting, multicam, motion graphics, pro audio finishing and delivery.
+- **The agent can see and hear**: on-device transcripts with speakers and emphasis, beats, shot descriptions, faces, sound events, and rendered frames. Picture, loudness and legibility come back as numbers.
 - **Same pixels everywhere**: the preview and the export both use one Metal compositor built on AVFoundation.
 - **Notes on frames**: press C in the preview, click the spot, and type. Claude replies in the same thread.
 - **Every edit is undoable**: each tool call is a history entry, and `batch` groups several.
@@ -30,16 +30,15 @@ Claude creates a `.cutline` project and opens it in the preview window.
 
 | Area | Tools |
 | --- | --- |
-| Project | `project_create`, `project_open`, `project_status` (whole project, or every parameter of one clip), `canvas_set` |
-| Media | `media_import`, `media_analyze`, `media_transcript` (word ids), `media_frames`, `media_remove` |
-| Structure | `assemble`, `cut_silences`, `source_cut`, `range_delete`, `clip_add` (media, color, adjustment layer), `text_add`, `clip_update`, `clip_split`, `clip_delete`, `track_add`, `track_update`, `markers` |
-| Look and sound | `param_set` (set or animate any parameter by path), `effect_add` (effect stacks on clips, tracks and adjustment layers), `captions_set` |
-| Discovery | `catalog` (effects, parameters, blend modes, eases, anchors) |
-| Review | `timeline_frames`, `timeline_transcript`, `comments_list`, `comment_reply`, `comment_add`, `preview_seek`, `preview_state` |
-| History | `history` (list, undo, redo, restore, diff), `batch` (one undo step, named results) |
-| Output | `export` (HEVC, H.264, ProRes) |
+| Project | `project_create`, `project_open`, `project_status` (whole project, or every parameter of one clip), `canvas_set`, `history` (list, undo, redo, restore, diff, fork), `project_patch` (JSON Patch, last resort) |
+| Media and perception | `media_import`, `media_analyze` (transcript, scenes, beats, speakers, shots, sounds; background jobs), `analysis_read`, `media_transcript` (word ids, speakers, stressed words), `media_frames` (face and subject overlays), `media_track` (follow an object), `media_remove` |
+| Structure | `assemble`, `cut_silences`, `source_cut`, `range_delete`, `clip_add` (media, color, adjustment layer, generated graphics), `text_add` (per-word animation), `clip_update`, `clip_split`, `clip_delete`, `trim` (ripple, roll, slip, slide, J/L), `sequence_nest`, `track_add`, `track_update`, `markers` |
+| Look and sound | `param_set` (set, animate or bind any parameter), `effect_add` (video, color, mask, key and audio effects on clips, tracks, adjustment layers and the master), `transition_set`, `captions_set` |
+| Reuse | `catalog`, `recipe` (duck, loudness, J/L cuts, speed ramps, freeze frames, punch-ins, PiP, split screens, reframing, beat cuts, looks, glitches, whip pans, kinetic text, multicam, follow, templates), `template_save`, `batch` |
+| Review | `timeline_frames`, `timeline_transcript`, `timeline_measure` (loudness, true peak, exposure, color cast, flashes, text contrast, safe areas), `comments_list`, `comment_reply`, `comment_add`, `preview_seek`, `preview_state` |
+| Output | `export` (HEVC, H.264, ProRes; platform checks, embedded subtitles and chapters, SRT/VTT, OTIO, FCPXML, several variants per call) |
 
-Every parameter has a path, such as `transform.scale`, `audio.volume`, `text.color` or `fx.blur1.radius`, and any number or color can be animated with eased keyframes. Times can be anchors that survive later edits, such as a transcript word (`interview.w42`), a clip edge (`clip_ab12cd.end-0.5`) or a marker (`marker:Intro`). Every edit takes `dry_run` to preview its changes.
+Every parameter has a path, such as `transform.scale`, `audio.volume`, `text.color` or `fx.blur1.radius`, and any number or color can be animated with eased keyframes. Times can be anchors that survive later edits, such as a transcript word (`interview.w42`), a beat (`music.b16`, `beat:16`), a shot (`broll.s3`), a clip edge (`clip_ab12cd.end-0.5`) or a marker (`marker:Intro`). Every edit takes `dry_run` to preview its changes.
 
 ## Project format
 
@@ -49,7 +48,8 @@ A project is a `.cutline` folder of plain JSON:
 project.json    canvas, media, tracks, clips, captions, markers
 history.json    edit history; snapshots in history/
 comments.json   notes from the preview and replies from Claude
-analysis/       transcripts, audio levels and pauses, scene cuts per media file
+analysis/       transcripts, audio levels, scenes, beats, speakers, shots, faces, sounds per media file
+cache/          rendered audio stems
 exports/        rendered videos
 ```
 

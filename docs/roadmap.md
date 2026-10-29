@@ -72,9 +72,15 @@ Merged away: clip_move, undo, redo, history_restore, preview_open, marker_add an
 
 ## Status
 
-- **Phase 0, done.** Format 2 with automatic migration from format 1. 18 visual effects with clip, track and adjustment-layer stacks, 17 blend modes, animation of any parameter with 8 eases, anchors, `param_set`, `effect_add`, `catalog`, `dry_run` everywhere, `batch` with named results, `history` with diffs.
-- **Phase 1, done.** Volume automation, `recipe duck`, J/L cuts (`recipe split_edit`, `audio.lead` and `audio.lag`), 9 audio effects including Apple voice isolation, rendered offline into cached stems, a master bus with gain and effects, `timeline_measure` (BS.1770 loudness; ffmpeg's ebur128 gives the same figures), and `recipe loudness_normalize`.
-- **Still open from phase 1:** clip-level audio effects (today they go on tracks), audio crossfade transitions, true-peak measurement, and moving export to AVAssetWriter.
+All six phases are implemented.
+
+- **Phase 0, done.** Format 2 with migration, effect stacks, 17 blend modes, animation of any parameter, anchors, `param_set`, `effect_add`, `catalog`, `dry_run`, `batch` with named results, `history` with diffs.
+- **Phase 1, done.** Volume automation, ducking, J/L cuts, audio effects on clips, tracks and the master (rendered offline into cached stems), audio crossfades (transitions with `part` audio or both), BS.1770 loudness with true peak, `recipe loudness_normalize`, and export through AVAssetReader → AVAssetWriter.
+- **Phase 2, done.** `transition_set` with 12 types using media handles and A/B picture lanes; color wheels, curves, HSL, creative looks and `.cube` LUTs; glitch, masks and adjustment layers; `timeline_measure` picture metrics (exposure, clipping, cast, shot mismatches, black, flash frames, photosensitive flashing) and text contrast and safe areas.
+- **Phase 3, done.** Background analysis jobs (`jobs.json`, shown in the preview), beats and downbeats, shots with Vision labels, shot size, people, on-screen text, saliency, aesthetics and feature prints, face tracks, speakers and word emphasis, sound events, `analysis_read`, frame overlays, and beat, downbeat and shot anchors. Shot descriptions come from Vision labels; a Foundation Models paraphrase was left out because it can't see the frame.
+- **Phase 4, done.** Speed ramps (`time.speed` curves), held frames, reverse, frame blending and optical-flow retiming, stabilization, `media_track` with parameter bindings, auto-reframe, per-word text animators, generators (shapes, arrows, highlights, callouts, lower thirds, counters, progress bars), recipes and `template_save`, and `trim`.
+- **Phase 5, done.** Person and subject segmentation masks, chroma key, nested sequences (`sequence_nest`), and multicam sync by audio cross-correlation with `recipe multicam_switch` cutting to the speaker.
+- **Phase 6, done.** SRT/VTT sidecars and embedded subtitles, chapters (embedded and a YouTube list), platform presets with safe-zone, length and loudness checks, project forks and export variants, OTIO and FCPXML, quality checks after every edit, and `project_patch`.
 
 ## Phases (about 1–2 weeks each)
 

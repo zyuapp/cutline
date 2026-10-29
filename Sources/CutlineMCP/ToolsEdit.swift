@@ -72,7 +72,7 @@ extension Toolbox {
                     guard let ps = spec.spec(k) else { throw EditError("\(gen) has no parameter \(k). Parameters: \(spec.params.map(\.name).joined(separator: ", "))") }
                     params[k] = try ps.validate(try Toolbox.paramValue(v), path: k)
                 }
-                clip = Clip(id: Project.newClipId(), kind: .generator, name: args.optString("name") ?? gen.replacingOccurrences(of: "_", with: " "), start: 0, duration: try span ?? args.optTime("duration") ?? 5, effects: [Effect(id: "gen", type: gen, params: params)])
+                clip = Clip(id: Project.newClipId(), kind: .generator, name: args.optString("name") ?? (gen.split(separator: ".").last.map(String.init) ?? gen).replacingOccurrences(of: "_", with: " "), start: 0, duration: try span ?? args.optTime("duration") ?? 5, effects: [Effect(id: "gen", type: gen, params: params)])
                 defaultTrack = "new"
             } else if args.bool("adjustment", default: false) {
                 clip = Clip(id: Project.newClipId(), kind: .adjustment, name: args.optString("name") ?? "Adjustment", start: 0, duration: try span ?? args.optTime("duration") ?? 5)

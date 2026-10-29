@@ -573,8 +573,8 @@ final class TimelineCanvas: NSView {
         case .sequence: label = clip.name ?? clip.mediaId.flatMap { project.sequence($0)?.name } ?? "Nested"
         case .generator: label = clip.name ?? "Graphic"
         }
-        if !clip.effects.isEmpty {
-            let names = clip.effects.filter(\.enabled).map { EffectCatalog.shortName($0.type) }
+        if clip.effects.contains(where: { GeneratorCatalog.type($0.type) == nil }) {
+            let names = clip.effects.filter { $0.enabled && GeneratorCatalog.type($0.type) == nil }.map { EffectCatalog.shortName($0.type) }
             if !names.isEmpty { label += "  ·  " + names.joined(separator: ", ") }
         }
         if clip.speed != 1 { label += String(format: "  %g×", (clip.speed * 100).rounded() / 100) }
