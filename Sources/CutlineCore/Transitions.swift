@@ -160,7 +160,9 @@ extension Project {
     /// Seconds of media available past a clip's end (`after`) or before its start, or nil when unlimited.
     func handle(_ c: Clip, after: Bool) -> Seconds? {
         guard c.kind == .media, let m = c.mediaId.flatMap({ mediaAsset($0) }), !m.isImage else { return nil }
-        return after ? max(0, (m.duration - c.sourceOut) / c.speed) : max(0, c.sourceIn / c.speed)
+        if c.reverse { return 0 }
+        let edge = max(c.speed(atLocal: after ? c.duration : 0), 0.01)
+        return after ? max(0, (m.duration - c.sourceOut) / edge) : max(0, c.sourceIn / edge)
     }
 
     /// Drops transitions whose clips are gone; follows clips that were split or renamed by id.

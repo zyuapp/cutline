@@ -333,7 +333,7 @@ extension Project {
         let delta = newStart - c.start
         c.start = newStart
         c.duration -= delta
-        if c.kind == .media { c.sourceIn += delta * c.speed }
+        if c.kind == .media && !c.reverse { c.sourceIn += c.sourceOffset(atLocal: delta) }
         c.anim = c.anim.mapValues { $0.shifted(by: -delta) }
         c.fadeIn = min(c.fadeIn, c.duration)
         c.audioFadeIn = min(c.audioFadeIn, c.duration)
@@ -342,6 +342,7 @@ extension Project {
 
     static func trimmedRight(_ c: Clip, to newEnd: Seconds) -> Clip {
         var c = c
+        if c.kind == .media && c.reverse { c.sourceIn += c.sourceOffset(atLocal: c.duration) - c.sourceOffset(atLocal: newEnd - c.start) }
         c.duration = newEnd - c.start
         c.fadeOut = min(c.fadeOut, c.duration)
         c.audioFadeOut = min(c.audioFadeOut, c.duration)

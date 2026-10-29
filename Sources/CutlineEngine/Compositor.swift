@@ -89,7 +89,7 @@ public final class RenderScene: @unchecked Sendable {
             if let still = images[mid] {
                 img = still
             } else if let pb = source(clip.id) {
-                img = CIImage(cvPixelBuffer: pb).oriented(orientations[mid] ?? .up)
+                img = CIImage(cvPixelBuffer: pb).oriented(orientations[clip.id] ?? orientations[mid] ?? .up)
                 opaque = true
             }
             guard var img else { return nil }

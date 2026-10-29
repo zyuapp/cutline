@@ -21,6 +21,11 @@ extension Clip {
         ParamSpec("name", .text, .string(""), "Label shown in the preview timeline"),
     ]
 
+    static let timeSpecs: [ParamSpec] = [
+        ParamSpec("time.speed", .number, .number(1), min: 0, max: 100, unit: "×", "Playback speed; animate it for speed ramps (0 holds a frame). The clip keeps its timeline length, so the source range it uses grows or shrinks"),
+        ParamSpec("time.reverse", .bool, .bool(false), "Play the clip backwards"),
+    ]
+
     static let audioSpecs: [ParamSpec] = [
         ParamSpec("audio.volume", .number, .number(1), min: 0, max: 4, unit: "gain", "1 unchanged, 0 silent, 2 is about +6 dB"),
         ParamSpec("audio.fade_in", .number, .number(0), min: 0, unit: "seconds", animatable: false, "Audio fade-in"),
@@ -55,7 +60,7 @@ extension Clip {
     /// The fixed (non-effect) parameters this clip has.
     public var fixedSpecs: [ParamSpec] {
         switch kind {
-        case .media: return Clip.transformSpecs + Clip.audioSpecs
+        case .media: return Clip.transformSpecs + Clip.timeSpecs + Clip.audioSpecs
         case .text: return Clip.transformSpecs + Clip.textSpecs
         case .solid: return Clip.transformSpecs + Clip.solidSpecs
         case .adjustment: return Clip.transformSpecs.filter { $0.name == "transform.opacity" || $0.name.hasPrefix("fade.") || $0.name == "name" }
@@ -126,6 +131,8 @@ extension Clip {
         case "audio.volume": return .number(volume)
         case "audio.fade_in": return .number(audioFadeIn)
         case "audio.fade_out": return .number(audioFadeOut)
+        case "time.speed": return .number(speed)
+        case "time.reverse": return .bool(reverse)
         case "audio.lead": return .number(audioLead)
         case "audio.lag": return .number(audioLag)
         case "color": return .string((color ?? .black).hex)
@@ -200,6 +207,10 @@ extension Clip {
         case "audio.volume": volume = n
         case "audio.fade_in": audioFadeIn = min(n, duration)
         case "audio.fade_out": audioFadeOut = min(n, duration)
+        case "time.speed":
+            guard n >= 0.01 else { throw EditError("A constant speed must be at least 0.01; animate time.speed to 0 to hold a frame, or use recipe freeze_frame") }
+            speed = n
+        case "time.reverse": reverse = v.bool ?? false
         case "audio.lead": audioLead = n
         case "audio.lag": audioLag = n
         case "color": color = v.color

@@ -214,6 +214,8 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public var anim: [String: Curve]
     public var text: TextSpec?
     public var color: RGBA?
+    /// Plays the source range backwards.
+    public var reverse: Bool = false
 
     public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), blend: BlendMode = .normal, effects: [Effect] = [], anim: [String: Curve] = [:], text: TextSpec? = nil, color: RGBA? = nil) {
         self.id = id
@@ -241,7 +243,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, mediaId, start, duration, sourceIn, speed, volume, audioFadeIn, audioFadeOut, audioLead, audioLag
-        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes
+        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse
     }
 
     public init(from decoder: Decoder) throws {
@@ -258,6 +260,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         audioFadeIn = try c.decodeIfPresent(Double.self, forKey: .audioFadeIn) ?? 0
         audioFadeOut = try c.decodeIfPresent(Double.self, forKey: .audioFadeOut) ?? 0
         audioLead = try c.decodeIfPresent(Double.self, forKey: .audioLead) ?? 0
+        reverse = try c.decodeIfPresent(Bool.self, forKey: .reverse) ?? false
         audioLag = try c.decodeIfPresent(Double.self, forKey: .audioLag) ?? 0
         fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
         fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
@@ -304,17 +307,53 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         try c.encode(anim, forKey: .anim)
         try c.encodeIfPresent(text, forKey: .text)
         try c.encodeIfPresent(color, forKey: .color)
+        if reverse { try c.encode(reverse, forKey: .reverse) }
     }
 
     public var end: Seconds { start + duration }
-    public var sourceOut: Seconds { sourceIn + duration * speed }
+    /// The end of the source range the clip uses (played backwards when reversed).
+    public var sourceOut: Seconds { sourceIn + sourceOffset(atLocal: duration) }
+
+    /// A speed curve ("time.speed" animation) makes speed vary over the clip: ramps, holds, slow motion.
+    public var isRetimed: Bool { anim["time.speed"] != nil }
+
+    /// Speed at a time from the clip start.
+    public func speed(atLocal t: Seconds) -> Double {
+        guard let c = anim["time.speed"] else { return speed }
+        return max(0, c.value(at: t)?.number ?? speed)
+    }
+
+    /// Source seconds consumed from the clip start until local time `t`: the integral of speed.
+    public func sourceOffset(atLocal t: Seconds) -> Seconds {
+        guard let c = anim["time.speed"] else { return t * speed }
+        guard t > 0 else { return t * max(0, c.value(at: 0)?.number ?? speed) }
+        let steps = max(8, Int(t * 240))
+        let h = t / Double(steps)
+        var sum = 0.0
+        var prev = speed(atLocal: 0)
+        for i in 1...steps {
+            let cur = speed(atLocal: Double(i) * h)
+            sum += (prev + cur) * h / 2
+            prev = cur
+        }
+        return sum
+    }
 
     public func sourceTime(atTimeline t: Seconds) -> Seconds {
-        sourceIn + (t - start) * speed
+        let offset = sourceOffset(atLocal: t - start)
+        return reverse ? sourceOut - offset : sourceIn + offset
     }
 
     public func timelineTime(atSource s: Seconds) -> Seconds {
-        start + (s - sourceIn) / speed
+        if !isRetimed && !reverse { return start + (s - sourceIn) / speed }
+        let target = reverse ? sourceOut - s : s - sourceIn
+        if !isRetimed { return start + target / speed }
+        var lo = 0.0, hi = duration
+        for _ in 0..<40 {
+            let mid = (lo + hi) / 2
+            if sourceOffset(atLocal: mid) < target { lo = mid } else { hi = mid }
+        }
+        return start + (lo + hi) / 2
     }
 
     public func effect(_ id: String) -> Effect? { effects.first { $0.id == id } }
@@ -322,7 +361,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     /// Where this clip's sound plays on the timeline, including split-edit lead and lag.
     public var audioRange: TimeRange { TimeRange(start - audioLead, end + audioLag) }
     /// The source range heard over `audioRange`.
-    public var audioSourceRange: TimeRange { TimeRange(sourceIn - audioLead * speed, sourceOut + audioLag * speed) }
+    public var audioSourceRange: TimeRange { TimeRange(sourceIn - audioLead * speed(atLocal: 0), sourceOut + audioLag * speed(atLocal: duration)) }
 }
 
 public struct MasterAudio: Codable, Equatable, Sendable {

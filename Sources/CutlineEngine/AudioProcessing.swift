@@ -20,11 +20,13 @@ public final class AudioStems: @unchecked Sendable {
         var id, media: String
         var start, duration, sourceIn, speed, volume, fadeIn, fadeOut, lead, lag: Double
         var volumeCurve: Curve?
+        var speedCurve: Curve?
+        var reverse: Bool
     }
 
     func sound(of track: Track) -> [ClipSound] {
         track.clips.filter { $0.kind == .media }.map {
-            ClipSound(id: $0.id, media: $0.mediaId ?? "", start: $0.start, duration: $0.duration, sourceIn: $0.sourceIn, speed: $0.speed, volume: $0.volume, fadeIn: $0.audioFadeIn, fadeOut: $0.audioFadeOut, lead: $0.audioLead, lag: $0.audioLag, volumeCurve: $0.anim["audio.volume"])
+            ClipSound(id: $0.id, media: $0.mediaId ?? "", start: $0.start, duration: $0.duration, sourceIn: $0.sourceIn, speed: $0.speed, volume: $0.volume, fadeIn: $0.audioFadeIn, fadeOut: $0.audioFadeOut, lead: $0.audioLead, lag: $0.audioLag, volumeCurve: $0.anim["audio.volume"], speedCurve: $0.anim["time.speed"], reverse: $0.reverse)
         }
     }
 

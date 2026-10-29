@@ -52,6 +52,9 @@ public enum TimelineBuilder {
         var missingStems: [String] = []
         let master = dryTrack == nil ? project.master.gain : 1
         var masterStem: URL?
+        // Tracks only weakly reference their asset, so proxies stay alive until the build is done.
+        var proxies: [AVURLAsset] = []
+        defer { _ = proxies }
         if masterStage, dryTrack == nil, AudioStems.hasMasterChain(project) {
             masterStem = stems?.cachedMaster(for: project)
             if masterStem == nil { missingStems.append("master") }
@@ -91,8 +94,22 @@ public enum TimelineBuilder {
                 }
                 let entry = try await library.entry(for: media)
                 orientations[mid] = entry.orientation
+                // Reversed clips read an upright backwards copy whose time 0 is the range's end.
+                var video = entry.video, videoRange = entry.videoRange, audio = entry.audio, audioRange = entry.audioRange
+                var base = clip.sourceIn
+                if clip.reverse {
+                    let maxSize = CGSize(width: project.canvas.width, height: project.canvas.height)
+                    let proxy = AVURLAsset(url: try await ReverseProxy.url(for: media, range: TimeRange(clip.sourceIn, clip.sourceOut), maxSize: maxSize))
+                    proxies.append(proxy)
+                    video = try await proxy.loadTracks(withMediaType: .video).first
+                    audio = try await proxy.loadTracks(withMediaType: .audio).first
+                    videoRange = try await video?.load(.timeRange)
+                    audioRange = try await audio?.load(.timeRange)
+                    orientations[clip.id] = .up
+                    base = 0
+                }
 
-                if dryTrack == nil, track.kind == .video, let v = entry.video, let vr = entry.videoRange {
+                if dryTrack == nil, track.kind == .video, let v = video, let vr = videoRange {
                     let head = heads[clip.id] ?? 0, tail = tails[clip.id] ?? 0
                     let start = clip.start - head
                     var lane = videoLanes.firstIndex { $0.end <= start + 1e-6 }
@@ -101,14 +118,13 @@ public enum TimelineBuilder {
                         lane = videoLanes.count - 1
                     }
                     if let lane {
-                        let src = CMTimeRange(start: time(clip.sourceIn - head * clip.speed), end: time(clip.sourceOut + tail * clip.speed))
-                        try insert(src.intersection(vr), of: v, into: videoLanes[lane].track, at: time(start), sourceDuration: src.duration, target: time(clip.duration + head + tail))
+                        try insertPieces(clip, from: -head, to: clip.duration + tail, base: base, fps: project.canvas.fps, source: v, available: vr, into: videoLanes[lane].track)
                         videoLanes[lane].end = clip.end + tail
                         trackIDs[clip.id] = videoLanes[lane].track.trackID
                     }
                 }
-                guard stemURL == nil, masterStem == nil, let a = entry.audio, let ar = entry.audioRange, clip.volume > 0 || clip.anim["audio.volume"] != nil else { continue }
-                let span = clip.audioRange, heard = clip.audioSourceRange
+                guard stemURL == nil, masterStem == nil, let a = audio, let ar = audioRange, clip.volume > 0 || clip.anim["audio.volume"] != nil else { continue }
+                let span = clip.audioRange
                 guard span.duration > 0.01 else { continue }
                 var lane = lanes.firstIndex { $0.end <= span.start + 1e-6 }
                 if lane == nil {
@@ -119,8 +135,7 @@ public enum TimelineBuilder {
                     lanes.append((t, params, -.infinity))
                     lane = lanes.count - 1
                 }
-                let src = CMTimeRange(start: time(heard.start), end: time(heard.end))
-                try insert(src.intersection(ar), of: a, into: lanes[lane!].track, at: time(span.start), sourceDuration: src.duration, target: time(span.duration))
+                try insertPieces(clip, from: -clip.audioLead, to: clip.duration + clip.audioLag, base: base, fps: 20, source: a, available: ar, into: lanes[lane!].track)
                 addVolumeEnvelope(clip, trackGain: trackGain, to: lanes[lane!].params)
                 lanes[lane!].end = span.end
             }
@@ -189,6 +204,64 @@ public enum TimelineBuilder {
         for (a, b) in zip(sorted, sorted.dropFirst()) where b - a > 1e-4 {
             params.setVolumeRamp(fromStartVolume: gain(a), toEndVolume: gain(min(b, a1 - 1e-6)), timeRange: CMTimeRange(start: time(clip.start + a), duration: time(b - a)))
         }
+    }
+
+    /// Inserts a clip's media from local time `a` to `b` (beyond its edges for handles and split edits).
+    /// Speed curves become one constant-speed piece per step; held frames repeat a sliver of source.
+    static func insertPieces(_ clip: Clip, from a: Seconds, to b: Seconds, base: Seconds, fps: Double, source: AVAssetTrack, available: CMTimeRange, into track: AVMutableCompositionTrack) throws {
+        let d = clip.duration
+        let endOffset = clip.sourceOffset(atLocal: d)
+        func offset(_ t: Seconds) -> Seconds {
+            if t <= 0 { return t * clip.speed(atLocal: 0) }
+            if t >= d { return endOffset + (t - d) * clip.speed(atLocal: d) }
+            return clip.sourceOffset(atLocal: t)
+        }
+        var steps: [Seconds] = [a]
+        if clip.isRetimed {
+            var t = (a * fps).rounded(.down) / fps + 1 / fps
+            while t < b - 1e-6 {
+                steps.append(t)
+                t += 1 / fps
+            }
+        }
+        steps.append(b)
+        // Offsets are computed in one pass; sourceOffset integrates from 0 each call.
+        let offsets = clip.isRetimed ? Self.offsets(clip, steps) : steps.map(offset)
+        for i in 0..<(steps.count - 1) where steps[i + 1] - steps[i] > 1e-6 {
+            let s0 = base + offsets[i]
+            let s1 = max(base + offsets[i + 1], s0 + 1.0 / 600)
+            let src = CMTimeRange(start: time(s0), end: time(s1))
+            try insert(src.intersection(available), of: source, into: track, at: time(clip.start + steps[i]), sourceDuration: src.duration, target: time(steps[i + 1] - steps[i]))
+        }
+    }
+
+    /// Source offsets at increasing local times, integrating the speed curve once.
+    static func offsets(_ clip: Clip, _ times: [Seconds]) -> [Seconds] {
+        let d = clip.duration
+        let v0 = clip.speed(atLocal: 0), v1 = clip.speed(atLocal: d)
+        var out: [Seconds] = []
+        var acc = 0.0, at = 0.0
+        var prev = v0
+        let h = 1.0 / 480
+        var endOffset: Seconds?
+        for t in times {
+            if t <= 0 { out.append(t * v0); continue }
+            let target = min(t, d)
+            while at < target - 1e-12 {
+                let step = min(h, target - at)
+                let cur = clip.speed(atLocal: at + step)
+                acc += (prev + cur) * step / 2
+                prev = cur
+                at += step
+            }
+            if t >= d {
+                if endOffset == nil { endOffset = acc }
+                out.append(endOffset! + (t - d) * v1)
+            } else {
+                out.append(acc)
+            }
+        }
+        return out
     }
 
     /// Inserts `range` at `at`, padding with empty time so later inserts stay aligned, then
