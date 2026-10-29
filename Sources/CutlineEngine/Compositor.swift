@@ -120,13 +120,24 @@ public final class RenderScene: @unchecked Sendable {
             opaque = true
         case .text:
             guard let spec = clip.resolvedText(at: local) else { return nil }
-            let anim = TextAnimator.state(spec: spec, local: min(max(local, 0), clip.duration), duration: clip.duration)
+            let anim = TextPresetAnimator.state(spec: spec, local: min(max(local, 0), clip.duration), duration: clip.duration)
             xf.opacity *= anim.opacity
             xf.scale *= anim.scale
             center = CGPoint(x: canvas.width * (spec.x + xf.x), y: canvas.height * (1 - spec.y - xf.y - anim.yOffset))
-            layer = textImage(spec, reveal: anim.reveal)
+            if let animator = spec.animator {
+                layer = animatedText(spec, animator, local: local, duration: clip.duration)
+            } else {
+                layer = textImage(spec, reveal: anim.reveal)
+            }
         case .adjustment:
             return nil
+        case .generator:
+            guard let gen = clip.effects.first(where: { GeneratorCatalog.type($0.type) != nil }) else { return nil }
+            let value: (String) -> ParamValue = { name in
+                clip.anim["fx.\(gen.id).\(name)"]?.value(at: local) ?? gen.params[name] ?? GeneratorCatalog.type(gen.type)?.spec(name)?.defaultValue ?? .number(0)
+            }
+            guard let cg = GeneratorRenderer.render(type: gen.type, value: value, canvas: canvas.size) else { return nil }
+            layer = CIImage(cgImage: cg)
         case .sequence:
             guard let child = child(for: clip) else { return nil }
             layer = child.render(at: clip.sourceIn + local, background: false) { inner in source("\(clip.id)/\(inner)") }
@@ -157,6 +168,17 @@ public final class RenderScene: @unchecked Sendable {
             children[clip.id] = c
             return c
         }
+    }
+
+    /// Text whose words, letters or lines animate one by one.
+    func animatedText(_ spec: TextSpec, _ animator: CutlineCore.TextAnimator, local: Seconds, duration: Seconds) -> CIImage? {
+        let w = Double(project.canvas.width), h = Double(project.canvas.height)
+        guard let layout = AnimatedText.layout(spec, canvasHeight: h, canvasWidth: w, unit: animator.unit) else { return nil }
+        let states = layout.units.indices.map { i in
+            let spoken = spec.unitTimes.flatMap { $0.indices.contains(i) ? $0[i] : nil }
+            return CutlineCore.TextAnimator.state(animator, unitIndex: i, unitStart: animator.start(ofUnit: i, spoken: spoken), local: local, clipDuration: duration)
+        }
+        return AnimatedText.render(layout, states: states, spec: spec).map { CIImage(cgImage: $0) }
     }
 
     func alpha(_ img: CIImage, _ a: Double) -> CIImage {
@@ -233,7 +255,7 @@ public final class RenderScene: @unchecked Sendable {
     }
 }
 
-enum TextAnimator {
+enum TextPresetAnimator {
     struct State {
         var opacity = 1.0
         var scale = 1.0

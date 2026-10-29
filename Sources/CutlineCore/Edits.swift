@@ -272,9 +272,10 @@ extension Project {
                 if heard.start < -1e-3 { throw EditError("\(clip.id)'s audio would start \(fmt(-heard.start))s before the beginning of \(media.id); reduce audio.lead") }
                 if heard.end > media.duration + 1e-3 { throw EditError("\(clip.id)'s audio would run \(fmt(heard.end - media.duration))s past the end of \(media.id); reduce audio.lag") }
             }
-        case .text, .solid, .adjustment:
+        case .text, .solid, .adjustment, .generator:
             guard track.kind == .video else { throw EditError("\(clip.kind.rawValue) clips go on video tracks") }
             if clip.kind == .text && clip.text == nil { throw EditError("Text clip \(clip.id) has no text") }
+            if clip.kind == .generator && !clip.effects.contains(where: { GeneratorCatalog.type($0.type) != nil }) { throw EditError("Generator clip \(clip.id) has no generator") }
         case .sequence:
             guard let seq = clip.mediaId.flatMap({ sequence($0) }) else { throw EditError("\(clip.id) references unknown sequence \(clip.mediaId ?? "nil")") }
             guard clip.sourceIn >= -eps, clip.sourceIn + clip.duration <= seq.duration + canvas.frameDuration else {

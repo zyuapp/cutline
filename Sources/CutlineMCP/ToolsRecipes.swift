@@ -3,7 +3,7 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "look", "glitch", "whip_pan", "template", "multicam_switch"]
+    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text"]
 
     static let recipeDocs = """
         duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
@@ -20,6 +20,7 @@ extension Toolbox {
         glitch: {at: [times or anchors], duration: 0.3, amount: 0.8}; adds glitch hits on an adjustment track. \
         whip_pan: {cut: "clip_a|clip_b", direction: left, duration: 0.35}. \
         template: {template: name (omit to list templates), at: time, values: {field: text}}. \
+        kinetic_text: {start, end (timeline or word anchors), preset: pop, unit: word, size: 0.09, y: 0.5, color, highlight: color, uppercase: false, max_width: 0.8}; spoken words appear as they are said. \
         multicam_switch: {angles: [media ids], audio: media with the main sound (default first angle), speakers: {"S1": media, ...} (default S1→first angle, S2→second…), wide: media for long turns and crosstalk, start, end (source seconds of audio), min_shot: 1.5, at: timeline time, track: "V1"}; syncs angles by their sound and cuts to whoever speaks.
         """
 
@@ -139,6 +140,21 @@ extension Toolbox {
             }
         case "template":
             return try applyTemplate(a, dry: dry)
+        case "kinetic_text":
+            let lo = try a.time("start"), hi = try a.time("end")
+            let words = current.timelineWords(transcripts: b.transcripts(for: current)).filter { $0.start >= lo - 0.02 && $0.start < hi }
+            guard !words.isEmpty else { throw EditError("No transcribed speech between \(fmt2(lo)) and \(fmt2(hi))") }
+            let upper = a.bool("uppercase", default: false)
+            var spec = TextSpec(text: words.map { upper ? $0.text.uppercased() : $0.text }.joined(separator: " "), size: a.optDouble("size") ?? 0.09, weight: 800, color: try a.color("color") ?? .white, stroke: .black, strokeWidth: 0.06, y: a.optDouble("y") ?? 0.5, maxWidth: a.optDouble("max_width") ?? 0.8, animationIn: .none, animationOut: .fade)
+            let start = words[0].start
+            spec.animator = TextAnimator(unit: .word, preset: TextAnimator.Preset(rawValue: a.optString("preset") ?? "pop") ?? .pop, color: try a.color("highlight"), sync: true)
+            spec.unitTimes = words.map { $0.start - start }
+            return try runEdit("Kinetic text", dry: dry) { p in
+                let t = p.addTrack(kind: .video, name: "Kinetic text")
+                let c = Clip(id: Project.newClipId(), kind: .text, name: "kinetic", start: start, duration: max(0.5, min(hi, words.last!.end + 0.6) - start), text: spec)
+                try p.addClip(c, trackId: t.id, mode: .place)
+                return "Added \(c.id) on \(t.id): \(words.count) words appear as they're spoken (\(fmt2(c.start))–\(fmt2(c.end))s). Restyle with param_set text.* or text_add-style animator via clip_update."
+            }
         case "multicam_switch":
             return try await multicam(a, dry: dry, bundle: b, project: current)
         default:

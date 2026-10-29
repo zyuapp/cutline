@@ -17,8 +17,12 @@ extension Toolbox {
             "interchange": Schema.strings("Also write otio and/or fcpxml next to the video"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
             "reveal": Schema.bool("Show the file in Finder when done, default false"),
+            "variants": ["type": "array", "description": "Render several versions in one call: [{name, ops: [{tool, args}], and any export argument such as platform, path, start, end}]. Each variant applies its ops (any tools, e.g. recipe reframe, text edits, a different hook), exports, then the project returns to how it was.", "items": ["type": "object"]],
         ])) { [unowned self] args in
             let b = try session.requireBundle()
+            if let variants = args.raw["variants"]?.array, !variants.isEmpty {
+                return try await exportVariants(variants, base: args)
+            }
             let platform = try args.optString("platform").map { id -> Platform in
                 guard let pl = Platform.named(id) else { throw EditError("Unknown platform \(id). Platforms: \(Platform.all.map(\.id).joined(separator: ", "))") }
                 return pl
@@ -107,5 +111,38 @@ extension Toolbox {
             report.insert("Exported \(url.path)\n\(check.width)×\(check.height), \(fmt2(seconds))s, \(String(format: "%.1f", Double(size) / 1_048_576)) MB (\(fmt1(mbps)) Mb/s), \(preset.rawValue), took \(fmt1(Date().timeIntervalSince(started)))s", at: 0)
             return .text(report.joined(separator: "\n"))
         })
+    }
+}
+
+extension Toolbox {
+    func exportVariants(_ variants: [JSON], base: Args) async throws -> ToolResult {
+        let b = try session.requireBundle()
+        guard let start = b.loadHistory().current?.id else { throw EditError("The project has no history yet") }
+        guard let exporter = tools["export"] else { throw EditError("export is unavailable") }
+        var report: [String] = []
+        defer { _ = try? b.checkout(start) }
+        for (i, v) in variants.enumerated() {
+            guard case .object(var o) = v else { throw EditError("variants[\(i)] must be an object") }
+            let name = o["name"]?.string ?? "variant\(i + 1)"
+            for (j, op) in (o["ops"]?.array ?? []).enumerated() {
+                guard let tool = op["tool"]?.string, let t = tools[tool], tool != "export" else { throw EditError("variants[\(i)].ops[\(j)]: unknown tool") }
+                installResolvers(try? session.project())
+                let r = try await t.run(Args(op["args"] ?? [:]))
+                if r.isError { throw EditError("\(name), op \(j + 1) (\(tool)): \(r.plainText)") }
+            }
+            o["ops"] = nil
+            o["name"] = nil
+            if o["path"] == nil {
+                let p = try session.project()
+                let ext = (o["preset"]?.string).flatMap(ExportPreset.init(rawValue:))?.fileExtension ?? "mp4"
+                o["path"] = .string(b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + "-" + Toolbox.safeName(name)).appendingPathExtension(ext).path)
+            }
+            for (k, val) in base.raw where k != "variants" && o[k] == nil { o[k] = val }
+            installResolvers(try? session.project())
+            let r = try await exporter.run(Args(.object(o)))
+            report.append("\(name): " + r.plainText.replacingOccurrences(of: "\n", with: "\n  "))
+            _ = try b.checkout(start)
+        }
+        return .text(report.joined(separator: "\n") + "\nThe project is back at \(start).")
     }
 }

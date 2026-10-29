@@ -64,6 +64,7 @@ extension Clip {
         case .text: return Clip.transformSpecs + Clip.textSpecs
         case .solid: return Clip.transformSpecs + Clip.solidSpecs
         case .adjustment: return Clip.transformSpecs.filter { $0.name == "transform.opacity" || $0.name.hasPrefix("fade.") || $0.name == "name" }
+        case .generator: return Clip.transformSpecs.filter { $0.name != "transform.fit" && !$0.name.hasPrefix("transform.crop") }
         case .sequence: return Clip.transformSpecs.filter { $0.name != "transform.fit" && !$0.name.hasPrefix("transform.crop") } + Clip.audioSpecs.filter { $0.name == "audio.volume" }
         }
     }

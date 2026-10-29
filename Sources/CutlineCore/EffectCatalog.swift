@@ -6,7 +6,7 @@ import Foundation
 /// positions are fractions of the clip's frame with the origin at the top left,
 /// angles are degrees clockwise.
 public enum EffectCatalog {
-    public static func type(_ id: String) -> EffectType? { byId[id] }
+    public static func type(_ id: String) -> EffectType? { byId[id] ?? GeneratorCatalog.type(id) }
 
     public static let categories: [(String, String)] = [
         ("blur", "Blurs and focus"),

@@ -22,12 +22,13 @@ public final class AudioStems: @unchecked Sendable {
         var volumeCurve: Curve?
         var speedCurve: Curve?
         var reverse: Bool
+        var fx: [Effect]
     }
 
     func sound(of track: Track, in project: Project? = nil) -> [ClipSound] {
         let clips = project.map { p in track.clips.flatMap { $0.kind == .sequence ? p.expanded($0).map(\.clip) : [$0] } } ?? track.clips
         return clips.filter { $0.kind == .media }.map {
-            ClipSound(id: $0.id, media: $0.mediaId ?? "", start: $0.start, duration: $0.duration, sourceIn: $0.sourceIn, speed: $0.speed, volume: $0.volume, fadeIn: $0.audioFadeIn, fadeOut: $0.audioFadeOut, lead: $0.audioLead, lag: $0.audioLag, volumeCurve: $0.anim["audio.volume"], speedCurve: $0.anim["time.speed"], reverse: $0.reverse)
+            ClipSound(id: $0.id, media: $0.mediaId ?? "", start: $0.start, duration: $0.duration, sourceIn: $0.sourceIn, speed: $0.speed, volume: $0.volume, fadeIn: $0.audioFadeIn, fadeOut: $0.audioFadeOut, lead: $0.audioLead, lag: $0.audioLag, volumeCurve: $0.anim["audio.volume"], speedCurve: $0.anim["time.speed"], reverse: $0.reverse, fx: $0.effects.filter { EffectCatalog.isAudio($0.type) })
         }
     }
 
@@ -91,10 +92,31 @@ public final class AudioStems: @unchecked Sendable {
         project.master.effects.contains { EffectCatalog.isAudio($0.type) && $0.enabled }
     }
 
-    /// Renders every stem whose inputs changed: track stems, then the master. Returns what it rendered.
+    /// A clip alone on a track whose effects are the clip's audio effects, for rendering its processed sound.
+    static func solo(_ clip: Clip, in project: Project) -> (Project, Track) {
+        var dry = clip
+        dry.effects.removeAll { EffectCatalog.isAudio($0.type) }
+        let track = Track(id: "clip-\(clip.id)", kind: .audio, name: clip.id, effects: clip.effects.filter { EffectCatalog.isAudio($0.type) }, clips: [dry])
+        var p = project
+        p.tracks = [track]
+        p.transitions = []
+        p.master = MasterAudio()
+        return (p, track)
+    }
+
+    /// Renders every stem whose inputs changed: clip stems, track stems, then the master. Returns what it rendered.
     @discardableResult
     public func renderMissing(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary) async throws -> [String] {
         var done: [String] = []
+        let resolved = project.resolvingAudioTransitions()
+        for track in resolved.tracks {
+            for clip in track.clips.flatMap({ $0.kind == .sequence ? resolved.expanded($0).map(\.clip) : [$0] }) where clip.kind == .media && clip.effects.contains(where: { EffectCatalog.isAudio($0.type) && $0.enabled }) {
+                let (solo, soloTrack) = Self.solo(clip, in: resolved)
+                guard cachedStem(for: soloTrack, in: solo) == nil else { continue }
+                try await render(soloTrack, in: solo, transcripts: transcripts, library: library)
+                done.append(clip.id)
+            }
+        }
         for track in project.tracks where track.effects.contains(where: { EffectCatalog.isAudio($0.type) && $0.enabled }) {
             guard cachedStem(for: track, in: project) == nil else { continue }
             try await render(track, in: project, transcripts: transcripts, library: library)
@@ -132,7 +154,7 @@ public final class AudioStems: @unchecked Sendable {
         try await writeAtomically(dest) { tmp in
             let dry = directory.appendingPathComponent("dry-\(UUID().uuidString).caf")
             defer { try? FileManager.default.removeItem(at: dry) }
-            let built = try await TimelineBuilder.build(project, transcripts: transcripts, library: library, renderScale: 1, stems: nil, dryTrack: track.id, masterStage: false)
+            let built = try await TimelineBuilder.build(project, transcripts: transcripts, library: library, renderScale: 1, stems: self, dryTrack: track.id, masterStage: false)
             let frames = try await AudioIO.mixdown(built, range: nil, to: dry)
             try AudioChain.process(dry: dry, frames: frames, effects: track.effects.filter { EffectCatalog.isAudio($0.type) && $0.enabled }, to: tmp)
         }
@@ -377,7 +399,7 @@ public struct LoudnessReport: Sendable {
     public var duration: Seconds
 
     public var summary: String {
-        func f(_ v: Double) -> String { v.isFinite ? String(format: "%.1f", v) : "silent" }
+        func f(_ v: Double) -> String { v.isFinite && v > -150 ? String(format: "%.1f", v) : "silent" }
         return "integrated \(f(integrated)) LUFS, short-term max \(f(shortTermMax)) LUFS, momentary max \(f(momentaryMax)) LUFS, range \(f(range)) LU, true peak \(f(truePeakDb)) dBTP (sample peak \(f(peakDb)) dBFS)"
     }
 }

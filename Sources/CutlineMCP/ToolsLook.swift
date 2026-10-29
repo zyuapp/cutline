@@ -74,9 +74,6 @@ extension Toolbox {
                     p.master.effects = probe.effects
                     lines.append(Toolbox.describePlan(plan, effects: probe.effects, owner: "master"))
                 case .clip(let id):
-                    if let t = args.optString("type"), EffectCatalog.isAudio(t) {
-                        throw EditError("Audio effects go on tracks; target the clip's track id (put the clip on its own track to process it alone)")
-                    }
                     guard let loc = p.locateClip(id) else { continue }
                     var c = p.tracks[loc.track].clips[loc.clip]
                     let removedBefore = Set(c.effects.map(\.id))
@@ -329,6 +326,8 @@ extension Toolbox {
             lines.append("  \(cat): \(summary)")
             for t in EffectCatalog.all where t.category == cat { lines.append("    \(t.id): \(t.summary)") }
         }
+        lines.append("Generators (clip_add generator:<id>, params; animate fx.gen.<param>):")
+        for t in GeneratorCatalog.all { lines.append("    \(t.id): \(t.summary)") }
         lines.append("Transitions (transition_set; catalog type=<id> for parameters):")
         for t in TransitionCatalog.all { lines.append("    \(t.id): \(t.summary)") }
         lines += [

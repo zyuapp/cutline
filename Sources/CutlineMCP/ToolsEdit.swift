@@ -8,6 +8,7 @@ extension Toolbox {
     ]
 
     static let textProps: [String: JSON] = [
+        "animator": ["type": "object", "description": "Animate each word, letter or line: {unit: word|char|line, preset: pop|fade|slide_up|slide_down|typewriter|blur_in|scale_in|highlight|bounce|wave, stagger: 0.06, duration: 0.35, ease, color (highlight accent), out: preset}. null removes it."],
         "text": Schema.string("The words; \\n for line breaks"),
         "font": Schema.string("system (SF Pro), rounded, serif, mono, or an installed family such as Helvetica Neue, Avenir Next, Futura, Georgia"),
         "size": Schema.number("Font size as a fraction of the canvas's shorter side, e.g. 0.07 title, 0.045 lower third"),
@@ -31,6 +32,8 @@ extension Toolbox {
             "media_id": Schema.string("Media to place"),
             "color": Schema.string("Hex color for a solid color clip"),
             "adjustment": Schema.bool("Make an adjustment layer"),
+            "generator": Schema.string("Draw a graphic: shape.rect, shape.ellipse, shape.line, shape.arrow, shape.highlight, callout, lower_third, progress_bar, counter, gradient, grid_overlay (catalog type=<id> for params; animate them as fx.gen.<param>)"),
+            "params": ["type": "object", "description": "Generator parameters, e.g. {\"title\": \"Ada Lovelace\", \"subtitle\": \"Mathematician\"}"],
             "track": Schema.string("Track id, or \"new\" for a new layer on top"),
             "start": Schema.time("Timeline start (seconds or anchor)"),
             "end": Schema.time("Timeline end, instead of duration"),
@@ -62,13 +65,22 @@ extension Toolbox {
                 }
                 clip = Clip(id: Project.newClipId(), kind: .media, name: args.optString("name") ?? m.name, mediaId: mid, start: 0, duration: dur, sourceIn: m.isImage ? 0 : sIn, speed: speed)
                 if !m.hasVideo { defaultTrack = p.tracks.first { $0.kind == .audio }?.id ?? "A1" }
+            } else if let gen = args.optString("generator") {
+                guard let spec = GeneratorCatalog.type(gen) else { throw EditError("No generator \(gen). Generators: \(GeneratorCatalog.all.map(\.id).joined(separator: ", "))") }
+                var params: [String: ParamValue] = [:]
+                for (k, v) in args.raw["params"]?.object ?? [:] {
+                    guard let ps = spec.spec(k) else { throw EditError("\(gen) has no parameter \(k). Parameters: \(spec.params.map(\.name).joined(separator: ", "))") }
+                    params[k] = try ps.validate(try Toolbox.paramValue(v), path: k)
+                }
+                clip = Clip(id: Project.newClipId(), kind: .generator, name: args.optString("name") ?? gen.replacingOccurrences(of: "_", with: " "), start: 0, duration: try span ?? args.optTime("duration") ?? 5, effects: [Effect(id: "gen", type: gen, params: params)])
+                defaultTrack = "new"
             } else if args.bool("adjustment", default: false) {
                 clip = Clip(id: Project.newClipId(), kind: .adjustment, name: args.optString("name") ?? "Adjustment", start: 0, duration: try span ?? args.optTime("duration") ?? 5)
                 defaultTrack = "new"
             } else if let color = try args.color("color") {
                 clip = Clip(id: Project.newClipId(), kind: .solid, name: args.optString("name") ?? "Color", start: 0, duration: try span ?? args.optTime("duration") ?? 5, color: color)
             } else {
-                throw EditError("Pass media_id, color, or adjustment: true")
+                throw EditError("Pass media_id, color, generator, or adjustment: true")
             }
             try Toolbox.applySet(&clip, args)
             var trackId = args.optString("track") ?? defaultTrack
@@ -452,6 +464,7 @@ extension Toolbox {
         case .solid: return "color clip"
         case .media: return c.name ?? c.mediaId.flatMap { p.mediaAsset($0)?.name } ?? "clip"
         case .adjustment: return c.name ?? "adjustment layer"
+        case .generator: return c.name ?? (c.effects.first.map { $0.type.replacingOccurrences(of: "_", with: " ") } ?? "graphic")
         case .sequence: return c.name ?? c.mediaId.flatMap { p.sequence($0)?.name } ?? "nested sequence"
         }
     }
@@ -525,6 +538,13 @@ extension Toolbox {
         if let v = args.optDouble("letter_spacing") { s.letterSpacing = v }
         if let v = try args.enumValue("animation_in", TextAnimation.self) { s.animationIn = v }
         if let v = try args.enumValue("animation_out", TextAnimation.self) { s.animationOut = v }
+        if let raw = args.raw["animator"] {
+            if raw.isNull || raw.string == "none" { s.animator = nil } else {
+                do { s.animator = try JSONDecoder().decode(TextAnimator.self, from: JSONEncoder().encode(raw)) } catch {
+                    throw EditError("animator is {unit: char|word|line, preset: \(TextAnimator.Preset.allCases.map(\.rawValue).joined(separator: "|")), stagger, duration, ease, color, sync, out}")
+                }
+            }
+        }
     }
 
     static func captionPreset(_ name: String) throws -> CaptionStyle {

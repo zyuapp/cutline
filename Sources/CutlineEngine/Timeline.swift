@@ -137,6 +137,18 @@ public enum TimelineBuilder {
                 guard stemURL == nil, masterStem == nil, let a = audio, let ar = audioRange, clip.volume > 0 || clip.anim["audio.volume"] != nil else { continue }
                 let span = clip.audioRange
                 guard span.duration > 0.01 else { continue }
+                // Clips with their own audio effects play a processed copy of their sound.
+                var clipStem: AVAssetTrack?
+                if clip.effects.contains(where: { EffectCatalog.isAudio($0.type) && $0.enabled }) {
+                    let (solo, soloTrack) = AudioStems.solo(clip, in: project)
+                    if let url = stems?.cachedStem(for: soloTrack, in: solo) {
+                        let asset = AVURLAsset(url: url)
+                        proxies.append(asset)
+                        clipStem = try await asset.loadTracks(withMediaType: .audio).first
+                    } else {
+                        missingStems.append(clip.id)
+                    }
+                }
                 var lane = lanes.firstIndex { $0.end <= span.start + 1e-6 }
                 if lane == nil {
                     guard let t = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
@@ -146,8 +158,14 @@ public enum TimelineBuilder {
                     lanes.append((t, params, -.infinity))
                     lane = lanes.count - 1
                 }
-                try insertPieces(clip, from: -clip.audioLead, to: clip.duration + clip.audioLag, base: base, fps: 20, source: a, available: ar, into: lanes[lane!].track)
-                addVolumeEnvelope(clip, trackGain: trackGain, to: lanes[lane!].params)
+                if let clipStem {
+                    let range = CMTimeRange(start: time(span.start), end: time(span.end))
+                    try insert(range.intersection(try await clipStem.load(.timeRange)), of: clipStem, into: lanes[lane!].track, at: time(span.start), sourceDuration: range.duration, target: range.duration)
+                    lanes[lane!].params.setVolume(Float(trackGain), at: time(span.start))
+                } else {
+                    try insertPieces(clip, from: -clip.audioLead, to: clip.duration + clip.audioLag, base: base, fps: 20, source: a, available: ar, into: lanes[lane!].track)
+                    addVolumeEnvelope(clip, trackGain: trackGain, to: lanes[lane!].params)
+                }
                 lanes[lane!].end = span.end
             }
             audioParams += lanes.map(\.params)

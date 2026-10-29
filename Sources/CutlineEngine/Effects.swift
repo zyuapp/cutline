@@ -25,7 +25,7 @@ enum EffectRenderer {
     static func apply(_ effects: [Effect], to image: CIImage, context: Context, param: @escaping (Effect, String) -> ParamValue?) -> CIImage {
         var img = image
         for e in effects where e.enabled {
-            guard let type = EffectCatalog.type(e.type) else { continue }
+            guard let type = EffectCatalog.type(e.type), type.category != "generator" else { continue }
             let value: (String) -> ParamValue = { name in
                 param(e, name) ?? e.params[name] ?? type.spec(name)?.defaultValue ?? .number(0)
             }

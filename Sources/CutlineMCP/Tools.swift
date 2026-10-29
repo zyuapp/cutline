@@ -15,6 +15,8 @@ struct ToolResult {
     }
 
     var json: JSON { ["content": .array(content), "isError": .bool(isError)] }
+
+    var plainText: String { content.compactMap { $0["text"]?.string }.joined(separator: "\n") }
 }
 
 struct Tool {
@@ -196,6 +198,7 @@ enum Describe {
         case .text: s += "text \"\(c.text?.text.prefix(40) ?? "")\""
         case .solid: s += "solid \(c.color?.hex ?? "")"
         case .adjustment: s += "adjustment layer"
+        case .generator: s += "generator " + (c.effects.first.map(\.type) ?? "?")
         case .sequence:
             let seq = c.mediaId.flatMap { p.sequence($0) }
             s += "nested \"\(seq?.name ?? "?")\" [\(fmt(c.sourceIn))–\(fmt(c.sourceIn + c.duration)) of \(fmt(seq?.duration ?? 0))s, \(seq?.tracks.flatMap(\.clips).count ?? 0) clips]"

@@ -410,6 +410,7 @@ final class TimelineCanvas: NSView {
             case .solid: clip.color.map { NSColor(srgbRed: $0.r, green: $0.g, blue: $0.b, alpha: 1) } ?? Theme.NS.solid
             case .adjustment: Theme.NS.adjustment
             case .sequence: Theme.NS.overlay
+            case .generator: Theme.NS.title
             }
             let dim: CGFloat = track.hidden || (track.muted && track.kind == .audio) ? 0.35 : 1
             ctx.saveGState()
@@ -450,6 +451,11 @@ final class TimelineCanvas: NSView {
             case .solid:
                 base.withAlphaComponent(0.8).setFill()
                 rect.fill()
+            case .generator:
+                base.withAlphaComponent(0.2).setFill()
+                rect.fill()
+                base.setFill()
+                CGRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height).fill()
             case .sequence:
                 // Nested sequences read as a stack: tinted fill with thin layered bands.
                 base.withAlphaComponent(0.22).setFill()
@@ -565,6 +571,7 @@ final class TimelineCanvas: NSView {
         case .solid: label = clip.name ?? "Color"
         case .adjustment: label = clip.name ?? "Adjustment"
         case .sequence: label = clip.name ?? clip.mediaId.flatMap { project.sequence($0)?.name } ?? "Nested"
+        case .generator: label = clip.name ?? "Graphic"
         }
         if !clip.effects.isEmpty {
             let names = clip.effects.filter(\.enabled).map { EffectCatalog.shortName($0.type) }

@@ -185,6 +185,8 @@ public enum ClipKind: String, Codable, Sendable, CaseIterable {
     case adjustment
     /// A nested sequence (`Project.sequences`), played as one clip.
     case sequence
+    /// Drawn graphics (shapes, arrows, lower thirds, counters); the first effect is the generator, fx.gen.<param>.
+    case generator
 }
 
 public enum BlendMode: String, Codable, Sendable, Hashable, CaseIterable {
@@ -526,6 +528,10 @@ public struct TextSpec: Codable, Equatable, Hashable, Sendable {
     public var letterSpacing: Double
     public var animationIn: TextAnimation
     public var animationOut: TextAnimation
+    /// Animates each word, letter or line on its own; replaces the in/out presets.
+    public var animator: TextAnimator?
+    /// When each unit starts, in seconds from the clip start (spoken word times for kinetic captions).
+    public var unitTimes: [Seconds]?
 
     public init(text: String, font: String = "system", size: Double = 0.07, weight: Int = 700, color: RGBA = .white, background: RGBA? = nil, stroke: RGBA? = nil, strokeWidth: Double = 0, shadow: Bool = true, align: TextAlign = .center, x: Double = 0.5, y: Double = 0.5, maxWidth: Double = 0.85, letterSpacing: Double = 0, animationIn: TextAnimation = .fade, animationOut: TextAnimation = .fade) {
         self.text = text

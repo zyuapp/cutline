@@ -78,8 +78,9 @@ extension Toolbox {
             return "Canvas is \(p.canvas.width)×\(p.canvas.height) @\(Describe.fmtFps(p.canvas.fps))fps"
         })
 
-        add(Tool(name: "history", description: "The edit history: list entries, undo or redo, jump to any entry, or diff two versions. Every edit is one entry. A new edit after undo discards the undone entries.", schema: Schema.object([
-            "action": Schema.string("list (default), undo, redo, restore, diff", values: ["list", "undo", "redo", "restore", "diff"]),
+        add(Tool(name: "history", description: "The edit history: list entries, undo or redo, jump to any entry, diff two versions, or fork the project into a separate copy (same media, own history) to explore an alternative cut. Every edit is one entry. A new edit after undo discards the undone entries.", schema: Schema.object([
+            "action": Schema.string("list (default), undo, redo, restore, diff, fork", values: ["list", "undo", "redo", "restore", "diff", "fork"]),
+            "path": Schema.string("For fork: where the copy goes (a .cutline folder); it becomes the open project"),
             "steps": Schema.integer("For undo/redo, default 1"),
             "id": Schema.string("For restore: the entry to jump to. For diff: the version to compare against the current one"),
             "limit": Schema.integer("For list, default 20"),
@@ -99,6 +100,19 @@ extension Toolbox {
                 }
                 guard !names.isEmpty else { return .text(undo ? "Nothing to undo." : "Nothing to redo.") }
                 return .text((undo ? "Undid: " : "Redid: ") + names.joined(separator: ", ") + "\n" + footer(p))
+            case "fork":
+                let dest = session.resolve(try args.string("path"))
+                guard dest.pathExtension == "cutline" else { throw EditError("Fork paths end in .cutline") }
+                guard !FileManager.default.fileExists(atPath: dest.path) else { throw EditError("\(dest.path) already exists") }
+                try FileManager.default.copyItem(at: b.url, to: dest)
+                try? FileManager.default.removeItem(at: dest.appendingPathComponent("comments.json"))
+                try? FileManager.default.removeItem(at: dest.appendingPathComponent("jobs.json"))
+                let nb = try session.open(dest)
+                var p = try nb.loadProject()
+                p.name += " (fork)"
+                try nb.commit(p, label: "Fork of \(b.url.lastPathComponent)")
+                _ = try? session.openPreview()
+                return .text("Forked to \(dest.path) and opened it; \(b.url.lastPathComponent) is unchanged. project_open switches back.\n" + footer(p))
             case "restore":
                 let id = try args.string("id")
                 let p = try b.checkout(id)
