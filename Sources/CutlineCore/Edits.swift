@@ -266,7 +266,12 @@ extension Project {
                 }
             }
             if track.kind == .audio && !media.hasAudio { throw EditError("\(media.id) has no audio for audio track \(track.id)") }
-        case .text, .solid:
+            if (clip.audioLead != 0 || clip.audioLag != 0) && !media.isImage {
+                let heard = clip.audioSourceRange
+                if heard.start < -1e-3 { throw EditError("\(clip.id)'s audio would start \(fmt(-heard.start))s before the beginning of \(media.id); reduce audio.lead") }
+                if heard.end > media.duration + 1e-3 { throw EditError("\(clip.id)'s audio would run \(fmt(heard.end - media.duration))s past the end of \(media.id); reduce audio.lag") }
+            }
+        case .text, .solid, .adjustment:
             guard track.kind == .video else { throw EditError("\(clip.kind.rawValue) clips go on video tracks") }
             if clip.kind == .text && clip.text == nil { throw EditError("Text clip \(clip.id) has no text") }
         }
@@ -313,10 +318,12 @@ extension Project {
         var left = trimmedRight(c, to: t)
         left.fadeOut = 0
         left.audioFadeOut = 0
+        left.audioLag = 0
         var right = trimmedLeft(c, to: t)
         right.id = newClipId()
         right.fadeIn = 0
         right.audioFadeIn = 0
+        right.audioLead = 0
         return (left, right)
     }
 
@@ -326,7 +333,7 @@ extension Project {
         c.start = newStart
         c.duration -= delta
         if c.kind == .media { c.sourceIn += delta * c.speed }
-        c.keyframes = c.keyframes.map { var k = $0; k.time -= delta; return k }
+        c.anim = c.anim.mapValues { $0.shifted(by: -delta) }
         c.fadeIn = min(c.fadeIn, c.duration)
         c.audioFadeIn = min(c.audioFadeIn, c.duration)
         return c

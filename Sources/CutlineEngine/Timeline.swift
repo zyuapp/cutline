@@ -10,6 +10,8 @@ public struct BuiltTimeline: @unchecked Sendable {
     public let audioMix: AVAudioMix
     public let scene: RenderScene
     public let duration: Seconds
+    /// Tracks with audio effects whose processed stem isn't rendered yet; they play dry.
+    public let missingStems: [String]
 
     public func playerItem() -> AVPlayerItem {
         let item = AVPlayerItem(asset: composition)
@@ -27,66 +29,112 @@ public enum TimelineBuilder {
     static func time(_ s: Seconds) -> CMTime { CMTime(seconds: s, preferredTimescale: timescale) }
 
     /// Builds the composition. Rendering size defaults to the canvas; pass `renderScale` to preview smaller.
-    public static func build(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary, renderScale: Double = 1) async throws -> BuiltTimeline {
+    /// Tracks with audio effects play their cached stem from `stems`, or dry when it isn't rendered yet.
+    public static func build(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary, renderScale: Double = 1, stems: AudioStems? = nil) async throws -> BuiltTimeline {
+        try await build(project, transcripts: transcripts, library: library, renderScale: renderScale, stems: stems, dryTrack: nil, masterStage: true)
+    }
+
+    /// `dryTrack` builds only that track's sound, before track gain and effects, for stem rendering.
+    /// With `masterStage`, a rendered master stem (the mix through the master effects) replaces the tracks' sound.
+    static func build(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary, renderScale: Double, stems: AudioStems?, dryTrack: String?, masterStage: Bool) async throws -> BuiltTimeline {
         let duration = max(project.duration, project.canvas.frameDuration)
         let comp = AVMutableComposition()
         var trackIDs: [String: CMPersistentTrackID] = [:]
         var orientations: [String: CGImagePropertyOrientation] = [:]
         var images: [String: CIImage] = [:]
         var audioParams: [AVMutableAudioMixInputParameters] = []
+        var missingStems: [String] = []
+        let master = dryTrack == nil ? project.master.gain : 1
+        var masterStem: URL?
+        if masterStage, dryTrack == nil, AudioStems.hasMasterChain(project) {
+            masterStem = stems?.cachedMaster(for: project)
+            if masterStem == nil { missingStems.append("master") }
+        }
 
-        let base = try await BaseVideo.asset()
-        if let baseTrack = try await base.loadTracks(withMediaType: .video).first,
-           let ct = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
-            let one = CMTimeRange(start: .zero, duration: try await baseTrack.load(.timeRange).duration)
-            try ct.insertTimeRange(one, of: baseTrack, at: .zero)
-            ct.scaleTimeRange(CMTimeRange(start: .zero, duration: one.duration), toDuration: time(duration))
-            trackIDs["__base"] = ct.trackID
+        if dryTrack == nil {
+            let base = try await BaseVideo.asset()
+            if let baseTrack = try await base.loadTracks(withMediaType: .video).first,
+               let ct = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                let one = CMTimeRange(start: .zero, duration: try await baseTrack.load(.timeRange).duration)
+                try ct.insertTimeRange(one, of: baseTrack, at: .zero)
+                ct.scaleTimeRange(CMTimeRange(start: .zero, duration: one.duration), toDuration: time(duration))
+                trackIDs["__base"] = ct.trackID
+            }
         }
 
         for track in project.tracks {
+            if let dryTrack, track.id != dryTrack { continue }
             let clips = track.clips.filter { $0.kind == .media }
             guard !clips.isEmpty else { continue }
+            let trackGain = dryTrack != nil ? 1 : (track.muted ? 0 : track.volume) * master
+            let hasAudioFx = track.effects.contains { EffectCatalog.isAudio($0.type) && $0.enabled }
+            var stemURL: URL?
+            if dryTrack == nil, hasAudioFx, masterStem == nil {
+                stemURL = stems?.cachedStem(for: track, in: project)
+                if stemURL == nil { missingStems.append(track.id) }
+            }
             var videoTrack: AVMutableCompositionTrack?
-            var audioTrack: AVMutableCompositionTrack?
-            var params: AVMutableAudioMixInputParameters?
+            // Split edits can overlap neighbouring sound, so each track gets as many audio lanes as it needs.
+            var lanes: [(track: AVMutableCompositionTrack, params: AVMutableAudioMixInputParameters, end: Seconds)] = []
             for clip in clips {
                 guard let mid = clip.mediaId, let media = project.mediaAsset(mid) else { continue }
                 if media.isImage {
-                    if images[mid] == nil { images[mid] = library.image(for: media) }
+                    if images[mid] == nil, dryTrack == nil { images[mid] = library.image(for: media) }
                     continue
                 }
                 let entry = try await library.entry(for: media)
                 orientations[mid] = entry.orientation
-                let at = time(clip.start)
-                let src = CMTimeRange(start: time(clip.sourceIn), end: time(clip.sourceOut))
-                let target = time(clip.duration)
 
-                if track.kind == .video, let v = entry.video, let vr = entry.videoRange {
+                if dryTrack == nil, track.kind == .video, let v = entry.video, let vr = entry.videoRange {
                     if videoTrack == nil {
                         videoTrack = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
                     }
-                    try insert(src.intersection(vr), of: v, into: videoTrack!, at: at, sourceDuration: src.duration, target: target)
+                    let src = CMTimeRange(start: time(clip.sourceIn), end: time(clip.sourceOut))
+                    try insert(src.intersection(vr), of: v, into: videoTrack!, at: time(clip.start), sourceDuration: src.duration, target: time(clip.duration))
                 }
-                if let a = entry.audio, let ar = entry.audioRange, clip.volume > 0 {
-                    if audioTrack == nil {
-                        audioTrack = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-                        params = AVMutableAudioMixInputParameters(track: audioTrack)
-                        params!.audioTimePitchAlgorithm = .spectral
-                        params!.setVolume(0, at: .zero)
-                    }
-                    try insert(src.intersection(ar), of: a, into: audioTrack!, at: at, sourceDuration: src.duration, target: target)
-                    let v = Float(track.muted ? 0 : clip.volume * track.volume)
-                    let fi = max(clip.audioFadeIn, declick), fo = max(clip.audioFadeOut, declick)
-                    params!.setVolumeRamp(fromStartVolume: 0, toEndVolume: v, timeRange: CMTimeRange(start: at, duration: time(min(fi, clip.duration / 2))))
-                    params!.setVolumeRamp(fromStartVolume: v, toEndVolume: 0, timeRange: CMTimeRange(start: time(clip.end - min(fo, clip.duration / 2)), duration: time(min(fo, clip.duration / 2))))
+                guard stemURL == nil, masterStem == nil, let a = entry.audio, let ar = entry.audioRange, clip.volume > 0 || clip.anim["audio.volume"] != nil else { continue }
+                let span = clip.audioRange, heard = clip.audioSourceRange
+                guard span.duration > 0.01 else { continue }
+                var lane = lanes.firstIndex { $0.end <= span.start + 1e-6 }
+                if lane == nil {
+                    guard let t = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
+                    let params = AVMutableAudioMixInputParameters(track: t)
+                    params.audioTimePitchAlgorithm = .spectral
+                    params.setVolume(0, at: .zero)
+                    lanes.append((t, params, -.infinity))
+                    lane = lanes.count - 1
                 }
+                let src = CMTimeRange(start: time(heard.start), end: time(heard.end))
+                try insert(src.intersection(ar), of: a, into: lanes[lane!].track, at: time(span.start), sourceDuration: src.duration, target: time(span.duration))
+                addVolumeEnvelope(clip, trackGain: trackGain, to: lanes[lane!].params)
+                lanes[lane!].end = span.end
             }
             if let videoTrack { trackIDs[track.id] = videoTrack.trackID }
-            if let params { audioParams.append(params) }
+            audioParams += lanes.map(\.params)
+            if let stemURL {
+                let stem = AVURLAsset(url: stemURL)
+                if let st = try await stem.loadTracks(withMediaType: .audio).first,
+                   let t = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                    try t.insertTimeRange(try await st.load(.timeRange), of: st, at: .zero)
+                    let params = AVMutableAudioMixInputParameters(track: t)
+                    params.setVolume(Float(trackGain), at: .zero)
+                    audioParams.append(params)
+                }
+            }
         }
 
-        let scene = RenderScene(project: project, captions: project.captions.enabled ? project.captionSegments(transcripts: transcripts) : [], trackIDs: trackIDs, orientations: orientations, images: images)
+        if let masterStem {
+            let stem = AVURLAsset(url: masterStem)
+            if let st = try await stem.loadTracks(withMediaType: .audio).first,
+               let t = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                try t.insertTimeRange(try await st.load(.timeRange), of: st, at: .zero)
+                let params = AVMutableAudioMixInputParameters(track: t)
+                params.setVolume(1, at: .zero)
+                audioParams.append(params)
+            }
+        }
+
+        let scene = RenderScene(project: project, captions: project.captions.enabled && dryTrack == nil ? project.captionSegments(transcripts: transcripts) : [], trackIDs: trackIDs, orientations: orientations, images: images)
         let vc = AVMutableVideoComposition()
         vc.customVideoCompositorClass = CutlineCompositor.self
         vc.frameDuration = CMTime(value: 1000, timescale: CMTimeScale(project.canvas.fps * 1000))
@@ -100,7 +148,33 @@ public enum TimelineBuilder {
 
         let mix = AVMutableAudioMix()
         mix.inputParameters = audioParams
-        return BuiltTimeline(composition: comp, videoComposition: vc, audioMix: mix, scene: scene, duration: duration)
+        return BuiltTimeline(composition: comp, videoComposition: vc, audioMix: mix, scene: scene, duration: duration, missingStems: missingStems)
+    }
+
+    /// Gain over the clip's sound: animated or fixed volume, times fades, with a few ms of ramp at
+    /// the edges so cuts don't click. Animated volume is sampled every 50 ms. Times are relative
+    /// to the clip's picture start, so split-edit lead is negative.
+    static func addVolumeEnvelope(_ clip: Clip, trackGain: Double, to params: AVMutableAudioMixInputParameters) {
+        let a0 = -clip.audioLead, a1 = clip.duration + clip.audioLag
+        let len = a1 - a0
+        guard len > 0 else { return }
+        let fi = min(max(clip.audioFadeIn, declick), len / 2)
+        let fo = min(max(clip.audioFadeOut, declick), len / 2)
+        func gain(_ local: Seconds) -> Float {
+            var g = clip.number("audio.volume", at: local, default: clip.volume) * trackGain
+            if local - a0 < fi { g *= max(0, local - a0) / fi }
+            if a1 - local < fo { g *= max(0, a1 - local) / fo }
+            return Float(max(0, g))
+        }
+        var points: [Seconds] = [a0, a0 + fi, a1 - fo, a1]
+        if let curve = clip.anim["audio.volume"] {
+            points += stride(from: a0, to: a1, by: 0.05).map { $0 }
+            points += curve.keys.map(\.t).filter { $0 > a0 && $0 < a1 }
+        }
+        let sorted = Array(Set(points.map { ($0 * 10000).rounded() / 10000 })).filter { $0 >= a0 && $0 <= a1 }.sorted()
+        for (a, b) in zip(sorted, sorted.dropFirst()) where b - a > 1e-4 {
+            params.setVolumeRamp(fromStartVolume: gain(a), toEndVolume: gain(min(b, a1 - 1e-6)), timeRange: CMTimeRange(start: time(clip.start + a), duration: time(b - a)))
+        }
     }
 
     /// Inserts `range` at `at`, padding with empty time so later inserts stay aligned, then

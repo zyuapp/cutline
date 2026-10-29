@@ -7,18 +7,19 @@ public final class MCPServer {
     let toolbox = Toolbox()
 
     static let instructions = """
-    Cutline is a video editor you drive entirely through these tools; a human watches the result in the Cutline preview app and leaves comments pinned to frames.
+    Cutline is a video editor you drive entirely through these tools; a human watches the result in the Cutline preview app and leaves notes pinned to frames.
 
     Workflow:
     1. project_create (or project_open). The preview app opens automatically.
-    2. media_import the user's files. Analysis gives you word-level transcripts, pauses and scene cuts.
-    3. Read before cutting: media_transcript (source time) for speech, media_frames to look at footage.
-    4. Edit. For vertical/square canvases use fit "fill" on landscape footage (assemble and clip_add accept fit). For talking footage: assemble the best takes, then cut_silences, then source_cut for flubs. Add b-roll with clip_add track "new", titles with text_add, music on A1 with a low track volume and audio fades, captions with captions_set.
-    5. Verify every change: timeline_transcript for cuts, timeline_frames to see the picture, project_status for structure and warnings. Use preview_seek to show the human what you changed.
-    6. comments_list at the start of each turn; address each comment, then comment_reply to resolve it.
-    7. export when the human is happy.
+    2. media_import the files. Analysis gives word-level transcripts, pauses and scene cuts.
+    3. Read before cutting: media_transcript (source time, with word ids) and media_frames to look at footage.
+    4. Structure the edit: assemble the best takes, cut_silences, source_cut flubs, clip_add b-roll (track "new"), text_add titles, captions_set.
+    5. Shape the look and sound with three general tools: param_set sets or animates any parameter by path (transform.scale, audio.volume, text.color, fx.<id>.<param>…); effect_add stacks effects (blur, color, glow, vignette, grain, masks, shadows…) on clips, tracks or adjustment layers; blend modes via param_set blend. catalog lists every effect, parameter, ease and anchor.
+    6. Verify every change: timeline_frames to see it, timeline_transcript for cuts, project_status (target=<clip> for its parameters). Use dry_run:true to preview risky edits and batch to make one undoable step. preview_seek shows the human what changed.
+    7. comments_list at the start of each turn; address each note, then comment_reply to resolve it.
+    8. export when the human is happy.
 
-    Times are seconds. Source times refer to a media file; timeline times to the edit. Every edit is one undoable history entry; group related edits with batch.
+    Times are seconds or anchors that survive later edits: "<media>.w12" (a transcript word), "<clip>.end", "marker:<label>", "start", "end", each with optional +/- seconds. Arguments that are positions inside a media file (source_in, assemble segments, source_cut ranges) take word anchors in source time. Lengths are fractions of the frame height; positions are fractions of the frame from the top left.
     """
 
     public init() {}

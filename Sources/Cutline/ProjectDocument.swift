@@ -117,13 +117,21 @@ final class ProjectDocument {
         let p = project
         let t = transcripts
         let lib = library
+        let stems = AudioStems(directory: bundle.cacheURL.appendingPathComponent("stems", isDirectory: true))
         buildTask = Task { [weak self] in
             do {
-                let built = try await TimelineBuilder.build(p, transcripts: t, library: lib)
+                let built = try await TimelineBuilder.build(p, transcripts: t, library: lib, stems: stems)
                 guard !Task.isCancelled, let self else { return }
                 self.buildError = nil
                 self.player.replaceItem(built.playerItem(), duration: built.duration, fps: p.canvas.fps)
                 self.thumbnails.prepare(p.media)
+                // Tracks with audio effects play dry until their processed stem is rendered.
+                guard !built.missingStems.isEmpty else { return }
+                try await stems.renderMissing(p, transcripts: t, library: lib)
+                guard !Task.isCancelled else { return }
+                let processed = try await TimelineBuilder.build(p, transcripts: t, library: lib, stems: stems)
+                guard !Task.isCancelled else { return }
+                self.player.replaceItem(processed.playerItem(), duration: processed.duration, fps: p.canvas.fps)
             } catch {
                 self?.buildError = error.localizedDescription
             }

@@ -3,22 +3,8 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let transformProps: [String: JSON] = [
-        "fit": Schema.string("fit (letterbox, default), fill (cover the canvas, cropping overflow; use for vertical videos from landscape footage) or stretch", values: ["fit", "fill", "stretch"]),
-        "scale": Schema.number("1 = size given by fit"),
-        "x": Schema.number("Horizontal offset as a fraction of canvas width, + moves right"),
-        "y": Schema.number("Vertical offset as a fraction of canvas height, + moves down"),
-        "rotation": Schema.number("Degrees clockwise"),
-        "opacity": Schema.number("0–1"),
-        "crop": Schema.object(["left": Schema.number("fraction"), "top": Schema.number("fraction"), "right": Schema.number("fraction"), "bottom": Schema.number("fraction")]),
-        "fade_in": Schema.time("Picture fade-in duration"),
-        "fade_out": Schema.time("Picture fade-out duration"),
-        "keyframes": Schema.array(Schema.object([
-            "time": Schema.number("Seconds from the clip start"),
-            "scale": Schema.number("scale"), "x": Schema.number("x"), "y": Schema.number("y"),
-            "rotation": Schema.number("rotation"), "opacity": Schema.number("opacity"),
-            "easing": Schema.string("Easing into this keyframe", values: ["linear", "easeIn", "easeOut", "easeInOut"]),
-        ], required: ["time"]), "Animate transform values over the clip (e.g. Ken Burns zoom: scale 1 at 0 → 1.15 at end). Replaces existing keyframes; [] clears them."),
+    static let setProp: [String: JSON] = [
+        "set": ["type": "object", "description": "Initial parameter values by path, e.g. {\"transform.fit\": \"fill\", \"transform.scale\": 1.2, \"audio.volume\": 0.5}. See catalog for paths."],
     ]
 
     static let textProps: [String: JSON] = [
@@ -41,55 +27,56 @@ extension Toolbox {
     ]
 
     func registerEditTools() {
-        addEdit(EditTool(name: "clip_add", description: "Put a media file (or a solid color) on the timeline. Default track: V1 for video/images, A1 for audio-only files. Use track \"new\" to put b-roll or overlays on a fresh layer above. Without start, the clip is appended after the track's last clip.", schema: Schema.object([
+        addEdit(EditTool(name: "clip_add", description: "Put media, a solid color, or an adjustment layer on the timeline. Default track: V1 for video and images, A1 for audio-only files; \"new\" makes a new layer on top. Without start the clip is appended after the track's last clip. An adjustment layer has no picture: effects on it (effect_add) apply to every layer below it for its duration.", schema: Schema.object([
             "media_id": Schema.string("Media to place"),
-            "color": Schema.string("Hex color for a solid color clip instead of media"),
+            "color": Schema.string("Hex color for a solid color clip"),
+            "adjustment": Schema.bool("Make an adjustment layer"),
             "track": Schema.string("Track id, or \"new\" for a new layer on top"),
-            "start": Schema.time("Timeline start"),
+            "start": Schema.time("Timeline start (seconds or anchor)"),
+            "end": Schema.time("Timeline end, instead of duration"),
             "mode": Schema.string("place (exact start, fail on overlap; default when start is given), append (default without start), overwrite (replace what is under it), insert (push everything later, on all tracks)", values: PlaceMode.allCases.map(\.rawValue)),
-            "source_in": Schema.time("Source start, default 0"),
-            "source_out": Schema.time("Source end, default the end of the media"),
-            "duration": Schema.time("Timeline duration; required for images and solids (default 5)"),
+            "source_in": Schema.time("Source start (seconds in the media, or a word anchor like \"talk.w12\")"),
+            "source_out": Schema.time("Source end (seconds or word anchor such as \"talk.w40.end\")"),
+            "duration": Schema.time("Timeline duration; images, solids and adjustment layers default to 5"),
             "speed": Schema.number("Playback speed, 1 = normal"),
-            "volume": Schema.number("0–2, 1 = unchanged, 0 = silent"),
-            "audio_fade_in": Schema.time("Audio fade-in"),
-            "audio_fade_out": Schema.time("Audio fade-out"),
             "name": Schema.string("Label shown in the preview timeline"),
-        ].merging(Toolbox.transformProps) { a, _ in a }), label: { a, p in a.optString("media_id").map { id in "Add " + (p.mediaAsset(id)?.name ?? id) } ?? "Add a color clip" }) { p, args in
+        ].merging(Toolbox.setProp) { a, _ in a }), label: { a, p in a.optString("media_id").map { id in "Add " + (p.mediaAsset(id)?.name ?? id) } ?? (a.bool("adjustment", default: false) ? "Add adjustment layer" : "Add a color clip") }) { p, args in
             var clip: Clip
             var defaultTrack = "V1"
+            let start = try args.optTime("start")
+            let end = try args.optTime("end")
+            let span = start.flatMap { s in end.map { $0 - s } }
             if let mid = args.optString("media_id") {
                 guard let m = p.mediaAsset(mid) else { throw EditError("No media \(mid). Known: \(p.media.map(\.id).joined(separator: ", "))") }
-                let sIn = try args.optTime("source_in") ?? 0
+                let sIn = try args.optSourceTime("source_in") ?? 0
                 let speed = args.optDouble("speed") ?? 1
                 var dur: Seconds
                 if m.isImage {
-                    dur = try args.optTime("duration") ?? 5
-                } else if let sOut = try args.optTime("source_out") {
+                    dur = try span ?? args.optTime("duration") ?? 5
+                } else if let sOut = try args.optSourceTime("source_out") {
                     dur = (sOut - sIn) / speed
-                } else if let d = try args.optTime("duration") {
+                } else if let d = try span ?? args.optTime("duration") {
                     dur = d
                 } else {
                     dur = (m.duration - sIn) / speed
                 }
                 clip = Clip(id: Project.newClipId(), kind: .media, name: args.optString("name") ?? m.name, mediaId: mid, start: 0, duration: dur, sourceIn: m.isImage ? 0 : sIn, speed: speed)
                 if !m.hasVideo { defaultTrack = p.tracks.first { $0.kind == .audio }?.id ?? "A1" }
+            } else if args.bool("adjustment", default: false) {
+                clip = Clip(id: Project.newClipId(), kind: .adjustment, name: args.optString("name") ?? "Adjustment", start: 0, duration: try span ?? args.optTime("duration") ?? 5)
+                defaultTrack = "new"
             } else if let color = try args.color("color") {
-                clip = Clip(id: Project.newClipId(), kind: .solid, name: args.optString("name") ?? "Color", start: 0, duration: try args.optTime("duration") ?? 5, color: color)
+                clip = Clip(id: Project.newClipId(), kind: .solid, name: args.optString("name") ?? "Color", start: 0, duration: try span ?? args.optTime("duration") ?? 5, color: color)
             } else {
-                throw EditError("Pass media_id or color")
+                throw EditError("Pass media_id, color, or adjustment: true")
             }
-            if let v = args.optDouble("volume") { clip.volume = v }
-            if let v = try args.optTime("audio_fade_in") { clip.audioFadeIn = v }
-            if let v = try args.optTime("audio_fade_out") { clip.audioFadeOut = v }
-            try Toolbox.applyTransform(&clip, args)
+            try Toolbox.applySet(&clip, args)
             var trackId = args.optString("track") ?? defaultTrack
             if trackId == "new" {
                 let kind: TrackKind = clip.kind == .media && !(p.mediaAsset(clip.mediaId!)?.hasVideo ?? true) ? .audio : .video
                 let index = kind == .video ? (p.tracks.lastIndex { $0.kind == .video }.map { $0 + 1 } ?? 0) : p.tracks.count
-                trackId = p.addTrack(kind: kind, name: kind == .video ? "Overlay" : "Audio", index: index).id
+                trackId = p.addTrack(kind: kind, name: clip.kind == .adjustment ? "Adjustment" : kind == .video ? "Overlay" : "Audio", index: index).id
             }
-            let start = try args.optTime("start")
             let mode = try args.enumValue("mode", PlaceMode.self) ?? (start == nil ? .append : .place)
             clip.start = start ?? 0
             let placed = try p.addClip(clip, trackId: trackId, mode: mode)
@@ -97,16 +84,17 @@ extension Toolbox {
         })
 
         addEdit(EditTool(name: "text_add", description: "Add a title, lower third, label or call-out. Goes on a text layer above the video (created as needed, a new one if the range is busy).", schema: Schema.object(Toolbox.textProps.merging([
-            "start": Schema.time("Timeline start"),
+            "start": Schema.time("Timeline start (seconds or anchor such as \"talk.w40\")"),
+            "end": Schema.time("Timeline end, instead of duration (e.g. \"talk.w46.end\")"),
             "duration": Schema.time("How long it shows, default 3"),
             "track": Schema.string("Track id; default picks or creates a text layer"),
-        ]) { a, _ in a }.merging(Toolbox.transformProps.filter { ["scale", "rotation", "opacity", "keyframes", "x", "y"].contains($0.key) }) { a, _ in a }, required: ["text", "start"]), label: { a, _ in "Add title “\(Toolbox.excerpt(a.optString("text") ?? "", 34))”" }) { p, args in
+        ]) { a, _ in a }.merging(Toolbox.setProp) { a, _ in a }, required: ["text", "start"]), label: { a, _ in "Add title “\(Toolbox.excerpt(a.optString("text") ?? "", 34))”" }) { p, args in
             var spec = TextSpec(text: try args.string("text"))
             try Toolbox.applyText(&spec, args)
             let start = p.canvas.snap(try args.time("start"))
-            let duration = try args.optTime("duration") ?? 3
+            let duration = try args.optTime("end").map { $0 - start } ?? args.optTime("duration") ?? 3
             var clip = Clip(id: Project.newClipId(), kind: .text, name: String(spec.text.prefix(30)), start: start, duration: duration, text: spec)
-            try Toolbox.applyTransform(&clip, args)
+            try Toolbox.applySet(&clip, args)
             let range = TimeRange(start, start + duration)
             let trackId: String
             if let t = args.optString("track") {
@@ -122,29 +110,27 @@ extension Toolbox {
             return "Added text \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))"
         })
 
-        addEdit(EditTool(name: "clip_update", description: "Change any property of a clip: timing (start, duration, source_in/source_out trims, speed), audio (volume, fades), picture (fit, scale, position, rotation, opacity, crop, fades, keyframes) or text styling. Changing source range or speed recomputes duration. If the new end collides with the next clip, pass ripple=true to shift later clips on that track.", schema: Schema.object([
+        addEdit(EditTool(name: "clip_update", description: "Change a clip's timing or place: move it (start, track), trim it (source_in/source_out keep the start; duration or end trim the tail), change speed (keeps the source range), rename it, or change a title's words. Appearance, audio levels and animation go through param_set and effect_add. If the new end collides with the next clip, pass ripple=true to shift later clips on that track.", schema: Schema.object([
             "clip_id": Schema.string("Clip id"),
-            "start": Schema.time("New timeline start"),
-            "duration": Schema.time("New timeline duration (trims the end)"),
-            "source_in": Schema.time("New source start (trims the head, start stays)"),
-            "source_out": Schema.time("New source end"),
+            "start": Schema.time("New timeline start (seconds or anchor)"),
+            "end": Schema.time("New timeline end; trims the tail"),
+            "duration": Schema.time("New timeline duration; trims the tail"),
+            "source_in": Schema.time("New source start (seconds or word anchor); trims the head, start stays"),
+            "source_out": Schema.time("New source end (seconds or word anchor)"),
             "speed": Schema.number("Playback speed; keeps the source range"),
-            "volume": Schema.number("0–2"),
-            "audio_fade_in": Schema.time("Audio fade-in"),
-            "audio_fade_out": Schema.time("Audio fade-out"),
-            "color": Schema.string("Solid clip color"),
+            "track": Schema.string("Move to this track (overwrites what is there)"),
             "name": Schema.string("Label"),
+            "text": Schema.string("New words for a title clip"),
             "ripple": Schema.bool("Shift later clips on the track by the change in end time, default false"),
-        ].merging(Toolbox.transformProps) { a, _ in a }.merging(Toolbox.textProps) { a, _ in a }, required: ["clip_id"]), label: { a, p in Toolbox.describeUpdate(a, p) }) { p, args in
+        ], required: ["clip_id"]), label: { a, p in Toolbox.describeUpdate(a, p) }) { p, args in
             let id = try args.string("clip_id")
             guard var c = p.clip(id) else { throw EditError("No clip \(id)") }
-            if let s = try args.optTime("start") { c.start = s }
             if let v = args.optDouble("speed") {
                 let src = c.duration * c.speed
                 c.speed = v
                 c.duration = src / v
             }
-            let sIn = try args.optTime("source_in"), sOut = try args.optTime("source_out")
+            let sIn = try args.optSourceTime("source_in"), sOut = try args.optSourceTime("source_out")
             if sIn != nil || sOut != nil {
                 let newIn = sIn ?? c.sourceIn
                 let newOut = sOut ?? c.sourceOut
@@ -153,31 +139,22 @@ extension Toolbox {
                 c.duration = (newOut - newIn) / c.speed
             }
             if let d = try args.optTime("duration") { c.duration = d }
-            if let v = args.optDouble("volume") { c.volume = v }
-            if let v = try args.optTime("audio_fade_in") { c.audioFadeIn = v }
-            if let v = try args.optTime("audio_fade_out") { c.audioFadeOut = v }
-            if let v = try args.color("color") { c.color = v }
+            if let s = try args.optTime("start") { c.start = s }
+            if let e = try args.optTime("end") { c.duration = e - c.start }
             if let v = args.optString("name") { c.name = v }
-            try Toolbox.applyTransform(&c, args)
-            if c.kind == .text, var spec = c.text {
-                if let t = args.optString("text") { spec.text = t }
-                try Toolbox.applyText(&spec, args)
-                c.text = spec
+            if let t = args.optString("text") {
+                guard c.kind == .text else { throw EditError("\(id) is not a title") }
+                c.text?.text = t
+            }
+            if let track = args.optString("track"), p.locateClip(id).map({ p.tracks[$0.track].id }) != track {
+                try p.moveClip(id, start: c.start, trackId: track)
+                guard var moved = p.clip(id) else { throw EditError("Move failed") }
+                moved.duration = c.duration; moved.sourceIn = c.sourceIn; moved.speed = c.speed; moved.name = c.name; moved.text = c.text
+                c = moved
             }
             try p.replaceClip(c, ripple: args.bool("ripple", default: false))
             let now = p.clip(id)!
             return "Updated \(id): \(Describe.clip(now, p))"
-        })
-
-        addEdit(EditTool(name: "clip_move", description: "Move a clip to a new start and/or track. Fails if the destination is occupied on the same track; on another track it overwrites.", schema: Schema.object([
-            "clip_id": Schema.string("Clip id"),
-            "start": Schema.time("New timeline start"),
-            "track": Schema.string("Destination track id"),
-        ], required: ["clip_id", "start"]), label: { a, p in "Move \(Toolbox.clipName(a.optString("clip_id"), p))" }) { p, args in
-            let id = try args.string("clip_id")
-            try p.moveClip(id, start: try args.time("start"), trackId: args.optString("track"))
-            let c = p.clip(id)!
-            return "Moved \(id) to \(fmt(c.start))–\(fmt(c.end))"
         })
 
         addEdit(EditTool(name: "clip_split", description: "Split at a timeline time: one clip (clip_id) or every clip under that time on the given tracks (default all).", schema: Schema.object([
@@ -218,7 +195,7 @@ extension Toolbox {
 
         addEdit(EditTool(name: "source_cut", description: "Cut source ranges of a media file out of the timeline wherever they play, rippling all tracks. Ranges are SOURCE times from media_transcript, so they stay valid after earlier edits. The main tool for removing flubs, repeated takes, tangents or specific words.", schema: Schema.object([
             "media_id": Schema.string("Media id"),
-            "ranges": Schema.array(Schema.numbers("[start, end]"), "Source ranges to remove, e.g. [[12.4, 15.0], [31.2, 31.8]]"),
+            "ranges": Schema.array(Schema.numbers("[start, end]"), "Source ranges to remove, as seconds or word anchors, e.g. [[12.4, 15.0], [\"talk.w88\", \"talk.w93.end\"]]"),
         ], required: ["media_id", "ranges"]), label: { a, p in let n = a.raw["ranges"]?.array?.count ?? 0; let id = a.optString("media_id") ?? ""; return "Cut \(n) \(n == 1 ? "moment" : "moments") from \(p.mediaAsset(id)?.name ?? id)" }) { p, args in
             let id = try args.string("media_id")
             guard p.mediaAsset(id) != nil else { throw EditError("No media \(id)") }
@@ -231,8 +208,8 @@ extension Toolbox {
         addEdit(EditTool(name: "assemble", description: "Build a sequence from source segments, in the order given, end to end on one track. Ideal for a rough cut: pick the good sentences from media_transcript (source times) and lay them down. replace=true clears the track first.", schema: Schema.object([
             "segments": Schema.array(Schema.object([
                 "media_id": Schema.string("Media id"),
-                "start": Schema.time("Source start"),
-                "end": Schema.time("Source end"),
+                "start": Schema.time("Source start, or a word anchor such as \"talk.w12\""),
+                "end": Schema.time("Source end, or a word anchor such as \"talk.w30.end\""),
             ], required: ["media_id", "start", "end"]), "Segments in playback order"),
             "track": Schema.string("Track id, default V1"),
             "at": Schema.time("Timeline start, default the track end (or 0 with replace)"),
@@ -242,7 +219,7 @@ extension Toolbox {
             guard let raw = args.raw["segments"]?.array, !raw.isEmpty else { throw EditError("segments is empty") }
             let segs = try raw.map { j -> SourceSegment in
                 let a = Args(j)
-                return SourceSegment(mediaId: try a.string("media_id"), sourceIn: try a.time("start"), sourceOut: try a.time("end"))
+                return SourceSegment(mediaId: try a.string("media_id"), sourceIn: try a.sourceTime("start"), sourceOut: try a.sourceTime("end"))
             }
             let replace = args.bool("replace", default: false)
             var made = try p.assemble(segs, trackId: args.optString("track") ?? "V1", at: try args.optTime("at") ?? (replace ? 0 : nil), replaceTrack: replace)
@@ -367,52 +344,95 @@ extension Toolbox {
             return c.enabled ? "Captions on (\(s.animation.rawValue), size \(fmt2(s.size)), y \(fmt2(s.y)))" : "Captions off"
         })
 
-        addEdit(EditTool(name: "marker_add", description: "Drop a labeled marker on the timeline (shown to the human), e.g. chapter points.", schema: Schema.object([
-            "time": Schema.time("Timeline time"),
-            "label": Schema.string("Label"),
-        ], required: ["time", "label"]), label: { a, _ in "Mark “\(a.optString("label") ?? "")”" }) { p, args in
-            let m = Marker(id: IDs.make("m"), time: try args.time("time"), label: try args.string("label"))
-            p.markers.append(m)
-            p.markers.sort { $0.time < $1.time }
-            return "Added marker \(m.id)"
-        })
-
-        addEdit(EditTool(name: "marker_remove", description: "Remove markers by id, or all.", schema: Schema.object([
-            "marker_ids": Schema.strings("Marker ids"),
-            "all": Schema.bool("Remove every marker"),
-        ]), label: { _, _ in "Remove markers" }) { p, args in
-            if args.bool("all", default: false) { p.markers.removeAll() } else {
-                let ids = Set(args.strings("marker_ids") ?? [])
-                p.markers.removeAll { ids.contains($0.id) }
+        addEdit(EditTool(name: "markers", description: "Add or remove labeled timeline markers (chapters, beats, notes to self). Marker labels work as anchors: \"marker:<label>\".", schema: Schema.object([
+            "add": Schema.array(Schema.object(["time": Schema.time("Timeline time or anchor"), "label": Schema.string("Label")], required: ["time", "label"]), "Markers to add"),
+            "remove": Schema.strings("Marker ids or labels to remove"),
+            "remove_all": Schema.bool("Remove every marker first"),
+        ]), label: { a, _ in
+            let added = a.raw["add"]?.array?.compactMap { $0["label"]?.string } ?? []
+            return added.isEmpty ? "Remove markers" : "Mark " + added.map { "“\($0)”" }.joined(separator: ", ")
+        }) { p, args in
+            if args.bool("remove_all", default: false) { p.markers.removeAll() }
+            if let ids = args.strings("remove") {
+                let set = Set(ids.map { $0.lowercased() })
+                p.markers.removeAll { set.contains($0.id.lowercased()) || set.contains($0.label.lowercased()) }
             }
-            return "Markers: \(p.markers.count)"
+            var made: [String] = []
+            for m in args.raw["add"]?.array ?? [] {
+                let a = Args(m)
+                let marker = Marker(id: IDs.make("m"), time: p.canvas.snap(try a.time("time")), label: try a.string("label"))
+                p.markers.append(marker)
+                made.append("\(marker.id) “\(marker.label)” @\(fmt2(marker.time))")
+            }
+            p.markers.sort { $0.time < $1.time }
+            return (made.isEmpty ? "" : "Added " + made.joined(separator: ", ") + ". ") + "\(p.markers.count) markers"
         })
 
+    }
+
+    func registerBatchTool() {
         let batchable = edits.keys.sorted()
-        add(Tool(name: "batch", description: "Run several edit tools in order as ONE history entry (one undo step). If any fails, nothing is applied. Use for multi-step changes like adding b-roll with a title and music ducking.", schema: Schema.object([
+        add(Tool(name: "batch", description: "Run several edit tools in order as ONE history entry (one undo step). If any fails, nothing is applied. Name an operation's result with as:\"x\" (the clip or effect it created) and use \"$x\" in later arguments, e.g. add an adjustment layer as \"adj\" then effect_add target \"$adj\". dry_run:true reports the combined changes without applying them.", schema: Schema.object([
             "label": Schema.string("History label for the whole change"),
             "operations": Schema.array(Schema.object([
                 "tool": Schema.string("Edit tool name", values: batchable),
                 "args": ["type": "object", "description": "That tool's arguments"],
+                "as": Schema.string("Name for the clip or effect this operation creates"),
             ], required: ["tool"]), "Edits to apply in order"),
+            "dry_run": Schema.bool("Report what would change without applying it"),
         ], required: ["operations"])) { [unowned self] args in
             guard let ops = args.raw["operations"]?.array, !ops.isEmpty else { throw EditError("operations is empty") }
             var lines: [String] = []
+            var vars: [String: String] = [:]
             let label = args.optString("label") ?? "Batch of \(ops.count) edits"
-            let p = try session.edit(label) { p in
+            let before = try session.project()
+            let run: (inout Project) throws -> Void = { p in
                 for (i, op) in ops.enumerated() {
                     let name = op["tool"]?.string ?? ""
-                    guard let e = edits[name] else { throw EditError("Operation \(i + 1): \(name) is not an edit tool") }
+                    guard let e = self.edits[name] else { throw EditError("Operation \(i + 1): \(name) is not an edit tool") }
+                    let opArgs = Toolbox.substitute(op["args"] ?? [:], vars)
+                    let clipsBefore = Set(p.tracks.flatMap(\.clips).map(\.id))
+                    let fxBefore = Set(p.tracks.flatMap { t in t.effects.map(\.id) + t.clips.flatMap { $0.effects.map(\.id) } })
                     do {
-                        lines.append(try e.apply(&p, Args(op["args"])))
+                        self.installResolvers(p)
+                        lines.append(try e.apply(&p, Args(opArgs)))
                     } catch {
                         throw EditError("Operation \(i + 1) (\(name)) failed, nothing applied: \(error.localizedDescription)")
+                    }
+                    if let v = op["as"]?.string {
+                        let newClips = Set(p.tracks.flatMap(\.clips).map(\.id)).subtracting(clipsBefore)
+                        let newFx = Set(p.tracks.flatMap { t in t.effects.map(\.id) + t.clips.flatMap { $0.effects.map(\.id) } }).subtracting(fxBefore)
+                        guard let made = newClips.sorted().first ?? newFx.sorted().first else { throw EditError("Operation \(i + 1) created nothing to name \(v)") }
+                        vars[v] = made
+                        lines[lines.count - 1] += " [$\(v) = \(made)]"
                     }
                 }
                 try p.validate()
             }
-            return .text(lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + "\n" + footer(p))
+            if args.bool("dry_run", default: false) {
+                var p = before
+                try run(&p)
+                return .text("Dry run, nothing changed.\n" + lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before))
+            }
+            let p = try session.edit(label, run)
+            return .text(lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before) + "\n" + footer(p))
         })
+    }
+
+    /// Replaces "$name" in every string (and object key) with the id bound by an earlier operation.
+    static func substitute(_ j: JSON, _ vars: [String: String]) -> JSON {
+        guard !vars.isEmpty else { return j }
+        func sub(_ s: String) -> String {
+            var out = s
+            for (k, v) in vars.sorted(by: { $0.key.count > $1.key.count }) { out = out.replacingOccurrences(of: "$" + k, with: v) }
+            return out
+        }
+        switch j {
+        case .string(let s): return .string(sub(s))
+        case .array(let a): return .array(a.map { substitute($0, vars) })
+        case .object(let o): return .object(Dictionary(o.map { (sub($0.key), substitute($0.value, vars)) }, uniquingKeysWith: { a, _ in a }))
+        default: return j
+        }
     }
 
     /// Shortens text at a word boundary, with an ellipsis.
@@ -430,6 +450,7 @@ extension Toolbox {
         case .text: return "title “\(excerpt(c.text?.text ?? "", 28))”"
         case .solid: return "color clip"
         case .media: return c.name ?? c.mediaId.flatMap { p.mediaAsset($0)?.name } ?? "clip"
+        case .adjustment: return c.name ?? "adjustment layer"
         }
     }
 
@@ -442,12 +463,9 @@ extension Toolbox {
         let name = clipName(a.optString("clip_id"), p)
         let keys = Set(a.raw.keys).subtracting(["clip_id", "ripple"])
         if keys.contains("speed") { return "Change speed of \(name)" }
-        if !keys.isDisjoint(with: ["source_in", "source_out", "duration"]) { return "Trim \(name)" }
-        if !keys.isDisjoint(with: ["fade_in", "fade_out", "audio_fade_in", "audio_fade_out"]) { return "Fade \(name)" }
-        if !keys.isDisjoint(with: ["volume"]) { return "Change volume of \(name)" }
-        if !keys.isDisjoint(with: ["keyframes"]) { return "Animate \(name)" }
-        if !keys.isDisjoint(with: ["fit", "scale", "x", "y", "rotation", "crop", "opacity"]) { return "Reframe \(name)" }
-        if keys.contains("start") { return "Move \(name)" }
+        if !keys.isDisjoint(with: ["source_in", "source_out", "duration", "end"]) { return "Trim \(name)" }
+        if !keys.isDisjoint(with: ["start", "track"]) { return "Move \(name)" }
+        if keys.contains("text") { return "Reword \(name)" }
         if keys == ["name"] { return "Rename \(name)" }
         return "Restyle \(name)"
     }
@@ -466,33 +484,25 @@ extension Toolbox {
         guard let a = j?.array else { throw EditError("ranges must be an array of [start, end]") }
         return try a.map { r in
             if let pair = r.array, pair.count == 2 {
-                return TimeRange(try Args.parseTime(pair[0], name: "start"), try Args.parseTime(pair[1], name: "end"))
+                return TimeRange(try Args.parseSourceTime(pair[0], name: "start"), try Args.parseSourceTime(pair[1], name: "end"))
             }
             let o = Args(r)
-            return TimeRange(try o.time("start"), try o.time("end"))
+            return TimeRange(try o.sourceTime("start"), try o.sourceTime("end"))
         }
     }
 
-    static func applyTransform(_ c: inout Clip, _ args: Args) throws {
-        var t = c.transform
-        if let v = try args.enumValue("fit", FitMode.self) { t.fit = v }
-        if let v = args.optDouble("scale") { t.scale = v }
-        if let v = args.optDouble("x") { t.x = v }
-        if let v = args.optDouble("y") { t.y = v }
-        if let v = args.optDouble("rotation") { t.rotation = v }
-        if let v = args.optDouble("opacity") { t.opacity = v }
-        if let crop = args.raw["crop"]?.object {
-            let a = Args(raw: crop)
-            t.crop = Crop(left: a.optDouble("left") ?? 0, top: a.optDouble("top") ?? 0, right: a.optDouble("right") ?? 0, bottom: a.optDouble("bottom") ?? 0)
-        }
-        c.transform = t
-        if let v = try args.optTime("fade_in") { c.fadeIn = v }
-        if let v = try args.optTime("fade_out") { c.fadeOut = v }
-        if let ks = args.raw["keyframes"]?.array {
-            c.keyframes = try ks.map { k in
-                let a = Args(k)
-                return Keyframe(time: try a.time("time"), scale: a.optDouble("scale"), x: a.optDouble("x"), y: a.optDouble("y"), rotation: a.optDouble("rotation"), opacity: a.optDouble("opacity"), easing: try a.enumValue("easing", Easing.self) ?? .easeInOut)
-            }
+    /// Applies the `set` object of a tool call: {path: value}.
+    static func applySet(_ c: inout Clip, _ args: Args) throws {
+        guard let set = args.raw["set"]?.object else { return }
+        for (path, v) in set.sorted(by: { $0.key < $1.key }) { try c.set(path, try paramValue(v)) }
+    }
+
+    static func paramValue(_ j: JSON) throws -> ParamValue {
+        switch j {
+        case .number(let n): return .number(n)
+        case .bool(let b): return .bool(b)
+        case .string(let s): return .string(s)
+        default: throw EditError("Parameter values are numbers, booleans or strings; got \(j.encoded())")
         }
     }
 

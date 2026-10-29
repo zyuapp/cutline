@@ -26,6 +26,8 @@ public struct TimelineWord: Equatable, Sendable {
     public var clipId: String
     public var mediaId: String
     public var sourceStart: Seconds
+    /// Index in the media's transcript, so "<mediaId>.w<index>" is this word's anchor.
+    public var wordIndex: Int
 }
 
 extension Project {
@@ -35,12 +37,13 @@ extension Project {
         for track in tracks where !track.muted && (trackIds.isEmpty || trackIds.contains(track.id)) {
             for clip in track.clips where clip.kind == .media && clip.volume > 0.001 {
                 guard let mid = clip.mediaId, let tr = transcripts[mid] else { continue }
-                for w in tr.words {
+                let heard = clip.audioSourceRange, span = clip.audioRange
+                for (wi, w) in tr.words.enumerated() {
                     let mid = (w.start + w.end) / 2
-                    guard mid >= clip.sourceIn, mid < clip.sourceOut else { continue }
-                    let s = max(clip.start, clip.timelineTime(atSource: w.start))
-                    let e = min(clip.end, clip.timelineTime(atSource: w.end))
-                    out.append(TimelineWord(text: w.text, start: s, end: max(e, s + 0.05), clipId: clip.id, mediaId: tr.mediaId, sourceStart: w.start))
+                    guard mid >= heard.start, mid < heard.end else { continue }
+                    let s = max(span.start, clip.timelineTime(atSource: w.start))
+                    let e = min(span.end, clip.timelineTime(atSource: w.end))
+                    out.append(TimelineWord(text: w.text, start: s, end: max(e, s + 0.05), clipId: clip.id, mediaId: tr.mediaId, sourceStart: w.start, wordIndex: wi))
                 }
             }
         }
@@ -124,26 +127,19 @@ extension Project {
 }
 
 extension Clip {
-    /// Transform at a time relative to the clip start, with keyframes and fades applied.
+    /// Transform at a time relative to the clip start, with animation and fades applied.
     public func resolvedTransform(at local: Seconds) -> Transform {
         var t = transform
-        if !keyframes.isEmpty {
-            let ks = keyframes.sorted { $0.time < $1.time }
-            func value(_ path: KeyPath<Keyframe, Double?>, base: Double) -> Double {
-                let frames = ks.compactMap { k in k[keyPath: path].map { (k.time, $0, k.easing) } }
-                guard let first = frames.first else { return base }
-                if local <= first.0 { return first.1 }
-                for (a, b) in zip(frames, frames.dropFirst()) where local < b.0 {
-                    let p = b.2.apply((local - a.0) / max(b.0 - a.0, 1e-9))
-                    return a.1 + (b.1 - a.1) * p
-                }
-                return frames.last!.1
-            }
-            t.scale = value(\.scale, base: t.scale)
-            t.x = value(\.x, base: t.x)
-            t.y = value(\.y, base: t.y)
-            t.rotation = value(\.rotation, base: t.rotation)
-            t.opacity = value(\.opacity, base: t.opacity)
+        if !anim.isEmpty {
+            t.scale = number("transform.scale", at: local, default: t.scale)
+            t.x = number("transform.x", at: local, default: t.x)
+            t.y = number("transform.y", at: local, default: t.y)
+            t.rotation = number("transform.rotation", at: local, default: t.rotation)
+            t.opacity = number("transform.opacity", at: local, default: t.opacity)
+            t.crop.left = number("transform.crop.left", at: local, default: t.crop.left)
+            t.crop.top = number("transform.crop.top", at: local, default: t.crop.top)
+            t.crop.right = number("transform.crop.right", at: local, default: t.crop.right)
+            t.crop.bottom = number("transform.crop.bottom", at: local, default: t.crop.bottom)
         }
         var fade = 1.0
         if fadeIn > 0 { fade = min(fade, local / fadeIn) }

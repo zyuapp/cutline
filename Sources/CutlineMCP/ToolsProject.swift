@@ -56,11 +56,17 @@ extension Toolbox {
             return .text(msg + Describe.project(try b.loadProject(), bundle: b))
         })
 
-        add(Tool(name: "project_status", description: "Describe the open project: canvas, media and their analysis, every track and clip with timeline and source times, captions, open comments, and warnings such as gaps or flash frames. Call this before editing and whenever you are unsure of clip ids or times. detail=json returns the raw project.json.", schema: Schema.object([
+        add(Tool(name: "project_status", description: "Describe the open project: canvas, media and their analysis, every track and clip with timeline and source times, effects, animation, captions, open comments, and warnings such as gaps or flash frames. Call it before editing and whenever you are unsure of ids or times. target=<clip id> lists every parameter path of that clip with its value and animation keys. detail=json returns the raw project.json.", schema: Schema.object([
+            "target": Schema.string("A clip id, to list its parameters"),
             "detail": Schema.string("summary (default) or json", values: ["summary", "json"]),
         ])) { [unowned self] args in
             let b = try session.requireBundle()
             let p = try b.loadProject()
+            if let id = args.optString("target") {
+                guard let c = p.clip(id) else { throw EditError("No clip \(id)") }
+                if args.optString("detail") == "json" { return .text(String(data: try ProjectBundle.encoder.encode(c), encoding: .utf8) ?? "") }
+                return .text(Describe.clipParams(c, p))
+            }
             if args.optString("detail") == "json" {
                 return .text(String(data: try ProjectBundle.encoder.encode(p), encoding: .utf8) ?? "")
             }
@@ -72,64 +78,63 @@ extension Toolbox {
             return "Canvas is \(p.canvas.width)×\(p.canvas.height) @\(Describe.fmtFps(p.canvas.fps))fps"
         })
 
-        add(Tool(name: "history", description: "List recent edit history. Every edit is one entry; undo, redo and history_restore move between them.", schema: Schema.object([
-            "limit": Schema.integer("Entries to show, default 20"),
+        add(Tool(name: "history", description: "The edit history: list entries, undo or redo, jump to any entry, or diff two versions. Every edit is one entry. A new edit after undo discards the undone entries.", schema: Schema.object([
+            "action": Schema.string("list (default), undo, redo, restore, diff", values: ["list", "undo", "redo", "restore", "diff"]),
+            "steps": Schema.integer("For undo/redo, default 1"),
+            "id": Schema.string("For restore: the entry to jump to. For diff: the version to compare against the current one"),
+            "limit": Schema.integer("For list, default 20"),
         ])) { [unowned self] args in
-            let h = try session.requireBundle().loadHistory()
-            let limit = args.optInt("limit") ?? 20
-            let lines = h.entries.enumerated().suffix(limit).map { i, e in
-                (i == h.cursor ? "→ " : "  ") + "\(e.id)  \(e.label)  \(ISO8601DateFormatter().string(from: e.createdAt))"
-            }
-            return .text((lines + (h.canRedo ? ["(entries after → can be redone; a new edit discards them)"] : [])).joined(separator: "\n"))
-        })
-
-        add(Tool(name: "undo", description: "Undo the last edit(s).", schema: Schema.object(["steps": Schema.integer("How many edits to undo, default 1")])) { [unowned self] args in
             let b = try session.requireBundle()
-            var undone: [String] = []
-            var p = try b.loadProject()
-            for _ in 0..<max(1, args.optInt("steps") ?? 1) {
-                guard b.loadHistory().canUndo else { break }
-                let (proj, e) = try b.undo()
-                p = proj
-                undone.append(e.label)
+            switch args.optString("action") ?? "list" {
+            case "undo", "redo":
+                let undo = args.optString("action") == "undo"
+                var names: [String] = []
+                var p = try b.loadProject()
+                for _ in 0..<max(1, args.optInt("steps") ?? 1) {
+                    let h = b.loadHistory()
+                    guard undo ? h.canUndo : h.canRedo else { break }
+                    let (proj, e) = undo ? try b.undo() : try b.redo()
+                    p = proj
+                    names.append(e.label)
+                }
+                guard !names.isEmpty else { return .text(undo ? "Nothing to undo." : "Nothing to redo.") }
+                return .text((undo ? "Undid: " : "Redid: ") + names.joined(separator: ", ") + "\n" + footer(p))
+            case "restore":
+                let id = try args.string("id")
+                let p = try b.checkout(id)
+                return .text("Restored \(id)\n" + footer(p))
+            case "diff":
+                let id = try args.string("id")
+                let old = try b.snapshot(id)
+                let now = try b.loadProject()
+                let lines = now.changes(from: old)
+                return .text(lines.isEmpty ? "No differences from \(id)." : "Changes since \(id):\n" + lines.map { "  " + $0 }.joined(separator: "\n"))
+            default:
+                let h = b.loadHistory()
+                let limit = args.optInt("limit") ?? 20
+                let lines = h.entries.enumerated().suffix(limit).map { i, e in
+                    (i == h.cursor ? "→ " : "  ") + "\(e.id)  \(e.label)  \(ISO8601DateFormatter().string(from: e.createdAt))"
+                }
+                return .text((lines + (h.canRedo ? ["(entries after → can be redone; a new edit discards them)"] : [])).joined(separator: "\n"))
             }
-            guard !undone.isEmpty else { return .text("Nothing to undo.") }
-            return .text("Undid: " + undone.joined(separator: ", ") + "\n" + footer(p))
         })
 
-        add(Tool(name: "redo", description: "Redo edit(s) that were undone.", schema: Schema.object(["steps": Schema.integer("How many edits to redo, default 1")])) { [unowned self] args in
-            let b = try session.requireBundle()
-            var redone: [String] = []
-            var p = try b.loadProject()
-            for _ in 0..<max(1, args.optInt("steps") ?? 1) {
-                guard b.loadHistory().canRedo else { break }
-                let (proj, e) = try b.redo()
-                p = proj
-                redone.append(e.label)
-            }
-            guard !redone.isEmpty else { return .text("Nothing to redo.") }
-            return .text("Redid: " + redone.joined(separator: ", ") + "\n" + footer(p))
-        })
-
-        add(Tool(name: "history_restore", description: "Jump to any history entry by id (from history). Later entries stay available to redo until the next edit.", schema: Schema.object(["id": Schema.string("History entry id")], required: ["id"])) { [unowned self] args in
-            let p = try session.requireBundle().checkout(try args.string("id"))
-            return .text("Restored \(try args.string("id"))\n" + footer(p))
-        })
-
-        add(Tool(name: "preview_open", description: "Open the project in the Cutline preview app so the human can watch, scrub and leave comments.", schema: Schema.object([:])) { [unowned self] _ in
-            .text(try session.openPreview())
-        })
-
-        add(Tool(name: "preview_seek", description: "Move the human's preview playhead, optionally playing a range so they can review a specific edit.", schema: Schema.object([
-            "time": Schema.time("Timeline time to show"),
+        add(Tool(name: "preview_seek", description: "Control the human's preview: open the app, move the playhead, or play a range so they can review a specific edit.", schema: Schema.object([
+            "open": Schema.bool("Open (or bring forward) the preview app"),
+            "time": Schema.time("Timeline time or anchor to show"),
             "play": Schema.bool("Start playback, default false"),
             "end": Schema.time("Stop playback here; implies play"),
-        ], required: ["time"])) { [unowned self] args in
-            let t = try args.time("time")
-            var info: [String: Any] = ["action": "seek", "time": t, "play": args.bool("play", default: false) || args.has("end")]
-            if let end = try args.optTime("end") { info["end"] = end }
-            try session.sendPreview(info)
-            return .text("Preview seeking to \(Frames.timecode(t))" + (args.has("end") ? " and playing to \(Frames.timecode(try args.time("end")))" : ""))
+        ])) { [unowned self] args in
+            var lines: [String] = []
+            if args.bool("open", default: false) { lines.append(try session.openPreview()) }
+            if let t = try args.optTime("time") {
+                var info: [String: Any] = ["action": "seek", "time": t, "play": args.bool("play", default: false) || args.has("end")]
+                if let end = try args.optTime("end") { info["end"] = end }
+                try session.sendPreview(info)
+                lines.append("Preview at \(Frames.timecode(t))" + (args.has("end") ? ", playing to \(Frames.timecode(try args.time("end")))" : ""))
+            }
+            guard !lines.isEmpty else { throw EditError("Pass open:true and/or time") }
+            return .text(lines.joined(separator: "\n"))
         })
 
         add(Tool(name: "preview_state", description: "Where the human's preview playhead is and whether it is playing. Use it when the human says \"here\" or \"this part\".", schema: Schema.object([:])) { [unowned self] _ in

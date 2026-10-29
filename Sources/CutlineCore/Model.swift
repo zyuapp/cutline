@@ -5,6 +5,9 @@ import Foundation
 public typealias Seconds = Double
 
 public struct Project: Codable, Equatable, Sendable {
+    /// 2 added effects, blend modes, adjustment clips and animation of any parameter.
+    public static let currentFormat = 2
+
     public var formatVersion: Int
     public var name: String
     public var canvas: Canvas
@@ -13,9 +16,10 @@ public struct Project: Codable, Equatable, Sendable {
     public var tracks: [Track]
     public var captions: Captions
     public var markers: [Marker]
+    public var master: MasterAudio
 
     public init(name: String, canvas: Canvas = Canvas()) {
-        formatVersion = 1
+        formatVersion = Project.currentFormat
         self.name = name
         self.canvas = canvas
         media = []
@@ -25,6 +29,21 @@ public struct Project: Codable, Equatable, Sendable {
         ]
         captions = Captions()
         markers = []
+        master = MasterAudio()
+    }
+
+    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try c.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
+        name = try c.decode(String.self, forKey: .name)
+        canvas = try c.decode(Canvas.self, forKey: .canvas)
+        media = try c.decodeIfPresent([MediaAsset].self, forKey: .media) ?? []
+        tracks = try c.decodeIfPresent([Track].self, forKey: .tracks) ?? []
+        captions = try c.decodeIfPresent(Captions.self, forKey: .captions) ?? Captions()
+        markers = try c.decodeIfPresent([Marker].self, forKey: .markers) ?? []
+        master = try c.decodeIfPresent(MasterAudio.self, forKey: .master) ?? MasterAudio()
     }
 
     public var duration: Seconds {
@@ -114,17 +133,34 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var muted: Bool
     public var hidden: Bool
     public var volume: Double
+    /// Applied to the track's picture after each clip's own effects.
+    public var effects: [Effect]
     /// Sorted by start, never overlapping.
     public var clips: [Clip]
 
-    public init(id: String, kind: TrackKind, name: String, muted: Bool = false, hidden: Bool = false, volume: Double = 1, clips: [Clip] = []) {
+    public init(id: String, kind: TrackKind, name: String, muted: Bool = false, hidden: Bool = false, volume: Double = 1, effects: [Effect] = [], clips: [Clip] = []) {
         self.id = id
         self.kind = kind
         self.name = name
         self.muted = muted
         self.hidden = hidden
         self.volume = volume
+        self.effects = effects
         self.clips = clips
+    }
+
+    enum CodingKeys: String, CodingKey { case id, kind, name, muted, hidden, volume, effects, clips }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(TrackKind.self, forKey: .kind)
+        name = try c.decode(String.self, forKey: .name)
+        muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        hidden = try c.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 1
+        effects = try c.decodeIfPresent([Effect].self, forKey: .effects) ?? []
+        clips = try c.decodeIfPresent([Clip].self, forKey: .clips) ?? []
     }
 
     public var end: Seconds { clips.last?.end ?? 0 }
@@ -134,10 +170,17 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-public enum ClipKind: String, Codable, Sendable {
+public enum ClipKind: String, Codable, Sendable, CaseIterable {
     case media
     case text
     case solid
+    /// Has no picture of its own; its effects apply to everything composited below it.
+    case adjustment
+}
+
+public enum BlendMode: String, Codable, Sendable, Hashable, CaseIterable {
+    case normal, multiply, screen, overlay, softLight, hardLight, darken, lighten
+    case colorDodge, colorBurn, difference, exclusion, add, hue, saturation, color, luminosity
 }
 
 public struct Clip: Codable, Equatable, Sendable, Identifiable {
@@ -152,16 +195,24 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public var volume: Double
     public var audioFadeIn: Seconds
     public var audioFadeOut: Seconds
+    /// Split edits: audio starts this long before the picture (J cut); negative starts it later.
+    public var audioLead: Seconds
+    /// Audio continues this long after the picture ends (L cut); negative ends it earlier.
+    public var audioLag: Seconds
     /// Opacity fades of the picture.
     public var fadeIn: Seconds
     public var fadeOut: Seconds
     public var transform: Transform
-    /// Times relative to the clip start. When present they override `transform` values they set.
-    public var keyframes: [Keyframe]
+    public var blend: BlendMode
+    /// Applied in order, in the clip's own frame before it is placed on the canvas.
+    public var effects: [Effect]
+    /// Animated parameters by path, e.g. "transform.scale" or "fx.blur1.radius".
+    /// Key times are seconds from the clip start.
+    public var anim: [String: Curve]
     public var text: TextSpec?
     public var color: RGBA?
 
-    public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), keyframes: [Keyframe] = [], text: TextSpec? = nil, color: RGBA? = nil) {
+    public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), blend: BlendMode = .normal, effects: [Effect] = [], anim: [String: Curve] = [:], text: TextSpec? = nil, color: RGBA? = nil) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -173,12 +224,83 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         self.volume = volume
         self.audioFadeIn = audioFadeIn
         self.audioFadeOut = audioFadeOut
+        audioLead = 0
+        audioLag = 0
         self.fadeIn = fadeIn
         self.fadeOut = fadeOut
         self.transform = transform
-        self.keyframes = keyframes
+        self.blend = blend
+        self.effects = effects
+        self.anim = anim
         self.text = text
         self.color = color
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, name, mediaId, start, duration, sourceIn, speed, volume, audioFadeIn, audioFadeOut, audioLead, audioLag
+        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(ClipKind.self, forKey: .kind)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        mediaId = try c.decodeIfPresent(String.self, forKey: .mediaId)
+        start = try c.decode(Double.self, forKey: .start)
+        duration = try c.decode(Double.self, forKey: .duration)
+        sourceIn = try c.decodeIfPresent(Double.self, forKey: .sourceIn) ?? 0
+        speed = try c.decodeIfPresent(Double.self, forKey: .speed) ?? 1
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 1
+        audioFadeIn = try c.decodeIfPresent(Double.self, forKey: .audioFadeIn) ?? 0
+        audioFadeOut = try c.decodeIfPresent(Double.self, forKey: .audioFadeOut) ?? 0
+        audioLead = try c.decodeIfPresent(Double.self, forKey: .audioLead) ?? 0
+        audioLag = try c.decodeIfPresent(Double.self, forKey: .audioLag) ?? 0
+        fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
+        fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
+        transform = try c.decodeIfPresent(Transform.self, forKey: .transform) ?? Transform()
+        blend = try c.decodeIfPresent(BlendMode.self, forKey: .blend) ?? .normal
+        effects = try c.decodeIfPresent([Effect].self, forKey: .effects) ?? []
+        anim = try c.decodeIfPresent([String: Curve].self, forKey: .anim) ?? [:]
+        text = try c.decodeIfPresent(TextSpec.self, forKey: .text)
+        color = try c.decodeIfPresent(RGBA.self, forKey: .color)
+        // Format 1 stored transform keyframes as a list of partial transforms.
+        if let legacy = try c.decodeIfPresent([LegacyKeyframe].self, forKey: .keyframes), !legacy.isEmpty {
+            let sorted = legacy.sorted { $0.time < $1.time }
+            let fields: [(String, KeyPath<LegacyKeyframe, Double?>)] = [
+                ("transform.scale", \.scale), ("transform.x", \.x), ("transform.y", \.y),
+                ("transform.rotation", \.rotation), ("transform.opacity", \.opacity),
+            ]
+            for (path, kp) in fields {
+                let keys = sorted.compactMap { k in k[keyPath: kp].map { CurveKey(t: k.time, v: .number($0), ease: k.easing) } }
+                if !keys.isEmpty && anim[path] == nil { anim[path] = Curve(keys: keys) }
+            }
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(kind, forKey: .kind)
+        try c.encodeIfPresent(name, forKey: .name)
+        try c.encodeIfPresent(mediaId, forKey: .mediaId)
+        try c.encode(start, forKey: .start)
+        try c.encode(duration, forKey: .duration)
+        try c.encode(sourceIn, forKey: .sourceIn)
+        try c.encode(speed, forKey: .speed)
+        try c.encode(volume, forKey: .volume)
+        try c.encode(audioFadeIn, forKey: .audioFadeIn)
+        try c.encode(audioFadeOut, forKey: .audioFadeOut)
+        if audioLead != 0 { try c.encode(audioLead, forKey: .audioLead) }
+        if audioLag != 0 { try c.encode(audioLag, forKey: .audioLag) }
+        try c.encode(fadeIn, forKey: .fadeIn)
+        try c.encode(fadeOut, forKey: .fadeOut)
+        try c.encode(transform, forKey: .transform)
+        try c.encode(blend, forKey: .blend)
+        try c.encode(effects, forKey: .effects)
+        try c.encode(anim, forKey: .anim)
+        try c.encodeIfPresent(text, forKey: .text)
+        try c.encodeIfPresent(color, forKey: .color)
     }
 
     public var end: Seconds { start + duration }
@@ -191,9 +313,48 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public func timelineTime(atSource s: Seconds) -> Seconds {
         start + (s - sourceIn) / speed
     }
+
+    public func effect(_ id: String) -> Effect? { effects.first { $0.id == id } }
+
+    /// Where this clip's sound plays on the timeline, including split-edit lead and lag.
+    public var audioRange: TimeRange { TimeRange(start - audioLead, end + audioLag) }
+    /// The source range heard over `audioRange`.
+    public var audioSourceRange: TimeRange { TimeRange(sourceIn - audioLead * speed, sourceOut + audioLag * speed) }
 }
 
-public enum FitMode: String, Codable, Sendable, Hashable {
+public struct MasterAudio: Codable, Equatable, Sendable {
+    /// Gain applied to the whole mix, in decibels, before the master effects.
+    public var gainDb: Double
+    /// Audio effects on the whole mix, e.g. a limiter after loudness normalization.
+    public var effects: [Effect]
+
+    public init(gainDb: Double = 0, effects: [Effect] = []) {
+        self.gainDb = gainDb
+        self.effects = effects
+    }
+
+    enum CodingKeys: String, CodingKey { case gainDb, effects }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        gainDb = try c.decodeIfPresent(Double.self, forKey: .gainDb) ?? 0
+        effects = try c.decodeIfPresent([Effect].self, forKey: .effects) ?? []
+    }
+
+    public var gain: Double { pow(10, gainDb / 20) }
+}
+
+struct LegacyKeyframe: Decodable {
+    var time: Seconds
+    var scale: Double?
+    var x: Double?
+    var y: Double?
+    var rotation: Double?
+    var opacity: Double?
+    var easing: Easing
+}
+
+public enum FitMode: String, Codable, Sendable, Hashable, CaseIterable {
     /// Letterbox inside the canvas.
     case fit
     /// Cover the canvas, cropping overflow.
@@ -242,11 +403,19 @@ public struct Transform: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-public enum Easing: String, Codable, Sendable {
+public enum Easing: String, Codable, Sendable, Hashable, CaseIterable {
     case linear
     case easeIn
     case easeOut
     case easeInOut
+    /// Holds the previous value, then jumps.
+    case hold
+    /// Overshoots slightly, then settles.
+    case back
+    /// Springs past the target and oscillates to rest.
+    case elastic
+    /// Drops in and bounces.
+    case bounce
 
     public func apply(_ t: Double) -> Double {
         let t = min(max(t, 0), 1)
@@ -255,32 +424,26 @@ public enum Easing: String, Codable, Sendable {
         case .easeIn: return t * t * t
         case .easeOut: return 1 - pow(1 - t, 3)
         case .easeInOut: return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
+        case .hold: return t < 1 ? 0 : 1
+        case .back:
+            let c1 = 1.70158, c3 = c1 + 1
+            return 1 + c3 * pow(t - 1, 3) + c1 * pow(t - 1, 2)
+        case .elastic:
+            if t == 0 || t == 1 { return t }
+            return pow(2, -10 * t) * sin((t * 10 - 0.75) * (2 * .pi / 3)) + 1
+        case .bounce:
+            let n1 = 7.5625, d1 = 2.75
+            var x = t
+            if x < 1 / d1 { return n1 * x * x }
+            if x < 2 / d1 { x -= 1.5 / d1; return n1 * x * x + 0.75 }
+            if x < 2.5 / d1 { x -= 2.25 / d1; return n1 * x * x + 0.9375 }
+            x -= 2.625 / d1
+            return n1 * x * x + 0.984375
         }
     }
 }
 
-public struct Keyframe: Codable, Equatable, Hashable, Sendable {
-    public var time: Seconds
-    public var scale: Double?
-    public var x: Double?
-    public var y: Double?
-    public var rotation: Double?
-    public var opacity: Double?
-    /// Easing of the segment that ends at this keyframe.
-    public var easing: Easing
-
-    public init(time: Seconds, scale: Double? = nil, x: Double? = nil, y: Double? = nil, rotation: Double? = nil, opacity: Double? = nil, easing: Easing = .easeInOut) {
-        self.time = time
-        self.scale = scale
-        self.x = x
-        self.y = y
-        self.rotation = rotation
-        self.opacity = opacity
-        self.easing = easing
-    }
-}
-
-public enum TextAlign: String, Codable, Sendable, Hashable {
+public enum TextAlign: String, Codable, Sendable, Hashable, CaseIterable {
     case left, center, right
 }
 

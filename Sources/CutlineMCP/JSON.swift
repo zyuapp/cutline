@@ -108,6 +108,11 @@ public struct Args {
         return try Args.parseTime(v, name: k)
     }
 
+    /// Resolves anchors such as "talk.w12" or "clip_x.end" in timeline time; set per tool call.
+    nonisolated(unsafe) static var timelineResolver: ((String) throws -> Seconds)?
+    /// Resolves word anchors to source time, for arguments that are positions in a media file.
+    nonisolated(unsafe) static var sourceResolver: ((String) throws -> Seconds)?
+
     static func parseTime(_ v: JSON, name: String) throws -> Seconds {
         if case .number(let n) = v { return n }
         if let s = v.string {
@@ -116,8 +121,28 @@ public struct Args {
             if !parts.isEmpty, parts.allSatisfy({ $0 != nil }) {
                 return parts.reduce(0.0) { $0 * 60 + $1! }
             }
+            if let r = timelineResolver { return try r(s) }
         }
-        throw EditError("'\(name)' must be seconds, got \(v.encoded())")
+        throw EditError("'\(name)' must be seconds or an anchor, got \(v.encoded())")
+    }
+
+    static func parseSourceTime(_ v: JSON, name: String) throws -> Seconds {
+        if let s = v.string, Double(s) == nil, !s.contains(":"), let r = sourceResolver { return try r(s) }
+        let saved = timelineResolver
+        timelineResolver = nil
+        defer { timelineResolver = saved }
+        return try parseTime(v, name: name)
+    }
+
+    /// A position in a media file: seconds, or a word anchor like "talk.w12.end".
+    public func optSourceTime(_ k: String) throws -> Seconds? {
+        guard let v = raw[k], !v.isNull else { return nil }
+        return try Args.parseSourceTime(v, name: k)
+    }
+
+    public func sourceTime(_ k: String) throws -> Seconds {
+        guard let t = try optSourceTime(k) else { throw EditError("Missing source time '\(k)'") }
+        return t
     }
 
     public func double(_ k: String) throws -> Double {

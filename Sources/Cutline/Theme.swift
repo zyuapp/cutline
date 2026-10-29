@@ -39,6 +39,7 @@ enum Theme {
         static let title = NSColor(hex: 0x8C8478)
         static let caption = NSColor(hex: 0x7E77A0)
         static let solid = NSColor(hex: 0x6B6F78)
+        static let adjustment = NSColor(hex: 0x9AA3B5)
     }
 
     static func timecode(_ t: Double, fps: Double) -> String {

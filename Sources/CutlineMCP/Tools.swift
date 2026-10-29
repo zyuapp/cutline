@@ -47,6 +47,9 @@ final class Toolbox {
         registerProjectTools()
         registerMediaTools()
         registerEditTools()
+        registerLookTools()
+        registerAudioTools()
+        registerBatchTool()
         registerReviewTools()
     }
 
@@ -57,11 +60,45 @@ final class Toolbox {
 
     func addEdit(_ e: EditTool) {
         edits[e.name] = e
-        add(Tool(name: e.name, description: e.description, schema: e.schema) { [unowned self] args in
+        add(Tool(name: e.name, description: e.description, schema: Toolbox.withDryRun(e.schema)) { [unowned self] args in
+            let before = try session.project()
+            if args.bool("dry_run", default: false) {
+                var p = before
+                let summary = try e.apply(&p, args)
+                try p.validate()
+                return .text("Dry run, nothing changed.\n" + summary + Toolbox.changesText(p, before))
+            }
             var summary = ""
-            let p = try session.edit(e.label(args, try session.project())) { summary = try e.apply(&$0, args) }
-            return .text(summary + "\n" + self.footer(p))
+            let p = try session.edit(e.label(args, before)) { summary = try e.apply(&$0, args) }
+            return .text(summary + Toolbox.changesText(p, before) + "\n" + self.footer(p))
         })
+    }
+
+    static func withDryRun(_ schema: JSON) -> JSON {
+        guard case .object(var o) = schema, case .object(var props)? = o["properties"] else { return schema }
+        props["dry_run"] = Schema.bool("Report what would change without applying it")
+        o["properties"] = .object(props)
+        return .object(o)
+    }
+
+    /// The structural diff of an edit, capped so responses stay small.
+    static func changesText(_ p: Project, _ before: Project) -> String {
+        let lines = p.changes(from: before)
+        guard !lines.isEmpty else { return "\nNo changes." }
+        let shown = lines.prefix(14).map { "  " + $0 }
+        return "\nChanges:\n" + shown.joined(separator: "\n") + (lines.count > 14 ? "\n  …and \(lines.count - 14) more" : "")
+    }
+
+    /// Lets time arguments use anchors ("talk.w12", "clip_x.end", "marker:Intro") for this project state.
+    func installResolvers(_ p: Project?) {
+        guard let p, let b = session.bundle else {
+            Args.timelineResolver = nil
+            Args.sourceResolver = nil
+            return
+        }
+        let transcripts = b.transcripts(for: p)
+        Args.timelineResolver = { try p.resolveTime($0, transcripts: transcripts) }
+        Args.sourceResolver = { try p.resolveSourceTime($0, transcripts: transcripts) }
     }
 
     var definitions: [JSON] { order.compactMap { tools[$0]?.definition } }
@@ -73,6 +110,7 @@ final class Toolbox {
             return r
         }
         do {
+            installResolvers(try? session.project())
             return try await tool.run(Args(args))
         } catch {
             var r = ToolResult.text("Error: \(error.localizedDescription)")
@@ -117,11 +155,15 @@ enum Describe {
             if t.muted { flags.append("muted") }
             if t.hidden { flags.append("hidden") }
             if t.volume != 1 { flags.append("vol \(fmt2(t.volume))") }
-            lines.append("  \(t.id) \(t.kind.rawValue) \"\(t.name)\"\(flags.isEmpty ? "" : " [" + flags.joined(separator: ", ") + "]"): \(t.clips.count) clips")
+            let fx = t.effects.isEmpty ? "" : " fx " + t.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ")
+            lines.append("  \(t.id) \(t.kind.rawValue) \"\(t.name)\"\(flags.isEmpty ? "" : " [" + flags.joined(separator: ", ") + "]"): \(t.clips.count) clips\(fx)")
             for c in t.clips { lines.append("    " + clip(c, p)) }
         }
         lines.append("")
         let cs = p.captions
+        if p.master.gainDb != 0 || !p.master.effects.isEmpty {
+            lines.append("Master: gain \(fmt1(p.master.gainDb)) dB" + (p.master.effects.isEmpty ? "" : ", fx " + p.master.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ")))
+        }
         lines.append("Captions: " + (cs.enabled ? "on, \(cs.style.animation.rawValue), size \(fmt2(cs.style.size)), y \(fmt2(cs.style.y)), \(cs.style.maxWordsPerLine) words/line" : "off"))
         if !p.markers.isEmpty { lines.append("Markers: " + p.markers.map { "\(fmt2($0.time)) \($0.label)" }.joined(separator: ", ")) }
         let open = bundle.loadComments().comments.filter { $0.status == .open }
@@ -143,12 +185,15 @@ enum Describe {
             if let m = c.mediaId.flatMap(p.mediaAsset), !m.isImage { s += " [src \(fmt(c.sourceIn))–\(fmt(c.sourceOut))]" }
         case .text: s += "text \"\(c.text?.text.prefix(40) ?? "")\""
         case .solid: s += "solid \(c.color?.hex ?? "")"
+        case .adjustment: s += "adjustment layer"
         }
         var extra: [String] = []
         if c.speed != 1 { extra.append("speed \(fmt2(c.speed))") }
         if c.volume != 1 { extra.append("vol \(fmt2(c.volume))") }
         if c.fadeIn > 0 || c.fadeOut > 0 { extra.append("fade \(fmt2(c.fadeIn))/\(fmt2(c.fadeOut))") }
         if c.audioFadeIn > 0 || c.audioFadeOut > 0 { extra.append("audio fade \(fmt2(c.audioFadeIn))/\(fmt2(c.audioFadeOut))") }
+        if c.audioLead != 0 { extra.append("audio leads \(fmt2(c.audioLead))s") }
+        if c.audioLag != 0 { extra.append("audio lags \(fmt2(c.audioLag))s") }
         let t = c.transform
         if t != Transform() {
             var parts: [String] = []
@@ -160,8 +205,27 @@ enum Describe {
             if !t.crop.isEmpty { parts.append("crop") }
             extra.append(parts.joined(separator: " "))
         }
-        if !c.keyframes.isEmpty { extra.append("\(c.keyframes.count) keyframes") }
+        if c.blend != .normal { extra.append("blend \(c.blend.rawValue)") }
+        if !c.effects.isEmpty { extra.append("fx " + c.effects.map { $0.enabled ? $0.id : "\($0.id)(off)" }.joined(separator: ",")) }
+        if !c.anim.isEmpty { extra.append("animates " + c.anim.keys.sorted().joined(separator: ",")) }
         return s + (extra.isEmpty ? "" : "  (" + extra.joined(separator: ", ") + ")")
+    }
+
+    /// Every parameter of one clip, for project_status with a target.
+    static func clipParams(_ c: Clip, _ p: Project) -> String {
+        var lines = ["\(clip(c, p))", "Parameters (set with param_set; animated values show their keys):"]
+        for (path, value, keys) in c.parameterTree() {
+            var line = "  \(path) = \(value)"
+            if keys > 0, let curve = c.anim[path] {
+                line += "  animated: " + curve.keys.prefix(8).map { "\(fmt2($0.t))s→\($0.v)\($0.ease == .easeInOut ? "" : " " + $0.ease.rawValue)" }.joined(separator: ", ")
+                if curve.keys.count > 8 { line += " …(\(curve.keys.count) keys)" }
+            }
+            lines.append(line)
+        }
+        if c.effects.isEmpty { lines.append("Effects: none (effect_add to add; catalog lists types)") }
+        else { lines.append("Effects, applied in order: " + c.effects.map { "\($0.id) \($0.type)\($0.enabled ? "" : " (off)")" }.joined(separator: " → ")) }
+        lines.append("Key times are seconds from the clip start (\(fmt2(c.start)) on the timeline).")
+        return lines.joined(separator: "\n")
     }
 
     static func warnings(_ p: Project) -> [String] {
@@ -189,12 +253,22 @@ enum Describe {
     }
 
     /// Sentences from words, breaking on punctuation and long gaps.
-    static func sentences<W>(_ words: [W], text: (W) -> String, start: (W) -> Seconds, end: (W) -> Seconds) -> [(Seconds, Seconds, String, Seconds?)] {
-        var out: [(Seconds, Seconds, String, Seconds?)] = []
+    struct Sentence<W> {
+        var start: Seconds
+        var end: Seconds
+        var text: String
+        var pauseAfter: Seconds?
+        var first: W
+        var last: W
+    }
+
+    /// Sentences from words, breaking on punctuation and long gaps.
+    static func sentences<W>(_ words: [W], text: (W) -> String, start: (W) -> Seconds, end: (W) -> Seconds) -> [Sentence<W>] {
+        var out: [Sentence<W>] = []
         var cur: [W] = []
         func flush(gapAfter: Seconds?) {
             guard let f = cur.first, let l = cur.last else { return }
-            out.append((start(f), end(l), cur.map(text).joined(separator: " "), gapAfter))
+            out.append(Sentence(start: start(f), end: end(l), text: cur.map(text).joined(separator: " "), pauseAfter: gapAfter, first: f, last: l))
             cur = []
         }
         for (i, w) in words.enumerated() {

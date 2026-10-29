@@ -110,9 +110,9 @@ private func mediaClip(_ media: String, start: Seconds, sourceIn: Seconds, durat
     #expect(segs[1].words.last?.text == "CUTLINE.")
 }
 
-@Test func keyframesInterpolate() {
+@Test func animationInterpolates() throws {
     var c = Clip(id: "c", kind: .solid, start: 0, duration: 4, fadeIn: 1)
-    c.keyframes = [Keyframe(time: 0, scale: 1, easing: .linear), Keyframe(time: 2, scale: 2, easing: .linear)]
+    try c.animate("transform.scale", keys: [CurveKey(t: 0, v: .number(1), ease: .linear), CurveKey(t: 2, v: .number(2), ease: .linear)])
     let mid = c.resolvedTransform(at: 1)
     #expect(abs(mid.scale - 1.5) < 1e-9)
     #expect(abs(mid.opacity - 1) < 1e-9)

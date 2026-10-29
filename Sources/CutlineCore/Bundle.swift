@@ -74,8 +74,11 @@ public final class ProjectBundle: @unchecked Sendable {
 
     // MARK: Project and history
 
+    /// Older formats decode with defaults for new fields; the next commit writes the current format.
     public func loadProject() throws -> Project {
-        try read(Project.self, from: projectURL)
+        var p = try read(Project.self, from: projectURL)
+        if p.formatVersion < Project.currentFormat { p.formatVersion = Project.currentFormat }
+        return p
     }
 
     public func loadHistory() -> History {

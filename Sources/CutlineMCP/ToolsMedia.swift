@@ -84,16 +84,16 @@ extension Toolbox {
             let id = try args.string("media_id")
             guard let t = b.transcript(id) else { throw EditError("No transcript for \(id). Call media_analyze.") }
             let lo = try args.optTime("start") ?? 0, hi = try args.optTime("end") ?? .infinity
-            let words = t.words.filter { $0.end > lo && $0.start < hi }
+            let words = t.words.enumerated().filter { $0.element.end > lo && $0.element.start < hi }
             guard !words.isEmpty else { return .text("No speech in that range.") }
             if args.bool("words", default: false) {
-                return .text(words.map { "\(fmt2($0.start))–\(fmt2($0.end)) \($0.text)\($0.isFiller ? "  (filler)" : "")" }.joined(separator: "\n"))
+                return .text(words.map { "w\($0.offset) \(fmt2($0.element.start))–\(fmt2($0.element.end)) \($0.element.text)\($0.element.isFiller ? "  (filler)" : "")" }.joined(separator: "\n"))
             }
-            let lines = Describe.sentences(words, text: { $0.isFiller ? "*\($0.text)*" : $0.text }, start: \.start, end: \.end).map { s in
-                "[\(fmt2(s.0))–\(fmt2(s.1))] \(s.2)" + (s.3.map { "   (pause \(fmt1($0))s)" } ?? "")
+            let lines = Describe.sentences(words, text: { $0.element.isFiller ? "*\($0.element.text)*" : $0.element.text }, start: \.element.start, end: \.element.end).map { s in
+                "[w\(s.first.offset)–w\(s.last.offset)  \(fmt2(s.start))–\(fmt2(s.end))] \(s.text)" + (s.pauseAfter.map { "   (pause \(fmt1($0))s)" } ?? "")
             }
             let media = try session.project().mediaAsset(id)
-            return .text("\(id) transcript (source time, \(fmt2(media?.duration ?? 0))s long):\n" + lines.joined(separator: "\n"))
+            return .text("\(id) transcript (source time, \(fmt2(media?.duration ?? 0))s long). Word ids work as anchors, e.g. \"\(id).w\(words[0].offset)\" or \"\(id).w\(words[0].offset).end\":\n" + lines.joined(separator: "\n"))
         })
 
         add(Tool(name: "media_frames", description: "Look at source footage: returns a labeled contact sheet of frames from one media file (source time). Use it to pick b-roll, find shots, or check framing before editing.", schema: Schema.object([
@@ -160,7 +160,7 @@ extension Toolbox {
                 guard let first = group.first, let c = p.clip(first.clipId) else { return }
                 lines.append("── \(c.id) \(fmt2(c.start))–\(fmt2(c.end)) (\(c.mediaId ?? "") src \(fmt2(c.sourceIn))–\(fmt2(c.sourceOut)))")
                 for s in Describe.sentences(group, text: { Word(text: $0.text, start: 0, end: 0).isFiller ? "*\($0.text)*" : $0.text }, start: \.start, end: \.end) {
-                    lines.append("  [\(fmt2(s.0))–\(fmt2(s.1))] \(s.2)" + (s.3.map { "   (pause \(fmt1($0))s)" } ?? ""))
+                    lines.append("  [\(fmt2(s.start))–\(fmt2(s.end)) \(s.first.mediaId).w\(s.first.wordIndex)–w\(s.last.wordIndex)] \(s.text)" + (s.pauseAfter.map { "   (pause \(fmt1($0))s)" } ?? ""))
                 }
                 group = []
             }

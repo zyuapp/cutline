@@ -58,12 +58,24 @@ final class Session {
         return p
     }
 
+    func stems() throws -> AudioStems {
+        AudioStems(directory: try requireBundle().cacheURL.appendingPathComponent("stems", isDirectory: true))
+    }
+
+    /// The current timeline with every audio-effect stem rendered, as export will hear it.
     func timeline() async throws -> BuiltTimeline {
         let b = try requireBundle()
         let p = try b.loadProject()
+        return try await timeline(for: p)
+    }
+
+    func timeline(for p: Project) async throws -> BuiltTimeline {
+        let b = try requireBundle()
         let transcripts = b.transcripts(for: p)
-        if let built, built.project == p, built.transcripts == transcripts.count { return built.timeline }
-        let t = try await TimelineBuilder.build(p, transcripts: transcripts, library: library)
+        if let built, built.project == p, built.transcripts == transcripts.count, built.timeline.missingStems.isEmpty { return built.timeline }
+        let stems = try stems()
+        try await stems.renderMissing(p, transcripts: transcripts, library: library)
+        let t = try await TimelineBuilder.build(p, transcripts: transcripts, library: library, stems: stems)
         built = (p, transcripts.count, t)
         return t
     }

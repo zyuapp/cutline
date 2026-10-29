@@ -30,14 +30,16 @@ Claude creates a `.cutline` project and opens it in the preview window.
 
 | Area | Tools |
 | --- | --- |
-| Project | `project_create`, `project_open`, `project_status`, `canvas_set` |
-| Media | `media_import`, `media_analyze`, `media_transcript`, `media_frames`, `media_remove` |
-| Cutting | `assemble`, `cut_silences`, `source_cut`, `range_delete`, `clip_split`, `clip_delete` |
-| Layers | `clip_add`, `clip_update`, `clip_move`, `text_add`, `track_add`, `track_update` |
-| Look and sound | transforms, keyframes, fades, speed, volume, `captions_set` presets (karaoke, bold, clean, reveal, minimal) |
+| Project | `project_create`, `project_open`, `project_status` (whole project, or every parameter of one clip), `canvas_set` |
+| Media | `media_import`, `media_analyze`, `media_transcript` (word ids), `media_frames`, `media_remove` |
+| Structure | `assemble`, `cut_silences`, `source_cut`, `range_delete`, `clip_add` (media, color, adjustment layer), `text_add`, `clip_update`, `clip_split`, `clip_delete`, `track_add`, `track_update`, `markers` |
+| Look and sound | `param_set` (set or animate any parameter by path), `effect_add` (effect stacks on clips, tracks and adjustment layers), `captions_set` |
+| Discovery | `catalog` (effects, parameters, blend modes, eases, anchors) |
 | Review | `timeline_frames`, `timeline_transcript`, `comments_list`, `comment_reply`, `comment_add`, `preview_seek`, `preview_state` |
-| History | `history`, `undo`, `redo`, `history_restore`, `batch` |
+| History | `history` (list, undo, redo, restore, diff), `batch` (one undo step, named results) |
 | Output | `export` (HEVC, H.264, ProRes) |
+
+Every parameter has a path, such as `transform.scale`, `audio.volume`, `text.color` or `fx.blur1.radius`, and any number or color can be animated with eased keyframes. Times can be anchors that survive later edits, such as a transcript word (`interview.w42`), a clip edge (`clip_ab12cd.end-0.5`) or a marker (`marker:Intro`). Every edit takes `dry_run` to preview its changes.
 
 ## Project format
 

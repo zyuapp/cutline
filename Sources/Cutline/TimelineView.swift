@@ -363,7 +363,9 @@ final class TimelineCanvas: NSView {
             case .titles(let t), .overlay(let t), .main(let t):
                 name = t.name
                 detail = t.hidden ? "Hidden" : t.id
-                if case .titles = lane.kind { symbol = "textformat" } else { symbol = "film" }
+                if case .titles = lane.kind {
+                    symbol = t.clips.allSatisfy { $0.kind == .adjustment } ? "slider.horizontal.3" : "textformat"
+                } else { symbol = "film" }
                 if t.hidden { symbol = "eye.slash" }
             }
             let iconX: CGFloat = 20
@@ -406,6 +408,7 @@ final class TimelineCanvas: NSView {
             case .media: isPicture ? (isMain ? Theme.NS.video : Theme.NS.overlay) : Theme.NS.audio
             case .text: Theme.NS.title
             case .solid: clip.color.map { NSColor(srgbRed: $0.r, green: $0.g, blue: $0.b, alpha: 1) } ?? Theme.NS.solid
+            case .adjustment: Theme.NS.adjustment
             }
             let dim: CGFloat = track.hidden || (track.muted && track.kind == .audio) ? 0.35 : 1
             ctx.saveGState()
@@ -446,6 +449,20 @@ final class TimelineCanvas: NSView {
             case .solid:
                 base.withAlphaComponent(0.8).setFill()
                 rect.fill()
+            case .adjustment:
+                base.withAlphaComponent(0.14).setFill()
+                rect.fill()
+                // Diagonal hatching: this layer changes what is below it rather than adding a picture.
+                base.withAlphaComponent(0.22).setStroke()
+                let hatch = NSBezierPath()
+                var hx = rect.minX - rect.height
+                while hx < rect.maxX {
+                    hatch.move(to: CGPoint(x: hx, y: rect.maxY))
+                    hatch.line(to: CGPoint(x: hx + rect.height, y: rect.minY))
+                    hx += 7
+                }
+                hatch.lineWidth = 1
+                hatch.stroke()
             }
             drawFades(clip, rect: rect, ctx: ctx)
             if glow > 0, changed.contains(clip.id) {
@@ -497,6 +514,11 @@ final class TimelineCanvas: NSView {
             }
         case .text: label = clip.text?.text.replacingOccurrences(of: "\n", with: " ") ?? "Title"
         case .solid: label = clip.name ?? "Color"
+        case .adjustment: label = clip.name ?? "Adjustment"
+        }
+        if !clip.effects.isEmpty {
+            let names = clip.effects.filter(\.enabled).map { EffectCatalog.shortName($0.type) }
+            if !names.isEmpty { label += "  ·  " + names.joined(separator: ", ") }
         }
         if clip.speed != 1 { label += String(format: "  %g×", (clip.speed * 100).rounded() / 100) }
         let para = NSMutableParagraphStyle()
@@ -588,11 +610,15 @@ final class TimelineCanvas: NSView {
         guard !a.levels.isEmpty, rect.width > 2 else { return }
         let minX = max(rect.minX, headerW), maxX = min(rect.maxX, bounds.width)
         guard maxX > minX else { return }
-        let g = gain <= 0 ? 0 : 1 + 20 * log10(max(gain, 0.01)) / 60
+        let animated = clip.anim["audio.volume"] != nil
+        let staticGain = gain
         let step: CGFloat = 2
         var heights: [CGFloat] = []
         var x = minX
         while x <= maxX {
+            // Follow volume automation such as ducking, so the human can see it.
+            let gainHere = animated ? staticGain / max(clip.volume, 1e-6) * clip.number("audio.volume", at: timeFor(x) - clip.start, default: clip.volume) : staticGain
+            let g = gainHere <= 0 ? 0 : 1 + 20 * log10(max(gainHere, 0.01)) / 60
             let t0 = clip.sourceTime(atTimeline: timeFor(x)), t1 = clip.sourceTime(atTimeline: timeFor(x + step))
             let i0 = max(0, Int(t0 * a.levelRate)), i1 = min(a.levels.count, max(i0 + 1, Int(t1 * a.levelRate)))
             var peak: Float = -80
