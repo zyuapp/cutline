@@ -23,6 +23,7 @@ extension Toolbox {
                 switch target {
                 case .clip(let id):
                     guard let loc = p.locateClip(id) else { continue }
+                    if args.optString("type") == "distort.stabilize", p.tracks[loc.track].clips[loc.clip].kind != .media { throw EditError("Stabilize works on video clips") }
                     var c = p.tracks[loc.track].clips[loc.clip]
                     lines.append(try Toolbox.applyParams(&c, args, canvas: p.canvas))
                     p.tracks[loc.track].clips[loc.clip] = c

@@ -224,6 +224,8 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public var color: RGBA?
     /// Plays the source range backwards.
     public var reverse: Bool = false
+    /// How slowed-down footage fills in frames: nil repeats frames, "blend" mixes neighbours, "flow" uses optical flow.
+    public var interpolate: String?
 
     public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), blend: BlendMode = .normal, effects: [Effect] = [], anim: [String: Curve] = [:], text: TextSpec? = nil, color: RGBA? = nil) {
         self.id = id
@@ -251,7 +253,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, mediaId, start, duration, sourceIn, speed, volume, audioFadeIn, audioFadeOut, audioLead, audioLag
-        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse
+        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate
     }
 
     public init(from decoder: Decoder) throws {
@@ -269,6 +271,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         audioFadeOut = try c.decodeIfPresent(Double.self, forKey: .audioFadeOut) ?? 0
         audioLead = try c.decodeIfPresent(Double.self, forKey: .audioLead) ?? 0
         reverse = try c.decodeIfPresent(Bool.self, forKey: .reverse) ?? false
+        interpolate = try c.decodeIfPresent(String.self, forKey: .interpolate)
         audioLag = try c.decodeIfPresent(Double.self, forKey: .audioLag) ?? 0
         fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
         fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
@@ -316,6 +319,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(text, forKey: .text)
         try c.encodeIfPresent(color, forKey: .color)
         if reverse { try c.encode(reverse, forKey: .reverse) }
+        try c.encodeIfPresent(interpolate, forKey: .interpolate)
     }
 
     public var end: Seconds { start + duration }

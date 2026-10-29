@@ -129,7 +129,12 @@ extension Toolbox {
     }
 
     static func objectTrack(_ id: String, _ b: ProjectBundle, _ p: Project) -> (mediaId: String, samples: [(t: Seconds, box: NormRect)])? {
-        nil
+        for m in p.media {
+            if let t = (b.analysis([ObjectTrack].self, m.id, "tracks") ?? []).first(where: { $0.id == id }) {
+                return (t.mediaId, t.samples.filter { $0.confidence >= ObjectTrack.lostConfidence }.map { ($0.t, $0.box) })
+            }
+        }
+        return nil
     }
 
     /// Where a box in a clip's source frame lands on the canvas, in canvas fractions (top-left origin).

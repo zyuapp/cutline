@@ -55,6 +55,7 @@ final class Toolbox {
         registerPatchTool()
         registerTemplateTool()
         registerNestTool()
+        registerTrackTool()
         registerAnalysisTools()
         registerExportTools()
         registerAudioTools()
@@ -80,7 +81,9 @@ final class Toolbox {
             }
             var summary = ""
             let p = try session.edit(e.label(args, before)) { summary = try e.apply(&$0, args) }
-            return .text(summary + Toolbox.changesText(p, before) + self.newIssues(p, before) + "\n" + self.footer(p))
+            let analyzed = try await self.session.analyzeMotion(p)
+            if !analyzed.isEmpty { try? self.session.sendPreview(["action": "rebuild"]) }
+            return .text(summary + Toolbox.changesText(p, before) + self.newIssues(p, before) + (analyzed.isEmpty ? "" : "\nAnalyzed camera motion of " + analyzed.joined(separator: ", ")) + "\n" + self.footer(p))
         })
     }
 

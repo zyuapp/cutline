@@ -128,7 +128,21 @@ public enum TimelineBuilder {
                         videoLanes.append((t, -.infinity))
                         lane = videoLanes.count - 1
                     }
-                    if let lane {
+                    let smooth = clip.interpolate.flatMap(RetimeProxy.Interpolation.init(rawValue:))
+                    if let lane, let smooth, clip.isRetimed || clip.speed < 0.99 {
+                        // Slowed footage plays a pre-rendered copy with in-between frames, upright, one frame per output frame.
+                        let made = try await RetimeProxy.url(for: media, clip: clip, head: head, tail: tail, fps: project.canvas.fps, maxSize: CGSize(width: project.canvas.width, height: project.canvas.height), interpolation: smooth)
+                        let proxy = AVURLAsset(url: made.url)
+                        proxies.append(proxy)
+                        if let pv = try await proxy.loadTracks(withMediaType: .video).first {
+                            let total = clip.duration + head + tail
+                            let range = CMTimeRange(start: .zero, duration: time(total))
+                            try insert(range.intersection(try await pv.load(.timeRange)), of: pv, into: videoLanes[lane].track, at: time(clip.start - head), sourceDuration: time(total), target: time(total))
+                            orientations[clip.id] = .up
+                        }
+                        videoLanes[lane].end = clip.end + tail
+                        trackIDs[clip.id] = videoLanes[lane].track.trackID
+                    } else if let lane {
                         try insertPieces(clip, from: -head, to: clip.duration + tail, base: base, fps: project.canvas.fps, source: v, available: vr, into: videoLanes[lane].track)
                         videoLanes[lane].end = clip.end + tail
                         trackIDs[clip.id] = videoLanes[lane].track.trackID

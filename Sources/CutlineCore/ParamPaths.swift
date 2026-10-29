@@ -24,6 +24,7 @@ extension Clip {
     static let timeSpecs: [ParamSpec] = [
         ParamSpec("time.speed", .number, .number(1), min: 0, max: 100, unit: "×", "Playback speed; animate it for speed ramps (0 holds a frame). The clip keeps its timeline length, so the source range it uses grows or shrinks"),
         ParamSpec("time.reverse", .bool, .bool(false), "Play the clip backwards"),
+        ParamSpec("time.interpolate", .choice(["none", "blend", "flow"]), .string("none"), "Smooth slow motion: blend mixes neighbouring frames, flow synthesizes new ones with optical flow (rendered once, cached)"),
     ]
 
     static let audioSpecs: [ParamSpec] = [
@@ -135,6 +136,7 @@ extension Clip {
         case "audio.fade_out": return .number(audioFadeOut)
         case "time.speed": return .number(speed)
         case "time.reverse": return .bool(reverse)
+        case "time.interpolate": return .string(interpolate ?? "none")
         case "audio.lead": return .number(audioLead)
         case "audio.lag": return .number(audioLag)
         case "color": return .string((color ?? .black).hex)
@@ -213,6 +215,7 @@ extension Clip {
             guard n >= 0.01 else { throw EditError("A constant speed must be at least 0.01; animate time.speed to 0 to hold a frame, or use recipe freeze_frame") }
             speed = n
         case "time.reverse": reverse = v.bool ?? false
+        case "time.interpolate": interpolate = v.string == "none" ? nil : v.string
         case "audio.lead": audioLead = n
         case "audio.lag": audioLag = n
         case "color": color = v.color

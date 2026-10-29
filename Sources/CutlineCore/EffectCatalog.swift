@@ -133,6 +133,11 @@ public enum EffectCatalog {
         EffectType(id: "stylize.glitch", category: "stylize", summary: "Digital glitch: RGB split, torn slices and blocky pixels that change every frame; animate amount for hits", params: [
             ParamSpec("amount", .number, .number(0.6), min: 0, max: 1, "Strength"),
         ]),
+        EffectType(id: "distort.stabilize", category: "distort", summary: "Smooths shaky camera motion (analyzed once per clip, then cached); zooms in just enough to hide the moving edges", params: [
+            ParamSpec("smoothing", .number, .number(1), min: 0.1, max: 5, unit: "seconds", animatable: false, "How long a stretch of motion is averaged; larger is steadier"),
+            ParamSpec("strength", .number, .number(1), min: 0, max: 1, animatable: false, "1 removes all shake within the smoothing window"),
+            ParamSpec("zoom", .number, .number(0), min: 0, max: 0.5, animatable: false, "Extra zoom; 0 picks the smallest zoom that hides the edges"),
+        ]),
         EffectType(id: "distort.bulge", category: "distort", summary: "Bulges outward (positive) or pinches inward (negative)", params: [
             ParamSpec("amount", .number, .number(0.5), min: -1, max: 1, "Strength and direction"),
             ParamSpec("radius", .number, .number(0.3), min: 0, max: 1.5, "Size as a fraction of the frame height"),

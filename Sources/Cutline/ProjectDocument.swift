@@ -188,6 +188,8 @@ final class ProjectDocument {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 switch action {
+                case "rebuild":
+                    self.reload(force: true)
                 case "seek":
                     guard let time else { return }
                     if play { self.player.play(from: time, to: end) } else { self.player.pause(); self.player.seek(time) }

@@ -3,7 +3,7 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text"]
+    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow"]
 
     static let recipeDocs = """
         duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
@@ -20,6 +20,7 @@ extension Toolbox {
         glitch: {at: [times or anchors], duration: 0.3, amount: 0.8}; adds glitch hits on an adjustment track. \
         whip_pan: {cut: "clip_a|clip_b", direction: left, duration: 0.35}. \
         template: {template: name (omit to list templates), at: time, values: {field: text}}. \
+        follow: {clip: the graphic, title or overlay to move, target: "track:<id>" (media_track) or "face:<media>[:n]", offset_x: 0, offset_y: -0.1 (fractions of the frame; negative is above), smooth: 0.2}; keeps the clip on its subject wherever the media plays. \
         kinetic_text: {start, end (timeline or word anchors), preset: pop, unit: word, size: 0.09, y: 0.5, color, highlight: color, uppercase: false, max_width: 0.8}; spoken words appear as they are said. \
         multicam_switch: {angles: [media ids], audio: media with the main sound (default first angle), speakers: {"S1": media, ...} (default S1→first angle, S2→second…), wide: media for long turns and crosstalk, start, end (source seconds of audio), min_shot: 1.5, at: timeline time, track: "V1"}; syncs angles by their sound and cuts to whoever speaks.
         """
@@ -154,6 +155,20 @@ extension Toolbox {
                 let c = Clip(id: Project.newClipId(), kind: .text, name: "kinetic", start: start, duration: max(0.5, min(hi, words.last!.end + 0.6) - start), text: spec)
                 try p.addClip(c, trackId: t.id, mode: .place)
                 return "Added \(c.id) on \(t.id): \(words.count) words appear as they're spoken (\(fmt2(c.start))–\(fmt2(c.end))s). Restyle with param_set text.* or text_add-style animator via clip_update."
+            }
+        case "follow":
+            let id = try a.string("clip")
+            let target = try a.string("target")
+            guard let c = current.clip(id) else { throw EditError("No clip \(id)") }
+            let text = c.kind == .text
+            let dx = a.optDouble("offset_x") ?? 0, dy = a.optDouble("offset_y") ?? 0
+            let smooth = JSON.number(a.optDouble("smooth") ?? 0.2)
+            let bind: [String: JSON] = [
+                text ? "text.x" : "transform.x": ["source": .string(target + ".x"), "offset": .number(dx), "smooth": smooth],
+                text ? "text.y" : "transform.y": ["source": .string(target + ".y"), "offset": .number(dy), "smooth": smooth],
+            ]
+            return try runEdit("\(Toolbox.clipName(id, current)) follows \(target)", dry: dry) { p in
+                try self.applyBindings(&p, targets: [.clip(id)], bind)
             }
         case "multicam_switch":
             return try await multicam(a, dry: dry, bundle: b, project: current)

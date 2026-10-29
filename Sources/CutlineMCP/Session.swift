@@ -62,6 +62,22 @@ final class Session {
         return p
     }
 
+    /// Analyzes camera motion for every stabilized clip that hasn't been analyzed over its current range.
+    @discardableResult
+    func analyzeMotion(_ p: Project) async throws -> [String] {
+        var done: [String] = []
+        for c in p.tracks.flatMap(\.clips) where c.kind == .media && c.effects.contains(where: { $0.type == "distort.stabilize" && $0.enabled }) {
+            guard let m = c.mediaId.flatMap({ p.mediaAsset($0) }), m.hasVideo, !m.isImage else { continue }
+            let range = Stabilizer.window(c, media: m)
+            if Stabilizer.cached(media: m.url, range: range) == nil {
+                _ = try await Stabilizer.analyze(media: m.url, range: range)
+                done.append(c.id)
+            }
+        }
+        if !done.isEmpty { built = nil }
+        return done
+    }
+
     func stems() throws -> AudioStems {
         AudioStems(directory: try requireBundle().cacheURL.appendingPathComponent("stems", isDirectory: true))
     }
@@ -77,6 +93,7 @@ final class Session {
         let b = try requireBundle()
         let transcripts = b.transcripts(for: p)
         if let built, built.project == p, built.transcripts == transcripts.count, built.timeline.missingStems.isEmpty { return built.timeline }
+        try await analyzeMotion(p)
         let stems = try stems()
         try await stems.renderMissing(p, transcripts: transcripts, library: library)
         let t = try await TimelineBuilder.build(p, transcripts: transcripts, library: library, stems: stems)

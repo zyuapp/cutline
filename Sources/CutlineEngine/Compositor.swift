@@ -114,6 +114,18 @@ public final class RenderScene: @unchecked Sendable {
                 img = img.transformed(by: CGAffineTransform(scaleX: canvas.width / e.width, y: canvas.height / e.height))
             }
             layer = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
+            if let fx = clip.effects.first(where: { $0.type == "distort.stabilize" && $0.enabled }), let m = project.mediaAsset(mid), let path = stabilization(clip, m, smoothing: fx.params["smoothing"]?.number ?? 1) {
+                let strength = fx.params["strength"]?.number ?? 1
+                let extra = fx.params["zoom"]?.number ?? 0
+                let zoom = extra > 0 ? 1 + extra : Stabilizer.requiredZoom(path, strength: strength)
+                let c = path.correction(at: clip.sourceTime(atTimeline: t), strength: strength)
+                let e = layer!.extent
+                let move = CGAffineTransform(translationX: -e.midX, y: -e.midY)
+                    .concatenating(CGAffineTransform(rotationAngle: -c.angle * .pi / 180))
+                    .concatenating(CGAffineTransform(scaleX: zoom, y: zoom))
+                    .concatenating(CGAffineTransform(translationX: e.midX + c.dx * e.width * zoom, y: e.midY - c.dy * e.height * zoom))
+                layer = layer!.clampedToExtent().transformed(by: move).cropped(to: e)
+            }
         case .solid:
             let color = clip.value("color", at: local)?.color ?? clip.color ?? .black
             layer = CIImage(color: CIColor(cgColor: color.cgColor)).cropped(to: canvas)
@@ -151,6 +163,20 @@ public final class RenderScene: @unchecked Sendable {
             layer = EffectRenderer.apply(clip.effects, to: layer, context: ctx, param: param)
         }
         return place(layer, center: center, scale: xf.scale, rotation: xf.rotation, opacity: xf.opacity)
+    }
+
+    private var paths: [String: StabilizationPath?] = [:]
+
+    /// The smoothed camera path for a stabilized clip, when its motion has been analyzed.
+    func stabilization(_ clip: Clip, _ media: MediaAsset, smoothing: Seconds) -> StabilizationPath? {
+        let range = Stabilizer.window(clip, media: media)
+        let key = "\(media.path)|\(range.start)|\(range.end)|\(smoothing)"
+        return childLock.withLock {
+            if let hit = paths[key] { return hit }
+            let p = Stabilizer.cached(media: media.url, range: range).map { Stabilizer.path($0, smoothing: smoothing) }
+            paths[key] = p
+            return p
+        }
     }
 
     private var children: [String: RenderScene] = [:]
