@@ -5,10 +5,14 @@ public enum SubtitleFormat: String, CaseIterable, Sendable {
 }
 
 /// One subtitle on the timeline, timed in milliseconds.
-struct SubtitleCue: Equatable, Sendable {
-    var startMs: Int
-    var endMs: Int
-    var lines: [String]
+public struct SubtitleCue: Equatable, Sendable {
+    public var startMs: Int
+    public var endMs: Int
+    public var lines: [String]
+
+    public var start: Seconds { Double(startMs) / 1000 }
+    public var end: Seconds { Double(endMs) / 1000 }
+    public var text: String { lines.joined(separator: "\n") }
 }
 
 extension Project {
@@ -31,7 +35,7 @@ extension Project {
         }
     }
 
-    func subtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2) -> [SubtitleCue] {
+    public func subtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2) -> [SubtitleCue] {
         let maxChars = max(1, maxCharsPerLine), lineLimit = max(1, maxLines)
         let minMs = 1000, maxMs = 7000, gapMs = 100, lingerMs = 300
         let pause: Seconds = 0.7

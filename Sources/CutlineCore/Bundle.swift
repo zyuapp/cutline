@@ -184,6 +184,33 @@ public final class ProjectBundle: @unchecked Sendable {
         try write(v, to: analysisURL.appendingPathComponent("\(v.mediaId).visual.json"), pretty: false)
     }
 
+    /// Any analysis stored as "<media>.<kind>.json": beats, speakers, shots, sounds.
+    public func analysis<T: Decodable>(_ type: T.Type, _ mediaId: String, _ kind: String) -> T? {
+        try? read(T.self, from: analysisURL.appendingPathComponent("\(mediaId).\(kind).json"))
+    }
+
+    public func saveAnalysis<T: Encodable>(_ value: T, _ mediaId: String, _ kind: String) throws {
+        try write(value, to: analysisURL.appendingPathComponent("\(mediaId).\(kind).json"), pretty: false)
+    }
+
+    /// Beats and shots of the project's media, for anchors.
+    public func anchorIndex(for project: Project) -> AnchorIndex {
+        var index = AnchorIndex()
+        for m in project.media {
+            if let b = analysis(BeatAnalysis.self, m.id, "beats") {
+                index.beats[m.id] = b
+                if Double(transcript(m.id)?.words.count ?? 0) < max(4, m.duration / 6) { index.music.insert(m.id) }
+            }
+            if let shots = analysis(ShotAnalysis.self, m.id, "shots") {
+                index.shots[m.id] = shots.shots.map { TimeRange($0.start, $0.end) }
+            } else if let v = visualAnalysis(m.id), !m.isImage {
+                let bounds = [0] + v.sceneCuts + [m.duration]
+                index.shots[m.id] = zip(bounds, bounds.dropFirst()).filter { $0.1 > $0.0 }.map { TimeRange($0.0, $0.1) }
+            }
+        }
+        return index
+    }
+
     public func transcripts(for project: Project) -> [String: Transcript] {
         var out: [String: Transcript] = [:]
         for m in project.media { if let t = transcript(m.id) { out[m.id] = t } }

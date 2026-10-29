@@ -44,25 +44,50 @@ extension Toolbox {
             for m in imported {
                 var line = "\(m.id): \(m.isImage ? "image" : fmt2(m.duration) + "s") \(m.hasVideo ? "\(m.width)×\(m.height)" : "audio only")"
                 if analyze {
-                    let notes = try await session.analyze(m, transcript: m.hasAudio, audio: m.hasAudio, scenes: m.hasVideo, language: args.optString("language") ?? "en-US")
+                    let (now, later) = Session.defaultFeatures(m)
+                    let language = args.optString("language") ?? "en-US"
+                    let notes = try await session.analyze(m, features: now, language: language, explicit: false)
                     if !notes.isEmpty { line += " — " + notes }
+                    if !later.isEmpty {
+                        let job = session.jobs.enqueue(m.id, later, bundle: try session.requireBundle().url) { [session] progress in
+                            try await session.analyze(m, features: later, language: language, explicit: false, progress: progress)
+                        }
+                        line += " — \(later.map(\.rawValue).joined(separator: " and ")) analyzing in the background (\(job))"
+                    }
                 }
                 lines.append(line)
             }
             return .text(lines.joined(separator: "\n") + "\nNext: media_transcript to read speech, media_frames to look at footage.")
         })
 
-        add(Tool(name: "media_analyze", description: "Re-run analysis for one media file, e.g. with another language.", schema: Schema.object([
-            "media_id": Schema.string("Media id"),
-            "transcript": Schema.bool("Transcribe speech, default true"),
-            "scenes": Schema.bool("Detect scene cuts, default true"),
+        add(Tool(name: "media_analyze", description: "Analyze media (import already runs the defaults). Features: transcript (words, pauses), scenes (cuts), beats (tempo, beats, downbeats; anchors <media>.b12, beat:12), speakers (who speaks when, word emphasis), shots (per-shot descriptions, shot size, people, on-screen text, faces, saliency, aesthetics; anchors <media>.s3), sounds (laughter, applause, music, etc.). Read results with analysis_read. Long analysis can run in the background; analysis_read and project_status show progress.", schema: Schema.object([
+            "media_id": ["description": "Media id, a list of ids, or \"all\"", "anyOf": [["type": "string"], ["type": "array", "items": ["type": "string"]]]],
+            "features": Schema.strings("Default: transcript, scenes, beats, speakers, shots, sounds as the media allows"),
             "language": Schema.string("Speech language, default en-US"),
+            "background": Schema.bool("Return immediately and analyze in the background, default false"),
         ], required: ["media_id"])) { [unowned self] args in
             let p = try session.project()
-            let id = try args.string("media_id")
-            guard let m = p.mediaAsset(id) else { throw EditError("No media \(id)") }
-            let notes = try await session.analyze(m, transcript: args.bool("transcript", default: true), audio: true, scenes: args.bool("scenes", default: true), language: args.optString("language") ?? "en-US")
-            return .text("\(id): \(notes)")
+            var ids = args.strings("media_id") ?? []
+            if ids == ["all"] { ids = p.media.map(\.id) }
+            let requested = try (args.strings("features") ?? Feature.allCases.map(\.rawValue)).map { f in
+                guard let v = Feature(rawValue: f) else { throw EditError("Unknown feature \(f). Features: \(Feature.allCases.map(\.rawValue).joined(separator: ", "))") }
+                return v
+            }
+            let explicit = args.has("features")
+            let language = args.optString("language") ?? "en-US"
+            var lines: [String] = []
+            for id in ids {
+                guard let m = p.mediaAsset(id) else { throw EditError("No media \(id)") }
+                if args.bool("background", default: false) {
+                    let job = session.jobs.enqueue(m.id, requested, bundle: try session.requireBundle().url) { [session] progress in
+                        try await session.analyze(m, features: requested, language: language, explicit: explicit, progress: progress)
+                    }
+                    lines.append("\(id): queued \(job)")
+                } else {
+                    lines.append("\(id): " + (try await session.analyze(m, features: requested, language: language, explicit: explicit)).ifEmptyText("nothing to analyze"))
+                }
+            }
+            return .text(lines.joined(separator: "\n"))
         })
 
         add(Tool(name: "media_remove", description: "Remove media that no clip uses.", schema: Schema.object(["media_id": Schema.string("Media id")], required: ["media_id"])) { [unowned self] args in
@@ -89,11 +114,27 @@ extension Toolbox {
             if args.bool("words", default: false) {
                 return .text(words.map { "w\($0.offset) \(fmt2($0.element.start))–\(fmt2($0.element.end)) \($0.element.text)\($0.element.isFiller ? "  (filler)" : "")" }.joined(separator: "\n"))
             }
-            let lines = Describe.sentences(words, text: { $0.element.isFiller ? "*\($0.element.text)*" : $0.element.text }, start: \.element.start, end: \.element.end).map { s in
-                "[w\(s.first.offset)–w\(s.last.offset)  \(fmt2(s.start))–\(fmt2(s.end))] \(s.text)" + (s.pauseAfter.map { "   (pause \(fmt1($0))s)" } ?? "")
+            let speakers = b.analysis(SpeakerAnalysis.self, id, "speakers")
+            let multi = (speakers?.speakers.count ?? 0) > 1
+            func who(_ i: Int) -> String? { speakers.flatMap { $0.wordSpeakers.indices.contains(i) ? $0.wordSpeakers[i] : nil } }
+            func shown(_ w: (offset: Int, element: Word)) -> String {
+                if w.element.isFiller { return "*\(w.element.text)*" }
+                if let e = speakers?.emphasis, e.indices.contains(w.offset), e[w.offset] >= 0.75 { return "**\(w.element.text)**" }
+                return w.element.text
+            }
+            // One run per speaker turn so sentences never span two speakers.
+            var runs: [[(offset: Int, element: Word)]] = []
+            for w in words {
+                if let last = runs.last?.last, !multi || who(last.offset) == who(w.offset) { runs[runs.count - 1].append(w) } else { runs.append([w]) }
+            }
+            let lines = runs.flatMap { run in
+                Describe.sentences(run, text: shown, start: \.element.start, end: \.element.end).map { s in
+                    "[w\(s.first.offset)–w\(s.last.offset)  \(fmt2(s.start))–\(fmt2(s.end))] " + (multi ? "\(who(s.first.offset) ?? "?"): " : "") + s.text + (s.pauseAfter.map { "   (pause \(fmt1($0))s)" } ?? "")
+                }
             }
             let media = try session.project().mediaAsset(id)
-            return .text("\(id) transcript (source time, \(fmt2(media?.duration ?? 0))s long). Word ids work as anchors, e.g. \"\(id).w\(words[0].offset)\" or \"\(id).w\(words[0].offset).end\":\n" + lines.joined(separator: "\n"))
+            let legend = (multi ? " S1, S2… are speakers." : "") + (speakers != nil ? " **word** is stressed." : "")
+            return .text("\(id) transcript (source time, \(fmt2(media?.duration ?? 0))s long).\(legend) Word ids work as anchors, e.g. \"\(id).w\(words[0].offset)\" or \"\(id).w\(words[0].offset).end\":\n" + lines.joined(separator: "\n"))
         })
 
         add(Tool(name: "media_frames", description: "Look at source footage: returns a labeled contact sheet of frames from one media file (source time). Use it to pick b-roll, find shots, or check framing before editing.", schema: Schema.object([
@@ -102,13 +143,30 @@ extension Toolbox {
             "count": Schema.integer("Evenly spaced frames when times is omitted, default 8, max 24"),
             "start": Schema.time("Range start for count"),
             "end": Schema.time("Range end for count"),
+            "overlay": Schema.bool("Draw tracked faces, the salient subject and the shot size (needs shot analysis)"),
         ], required: ["media_id"])) { [unowned self] args in
             let id = try args.string("media_id")
             guard let m = try session.project().mediaAsset(id) else { throw EditError("No media \(id)") }
             guard m.hasVideo else { throw EditError("\(id) has no picture") }
             let times = try Toolbox.sampleTimes(args, start: 0, end: m.duration)
             let cell = Toolbox.cellWidth(width: m.width, height: m.height, count: times.count)
-            let frames = try await Frames.media(m, times: times, maxSize: CGSize(width: cell * 2, height: cell * 2))
+            var frames = try await Frames.media(m, times: times, maxSize: CGSize(width: cell * 2, height: cell * 2))
+            if args.bool("overlay", default: false) {
+                guard let shots = try session.requireBundle().analysis(ShotAnalysis.self, id, "shots") else { throw EditError("overlay needs shot analysis; run media_analyze features:[\"shots\"]") }
+                frames = frames.map { f in
+                    var boxes: [(NormRect, CGColor, String?)] = []
+                    for track in shots.faces {
+                        guard let near = track.samples.min(by: { abs($0.t - f.time) < abs($1.t - f.time) }), abs(near.t - f.time) <= 0.6 else { continue }
+                        boxes.append((near.box, CGColor(red: 0.94, green: 0.81, blue: 0.43, alpha: 1), "face\(track.id)"))
+                    }
+                    let shot = shots.shot(at: f.time)
+                    if let sal = shot?.saliency { boxes.append((sal, CGColor(red: 0.66, green: 0.71, blue: 0.96, alpha: 1), "subject")) }
+                    var g = f
+                    g.image = Frames.annotate(f.image, boxes: boxes)
+                    if let shot { g.label += "  s\(shot.index) \(shot.size)" }
+                    return g
+                }
+            }
             guard let jpeg = Frames.contactSheet(frames, cellWidth: cell) else { throw EditError("Could not render frames") }
             var r = ToolResult.text("\(id): \(frames.count) frames at source " + frames.map { fmt2($0.time) }.joined(separator: ", "))
             r.addImage(jpeg)
@@ -176,40 +234,6 @@ extension Toolbox {
             flush()
             let fillers = shown.filter { Word(text: $0.text, start: 0, end: 0).isFiller }.count
             return .text(lines.joined(separator: "\n") + "\n\(shown.count) words, \(fillers) fillers, timeline \(fmt2(p.duration))s")
-        })
-
-        add(Tool(name: "export", description: "Render the timeline to a video file. Defaults to <project>/exports/<name>.mp4 with HEVC. Blocks until done.", schema: Schema.object([
-            "path": Schema.string("Output file path"),
-            "preset": Schema.string("hevc (default, small and sharp), h264 (most compatible) or prores (editing master, .mov)", values: ExportPreset.allCases.map(\.rawValue)),
-            "start": Schema.time("Export from this timeline time"),
-            "end": Schema.time("Export until this timeline time"),
-            "reveal": Schema.bool("Show the file in Finder when done, default false"),
-        ])) { [unowned self] args in
-            let b = try session.requireBundle()
-            let preset = try args.enumValue("preset", ExportPreset.self) ?? .hevc
-            let built = try await session.timeline()
-            let p = built.scene.project
-            guard p.duration > 0 else { throw EditError("The timeline is empty") }
-            var url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name)).appendingPathExtension(preset.fileExtension)
-            if url.pathExtension.isEmpty { url.appendPathExtension(preset.fileExtension) }
-            var range: TimeRange?
-            if args.has("start") || args.has("end") { range = TimeRange(try args.optTime("start") ?? 0, try args.optTime("end") ?? p.duration) }
-            try? session.sendPreview(["action": "export", "state": "started", "path": url.path])
-            let started = Date()
-            let project = b.url.path
-            try await Exporter.export(built, to: url, preset: preset, range: range) { fraction in
-                DistributedNotificationCenter.default().postNotificationName(PreviewControl.notification, object: nil, userInfo: ["action": "export", "state": "progress", "progress": fraction, "project": project], deliverImmediately: true)
-            }
-            try? session.sendPreview(["action": "export", "state": "finished", "path": url.path])
-            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-            let check = try await MediaProbe.probe(url, id: "export")
-            if args.bool("reveal", default: false) {
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                proc.arguments = ["-R", url.path]
-                try? proc.run()
-            }
-            return .text("Exported \(url.path)\n\(check.width)×\(check.height), \(fmt2(check.duration))s, \(String(format: "%.1f", Double(size) / 1_048_576)) MB, \(preset.rawValue), took \(fmt1(Date().timeIntervalSince(started)))s")
         })
     }
 

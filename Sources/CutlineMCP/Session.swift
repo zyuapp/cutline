@@ -12,7 +12,8 @@ public enum PreviewControl {
 final class Session {
     var bundle: ProjectBundle?
     let library = MediaLibrary()
-    private var built: (project: Project, transcripts: Int, timeline: BuiltTimeline)?
+    var built: (project: Project, transcripts: Int, timeline: BuiltTimeline)?
+    let jobs = JobBoard()
 
     static var stateURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Cutline", isDirectory: true)
@@ -86,40 +87,6 @@ final class Session {
         if expanded.hasPrefix("/") { return URL(fileURLWithPath: expanded).standardizedFileURL }
         let root = base ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         return root.appendingPathComponent(expanded).standardizedFileURL
-    }
-
-    // MARK: Analysis
-
-    func analyze(_ media: MediaAsset, transcript: Bool, audio: Bool, scenes: Bool, language: String) async throws -> String {
-        let b = try requireBundle()
-        var notes: [String] = []
-        if media.hasAudio && (audio || transcript) {
-            try FileManager.default.createDirectory(at: b.cacheURL, withIntermediateDirectories: true)
-            let pcm = b.cacheURL.appendingPathComponent("\(media.id).caf")
-            defer { try? FileManager.default.removeItem(at: pcm) }
-            let a = try await AudioAnalyzer.analyze(media: media, pcmURL: transcript ? pcm : nil)
-            try b.saveAudioAnalysis(a)
-            let long = a.silences.filter { $0.duration >= 0.5 }
-            notes.append("audio: loudness \(String(format: "%.1f", a.loudnessDb)) dB, \(long.count) pauses ≥0.5s totaling \(fmt1(long.map(\.duration).reduce(0, +)))s")
-            if transcript {
-                do {
-                    let raw = try await Transcriber.transcribe(pcmURL: pcm, mediaId: media.id, locale: language)
-                    let t = Transcriber.tighten(raw, audio: a)
-                    try b.saveTranscript(t)
-                    let fillers = t.words.filter(\.isFiller).count
-                    notes.append("transcript: \(t.words.count) words, \(fillers) fillers")
-                } catch {
-                    notes.append("transcript failed: \(error.localizedDescription)")
-                }
-            }
-        }
-        if scenes && media.hasVideo && !media.isImage {
-            let cuts = try await SceneDetector.detect(media)
-            try b.saveVisualAnalysis(VisualAnalysis(mediaId: media.id, sceneCuts: cuts))
-            notes.append("scenes: \(cuts.count) cuts")
-        }
-        built = nil
-        return notes.joined(separator: "; ")
     }
 
     // MARK: Preview app

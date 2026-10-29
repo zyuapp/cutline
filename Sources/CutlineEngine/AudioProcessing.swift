@@ -369,11 +369,13 @@ public struct LoudnessReport: Sendable {
     public var momentaryMax: Double
     public var range: Double
     public var peakDb: Double
+    /// Inter-sample peak from 4× oversampling (BS.1770-4 Annex 2).
+    public var truePeakDb: Double
     public var duration: Seconds
 
     public var summary: String {
         func f(_ v: Double) -> String { v.isFinite ? String(format: "%.1f", v) : "silent" }
-        return "integrated \(f(integrated)) LUFS, short-term max \(f(shortTermMax)) LUFS, momentary max \(f(momentaryMax)) LUFS, range \(f(range)) LU, sample peak \(f(peakDb)) dBFS"
+        return "integrated \(f(integrated)) LUFS, short-term max \(f(shortTermMax)) LUFS, momentary max \(f(momentaryMax)) LUFS, range \(f(range)) LU, true peak \(f(truePeakDb)) dBTP (sample peak \(f(peakDb)) dBFS)"
     }
 }
 
@@ -412,13 +414,38 @@ public enum LoudnessMeter {
         var acc = 0.0
         var count = 0
         var peak: Float = 0
+        var truePeak = 0.0
+        var history = [[Double]](repeating: [Double](repeating: 0, count: 12), count: 2)
+        var head = 0
         var frames = 0
+
+        /// Polyphase interpolation filter for 4× oversampling, 12 taps per phase.
+        static let phases: [[Double]] = [
+            [0.0017089843750, 0.0109863281250, -0.0196533203125, 0.0332031250000, -0.0594482421875, 0.1373291015625, 0.9721679687500, -0.1022949218750, 0.0476074218750, -0.0266113281250, 0.0148925781250, -0.0083007812500],
+            [-0.0291748046875, 0.0292968750000, -0.0517578125000, 0.0891113281250, -0.1665039062500, 0.4650878906250, 0.7797851562500, -0.2003173828125, 0.1015625000000, -0.0582275390625, 0.0330810546875, -0.0189208984375],
+            [-0.0189208984375, 0.0330810546875, -0.0582275390625, 0.1015625000000, -0.2003173828125, 0.7797851562500, 0.4650878906250, -0.1665039062500, 0.0891113281250, -0.0517578125000, 0.0292968750000, -0.0291748046875],
+            [-0.0083007812500, 0.0148925781250, -0.0266113281250, 0.0476074218750, -0.1022949218750, 0.9721679687500, 0.1373291015625, -0.0594482421875, 0.0332031250000, -0.0196533203125, 0.0109863281250, 0.0017089843750],
+        ]
 
         mutating func feed(_ samples: UnsafePointer<Float>, _ n: Int) {
             var p: Float = 0
             vDSP_maxmgv(samples, 1, &p, vDSP_Length(n * 2))
             peak = max(peak, p)
             for i in 0..<n {
+                head = (head + 1) % 12
+                history[0][head] = Double(samples[2 * i])
+                history[1][head] = Double(samples[2 * i + 1])
+                for ch in 0..<2 {
+                    for phase in Accumulator.phases {
+                        var y = 0.0
+                        var k = head
+                        for c in phase {
+                            y += c * history[ch][k]
+                            k = k == 0 ? 11 : k - 1
+                        }
+                        truePeak = max(truePeak, abs(y))
+                    }
+                }
                 let l = filters[0][1].run(filters[0][0].run(Double(samples[2 * i])))
                 let r = filters[1][1].run(filters[1][0].run(Double(samples[2 * i + 1])))
                 acc += l * l + r * r
@@ -462,6 +489,7 @@ public enum LoudnessMeter {
                 momentaryMax: momentary.map(loudness).max() ?? -.infinity,
                 range: lra,
                 peakDb: 20 * log10(Double(max(peak, 1e-10))),
+                truePeakDb: 20 * log10(max(truePeak, Double(peak), 1e-10)),
                 duration: Double(frames) / AudioStems.sampleRate
             )
         }

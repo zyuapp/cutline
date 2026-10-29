@@ -9,6 +9,7 @@ extension Toolbox {
             "end": Schema.time("Until this timeline time or anchor"),
             "what": Schema.strings("Any of sound, picture, text; default all three"),
             "tracks": Schema.bool("Also measure each track's sound on its own, default false"),
+            "platform": Schema.string("Check text against this platform's UI-free area", values: Platform.all.map(\.id)),
         ])) { [unowned self] args in
             let p = try session.project()
             guard p.duration > 0 else { throw EditError("The timeline is empty") }
@@ -18,7 +19,7 @@ extension Toolbox {
             var lines: [String] = []
             if what.contains("sound") { lines += try await measureSound(p, range: range, tracks: args.bool("tracks", default: false)) }
             if what.contains("picture") { lines += try await measurePicture(p, range: range) }
-            if what.contains("text") { lines += try await measureText(p, range: range) }
+            if what.contains("text") { lines += try await measureText(p, range: range, platform: args.optString("platform").flatMap(Platform.named)) }
             guard !lines.isEmpty else { throw EditError("what is any of sound, picture, text") }
             return .text(lines.joined(separator: "\n"))
         })
@@ -90,7 +91,7 @@ extension Toolbox {
                 lines.append("  \(track.id) \"\(track.name)\": " + r.summary)
             }
         }
-        if mix.peakDb > -1 { lines.append("  Warning: peaks reach \(fmt1(mix.peakDb)) dBFS; add audio.limiter (ceiling −1) to the loudest track or the master, or lower the gain.") }
+        if mix.truePeakDb > -0.9 { lines.append("  Warning: true peak reaches \(fmt1(mix.truePeakDb)) dBTP; add audio.limiter (ceiling −1) to the loudest track or the master, or lower the gain.") }
         return lines
     }
 
@@ -158,7 +159,7 @@ extension Toolbox {
         return "\(name) \(fmt2(hypot(cb, cr)))"
     }
 
-    func measureText(_ p: Project, range: TimeRange?) async throws -> [String] {
+    func measureText(_ p: Project, range: TimeRange?, platform: Platform? = nil) async throws -> [String] {
         let b = try session.requireBundle()
         let transcripts = b.transcripts(for: p)
         var bare = p
@@ -166,7 +167,9 @@ extension Toolbox {
         bare.captions.enabled = false
         let built = try await TimelineBuilder.build(bare, transcripts: transcripts, library: session.library, renderScale: min(1, 640 / Double(max(p.canvas.width, p.canvas.height))))
         let captions = p.captions.enabled ? p.captionSegments(transcripts: transcripts) : []
-        var checks = try await PictureMeter.checkText(p, captions: captions) { t in
+        let safe = platform?.safe ?? CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9)
+        let safeName = platform.map { "\($0.name)'s UI-free area" } ?? "title-safe"
+        var checks = try await PictureMeter.checkText(p, captions: captions, safe: safe) { t in
             try await Frames.timeline(built, times: [t], maxSize: CGSize(width: 640, height: 640))[0].image
         }
         if let range { checks = checks.filter { $0.time >= range.start && $0.time < range.end } }
@@ -176,7 +179,7 @@ extension Toolbox {
             var s = "  \(c.label) at \(fmt2(c.time))s: contrast \(fmt1(c.contrast)):1"
             if c.contrast < 3 { s += " — hard to read; add text.stroke, text.background, a darker/lighter color, or move it" }
             else if c.contrast < 4.5 { s += " — fine for large text only" }
-            s += c.safeOverflow > 0.001 ? ", outside title-safe by \(fmt1(c.safeOverflow * 100))% of the frame" : ", inside title-safe"
+            s += c.safeOverflow > 0.001 ? ", outside \(safeName) by \(fmt1(c.safeOverflow * 100))% of the frame" : ", inside \(safeName)"
             lines.append(s)
         }
         return lines

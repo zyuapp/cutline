@@ -52,6 +52,31 @@ public enum Frames {
         return out
     }
 
+    /// Draws labeled boxes (fractions of the frame, top-left origin) over an image.
+    public static func annotate(_ image: CGImage, boxes: [(NormRect, CGColor, String?)]) -> CGImage {
+        guard !boxes.isEmpty else { return image }
+        let w = image.width, h = image.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let line = max(2, CGFloat(h) / 180)
+        for (box, color, label) in boxes {
+            let r = CGRect(x: box.x * Double(w), y: (1 - box.y - box.height) * Double(h), width: box.width * Double(w), height: box.height * Double(h))
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(line)
+            ctx.stroke(r)
+            if let label {
+                let font = NSFont.systemFont(ofSize: max(11, CGFloat(h) / 28), weight: .semibold)
+                let text = NSAttributedString(string: label, attributes: [.font: font, .foregroundColor: NSColor(cgColor: color) ?? .white])
+                let gc = NSGraphicsContext(cgContext: ctx, flipped: false)
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = gc
+                text.draw(at: CGPoint(x: r.minX + line, y: r.maxY + line))
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
+        return ctx.makeImage() ?? image
+    }
+
     /// Evenly spaced sample times, centered in each slot.
     public static func spread(_ count: Int, from start: Seconds, to end: Seconds) -> [Seconds] {
         let n = max(1, count)

@@ -143,13 +143,13 @@ public enum PictureMeter {
         /// Fractions of the canvas, origin top left.
         public var box: CGRect
         public var contrast: Double
-        /// How far the box pokes outside the title-safe area, as a fraction of the canvas; 0 when inside.
+        /// How far the box pokes outside the safe area, as a fraction of the canvas; 0 when inside.
         public var safeOverflow: Double
     }
 
     /// Where each title and caption sits, and its WCAG contrast against the picture behind it.
     /// `background` renders the timeline without text at a time.
-    public static func checkText(_ project: Project, captions: [CaptionSegment], margin: Double = 0.05, background: (Seconds) async throws -> CGImage) async throws -> [TextCheck] {
+    public static func checkText(_ project: Project, captions: [CaptionSegment], safe: CGRect = CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9), background: (Seconds) async throws -> CGImage) async throws -> [TextCheck] {
         let scene = RenderScene(project: project, captions: captions, trackIDs: [:], orientations: [:], images: [:])
         let canvas = scene.canvasRect
         var samples: [(String, Seconds, CGRect, TextStyleColors)] = []
@@ -180,7 +180,6 @@ public enum PictureMeter {
         for (label, t, box, colors) in samples {
             let bg = try await background(t)
             let contrast = colors.contrast(over: luminances(bg, box: box))
-            let safe = CGRect(x: margin, y: margin, width: 1 - 2 * margin, height: 1 - 2 * margin)
             let overflow = max(0, safe.minX - box.minX, box.maxX - safe.maxX, safe.minY - box.minY, box.maxY - safe.maxY)
             out.append(TextCheck(label: label, time: t, box: box, contrast: contrast, safeOverflow: overflow))
         }

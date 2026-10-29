@@ -70,7 +70,7 @@ extension Toolbox {
             if args.optString("detail") == "json" {
                 return .text(String(data: try ProjectBundle.encoder.encode(p), encoding: .utf8) ?? "")
             }
-            return .text(Describe.project(p, bundle: b))
+            return .text(Describe.project(p, bundle: b) + (session.jobs.statusLine.map { "\n" + $0 } ?? ""))
         })
 
         addEdit(EditTool(name: "canvas_set", description: "Change the canvas size, frame rate or background. Media clips refit automatically; text and captions scale with the canvas.", schema: Schema.object(canvasProps), label: { a, _ in a.optString("preset").map { "Make it \($0)" } ?? "Change canvas" }) { p, args in

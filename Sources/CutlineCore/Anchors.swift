@@ -5,18 +5,91 @@ import Foundation
 ///     12.4, "1:02.5"            timeline time
 ///     "lake-tahoe.w12"          start of word 12 of that media's transcript, wherever it plays
 ///     "lake-tahoe.w12.end"      end of that word
+///     "music.b16", "music.d4"   beat 16 / downbeat 4 of that media, wherever it plays
+///     "lake-tahoe.s3[.end]"     start (end) of detected shot 3 of that media
+///     "beat:12", "downbeat:3"   the 12th beat / 3rd downbeat of the music on the timeline (from 0)
 ///     "clip_ab12cd.start/.end"  edges of a clip
 ///     "marker:Intro", "m_x8k2p" a marker by label or id
 ///     "start", "end"            the ends of the timeline
 ///
 /// Any anchor can carry an offset: "lake-tahoe.w12+0.2", "clip_ab12cd.end-1".
+/// Analysis that anchors can point into, beyond transcripts.
+public struct AnchorIndex: Sendable {
+    public var beats: [String: BeatAnalysis]
+    /// Shot spans per media, in source time.
+    public var shots: [String: [TimeRange]]
+    /// Media whose beats count as the timeline's music; speech is left out.
+    public var music: Set<String>
+
+    public init(beats: [String: BeatAnalysis] = [:], shots: [String: [TimeRange]] = [:], music: Set<String>? = nil) {
+        self.beats = beats
+        self.shots = shots
+        self.music = music ?? Set(beats.keys)
+    }
+}
+
 extension Project {
-    public func resolveTime(_ raw: String, transcripts: [String: Transcript]) throws -> Seconds {
+    public func resolveTime(_ raw: String, transcripts: [String: Transcript], index: AnchorIndex = AnchorIndex()) throws -> Seconds {
         let s = raw.trimmingCharacters(in: .whitespaces)
         if let n = Double(s) { return n }
         if let t = Project.clockTime(s) { return t }
         let (base, offset) = Project.splitOffset(s)
+        if let t = try resolveAnalysisAnchor(base, index: index, timeline: true) { return t + offset }
         return try resolveBase(base, transcripts: transcripts) + offset
+    }
+
+    /// Beats of every audible media clip, in timeline time, sorted.
+    public func timelineBeats(_ index: AnchorIndex, downbeats: Bool = false) -> [Seconds] {
+        var out: [Seconds] = []
+        for track in tracks where !track.muted {
+            for c in track.clips where c.kind == .media {
+                guard let id = c.mediaId, index.music.contains(id), let b = index.beats[id] else { continue }
+                for t in downbeats ? b.downbeats : b.beats where t >= c.sourceIn - 1e-6 && t < c.sourceOut - 1e-6 {
+                    out.append(c.timelineTime(atSource: t))
+                }
+            }
+        }
+        return Array(Set(out.map { ($0 * 1000).rounded() / 1000 })).sorted()
+    }
+
+    /// The timeline time where a source time of a media file plays first.
+    func placed(_ mediaId: String, source: Seconds, what: String) throws -> Seconds {
+        let hits = tracks.flatMap(\.clips).filter { $0.kind == .media && $0.mediaId == mediaId && source >= $0.sourceIn - 1e-6 && source < $0.sourceOut }
+        guard let c = hits.min(by: { $0.start < $1.start }) else { throw EditError("\(what) isn't on the timeline; it was cut or never placed") }
+        return min(max(c.timelineTime(atSource: source), c.start), c.end)
+    }
+
+    /// Beat, downbeat and shot anchors; nil when `s` is not one of them.
+    func resolveAnalysisAnchor(_ s: String, index: AnchorIndex, timeline: Bool) throws -> Seconds? {
+        for (prefix, down) in [("beat:", false), ("downbeat:", true)] where s.hasPrefix(prefix) {
+            guard timeline else { throw EditError("\(s) is a timeline anchor; source times take \"<media>.b12\"") }
+            guard let n = Int(s.dropFirst(prefix.count)) else { throw EditError("Bad anchor \(s); use \(prefix)12") }
+            let all = timelineBeats(index, downbeats: down)
+            guard !all.isEmpty else { throw EditError("No analyzed music on the timeline; run media_analyze with beats on the music") }
+            guard all.indices.contains(n) else { throw EditError("The timeline has \(down ? "downbeats" : "beats") 0…\(all.count - 1); got \(n)") }
+            return all[n]
+        }
+        guard let r = s.range(of: #"\.([bds])(\d+)(\.end)?$"#, options: .regularExpression) else { return nil }
+        let mediaId = String(s[..<r.lowerBound])
+        guard mediaAsset(mediaId) != nil else { return nil }
+        var tail = s[r].dropFirst()
+        let kind = tail.removeFirst()
+        let atEnd = tail.hasSuffix(".end")
+        guard let n = Int(atEnd ? tail.dropLast(4) : tail) else { throw EditError("Bad anchor \(s)") }
+        let source: Seconds
+        switch kind {
+        case "s":
+            guard let shots = index.shots[mediaId], !shots.isEmpty else { throw EditError("\(mediaId) has no shot analysis; run media_analyze with shots") }
+            guard shots.indices.contains(n) else { throw EditError("\(mediaId) has shots s0…s\(shots.count - 1); got s\(n)") }
+            source = atEnd ? shots[n].end : shots[n].start
+        default:
+            guard !atEnd else { throw EditError("Beats are instants; drop .end from \(s)") }
+            guard let b = index.beats[mediaId] else { throw EditError("\(mediaId) has no beat analysis; run media_analyze with beats") }
+            let list = kind == "b" ? b.beats : b.downbeats
+            guard list.indices.contains(n) else { throw EditError("\(mediaId) has \(kind == "b" ? "beats b" : "downbeats d")0…\(list.count - 1); got \(n)") }
+            source = list[n]
+        }
+        return timeline ? try placed(mediaId, source: source, what: s) : source
     }
 
     /// "1:02.5" or "1:00:02.5" → seconds.
@@ -76,19 +149,20 @@ extension Project {
             }
             return min(max(c.timelineTime(atSource: src), c.start), c.end)
         }
-        throw EditError("Can't read time \(s). Use seconds, \"m:ss.f\", a word like \"<media>.w12\", \"<clip>.start\", \"marker:<label>\", \"start\" or \"end\", optionally with +/- seconds.")
+        throw EditError("Can't read time \(s). Use seconds, \"m:ss.f\", a word like \"<media>.w12\", a beat \"<media>.b8\" or \"beat:8\", a shot \"<media>.s2\", \"<clip>.start\", \"marker:<label>\", \"start\" or \"end\", optionally with +/- seconds.")
     }
 }
 
 extension Project {
     /// A position inside a media file: seconds, or "media.w12" / "media.w12.end" with an optional offset.
-    public func resolveSourceTime(_ raw: String, transcripts: [String: Transcript]) throws -> Seconds {
+    public func resolveSourceTime(_ raw: String, transcripts: [String: Transcript], index: AnchorIndex = AnchorIndex()) throws -> Seconds {
         let s = raw.trimmingCharacters(in: .whitespaces)
         if let n = Double(s) { return n }
         if let t = Project.clockTime(s) { return t }
         let (base, offset) = Project.splitOffset(s)
+        if let t = try resolveAnalysisAnchor(base, index: index, timeline: false) { return t + offset }
         guard let r = base.range(of: #"\.w(\d+)(\.end)?$"#, options: .regularExpression) else {
-            throw EditError("Source times are seconds in the media file or a word like \"<media>.w12\"; got \(s)")
+            throw EditError("Source times are seconds in the media file, a word like \"<media>.w12\", a beat \"<media>.b8\" or a shot \"<media>.s2\"; got \(s)")
         }
         let mediaId = String(base[..<r.lowerBound])
         let tail = base[r].dropFirst(2)

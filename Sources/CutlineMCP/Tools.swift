@@ -49,6 +49,8 @@ final class Toolbox {
         registerEditTools()
         registerLookTools()
         registerTransitionTools()
+        registerAnalysisTools()
+        registerExportTools()
         registerAudioTools()
         registerBatchTool()
         registerReviewTools()
@@ -99,8 +101,9 @@ final class Toolbox {
             return
         }
         let transcripts = b.transcripts(for: p)
-        Args.timelineResolver = { try p.resolveTime($0, transcripts: transcripts) }
-        Args.sourceResolver = { try p.resolveSourceTime($0, transcripts: transcripts) }
+        let index = b.anchorIndex(for: p)
+        Args.timelineResolver = { try p.resolveTime($0, transcripts: transcripts, index: index) }
+        Args.sourceResolver = { try p.resolveSourceTime($0, transcripts: transcripts, index: index) }
     }
 
     var definitions: [JSON] { order.compactMap { tools[$0]?.definition } }
@@ -124,7 +127,7 @@ final class Toolbox {
     /// Short state line appended to edit results.
     func footer(_ p: Project) -> String {
         let h = session.bundle?.loadHistory().current
-        return "Timeline \(Frames.timecode(p.duration)) · \(p.tracks.map { "\($0.id):\($0.clips.count)" }.joined(separator: " ")) · history \(h?.id ?? "-")"
+        return "Timeline \(Frames.timecode(p.duration)) · \(p.tracks.map { "\($0.id):\($0.clips.count)" }.joined(separator: " ")) · history \(h?.id ?? "-")" + (session.jobs.statusLine.map { " · " + $0 } ?? "")
     }
 }
 
