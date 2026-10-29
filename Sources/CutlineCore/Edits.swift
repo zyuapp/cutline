@@ -275,6 +275,11 @@ extension Project {
         case .text, .solid, .adjustment:
             guard track.kind == .video else { throw EditError("\(clip.kind.rawValue) clips go on video tracks") }
             if clip.kind == .text && clip.text == nil { throw EditError("Text clip \(clip.id) has no text") }
+        case .sequence:
+            guard let seq = clip.mediaId.flatMap({ sequence($0) }) else { throw EditError("\(clip.id) references unknown sequence \(clip.mediaId ?? "nil")") }
+            guard clip.sourceIn >= -eps, clip.sourceIn + clip.duration <= seq.duration + canvas.frameDuration else {
+                throw EditError("\(clip.id) plays \(fmt(clip.sourceIn))–\(fmt(clip.sourceIn + clip.duration))s of \(seq.name), which is \(fmt(seq.duration))s long")
+            }
         }
     }
 
@@ -333,7 +338,7 @@ extension Project {
         let delta = newStart - c.start
         c.start = newStart
         c.duration -= delta
-        if c.kind == .media && !c.reverse { c.sourceIn += c.sourceOffset(atLocal: delta) }
+        if (c.kind == .media && !c.reverse) || c.kind == .sequence { c.sourceIn += c.sourceOffset(atLocal: delta) }
         c.anim = c.anim.mapValues { $0.shifted(by: -delta) }
         c.fadeIn = min(c.fadeIn, c.duration)
         c.audioFadeIn = min(c.audioFadeIn, c.duration)

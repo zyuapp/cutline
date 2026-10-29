@@ -58,3 +58,35 @@ private func cutProject() -> Project {
     let changes = p.changes(from: cutProject())
     #expect(changes.contains { $0.hasPrefix("+ transition tr1 dissolve") })
 }
+
+@Test func trimModes() throws {
+    var p = cutProject()
+    p.tracks[0].clips.append(Clip(id: "c", kind: .media, mediaId: "m", start: 8, duration: 2, sourceIn: 15))
+    var q = p
+    try q.trim("a", mode: .ripple, edge: .end, delta: -1)
+    #expect(q.clip("a")?.end == 3 && q.clip("b")?.start == 3 && q.clip("c")?.start == 7)
+    q = p
+    try q.trim("a", mode: .roll, edge: .end, delta: 0.5)
+    #expect(q.clip("a")?.end == 4.5 && q.clip("b")?.start == 4.5 && q.clip("b")?.sourceIn == 10.5 && q.clip("b")?.end == 8)
+    q = p
+    try q.trim("b", mode: .slip, edge: .end, delta: 1)
+    #expect(q.clip("b")?.sourceIn == 11 && q.clip("b")?.start == 4)
+    q = p
+    try q.trim("b", mode: .slide, edge: .end, delta: 0.5)
+    #expect(q.clip("a")?.end == 4.5 && q.clip("b")?.start == 4.5 && q.clip("c")?.start == 8.5 && q.clip("c")?.sourceIn == 15.5)
+    try q.validate()
+    q = p
+    try q.trim("b", mode: .ripple, edge: .start, delta: 1)
+    #expect(q.clip("b")?.start == 4 && q.clip("b")?.duration == 3 && q.clip("b")?.sourceIn == 11 && q.clip("c")?.start == 7)
+    #expect(throws: EditError.self) { try p.trim("a", mode: .roll, edge: .start, delta: 1) }
+}
+
+@Test func speedCurvesMapSourceTime() throws {
+    var c = Clip(id: "r", kind: .media, mediaId: "m", start: 10, duration: 4, sourceIn: 2)
+    c.anim["time.speed"] = Curve(keys: [CurveKey(t: 0, v: .number(2), ease: .linear), CurveKey(t: 4, v: .number(0), ease: .linear)])
+    #expect(abs(c.sourceOut - 6) < 1e-3)
+    #expect(abs(c.timelineTime(atSource: c.sourceTime(atTimeline: 11.3)) - 11.3) < 1e-3)
+    c.reverse = true
+    #expect(abs(c.sourceTime(atTimeline: 10) - 6) < 1e-3)
+    #expect(abs(c.sourceTime(atTimeline: 14) - 2) < 1e-3)
+}

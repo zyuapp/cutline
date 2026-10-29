@@ -12,8 +12,12 @@ extension Toolbox {
             "animate": ["type": "object", "description": "{path: [[time, value, ease?], ...]}, e.g. {\"transform.scale\": [[\"clip_x.start\", 1], [\"clip_x.end\", 1.15, \"easeOut\"]]}. Replaces that path's existing animation."],
             "unset": Schema.strings("Paths whose animation is removed (or reset to default when not animated)"),
             "relative": Schema.bool("Key times are seconds from each clip's start, default false"),
-        ], required: ["target"]), label: { a, p in Toolbox.describeParamSet(a, p) }) { p, args in
+            "bind": ["type": "object", "description": .string(Toolbox.bindDocs)],
+        ], required: ["target"]), label: { a, p in Toolbox.describeParamSet(a, p) }) { [unowned self] p, args in
             let targets = try Toolbox.resolveTargets(args.raw["target"], p)
+            if let bind = args.raw["bind"]?.object {
+                return try self.applyBindings(&p, targets: targets, bind)
+            }
             var lines: [String] = []
             for target in targets {
                 switch target {

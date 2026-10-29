@@ -49,6 +49,10 @@ final class Toolbox {
         registerEditTools()
         registerLookTools()
         registerTransitionTools()
+        registerTrimTool()
+        registerPatchTool()
+        registerTemplateTool()
+        registerNestTool()
         registerAnalysisTools()
         registerExportTools()
         registerAudioTools()
@@ -74,7 +78,7 @@ final class Toolbox {
             }
             var summary = ""
             let p = try session.edit(e.label(args, before)) { summary = try e.apply(&$0, args) }
-            return .text(summary + Toolbox.changesText(p, before) + "\n" + self.footer(p))
+            return .text(summary + Toolbox.changesText(p, before) + self.newIssues(p, before) + "\n" + self.footer(p))
         })
     }
 
@@ -174,7 +178,7 @@ enum Describe {
         if !p.markers.isEmpty { lines.append("Markers: " + p.markers.map { "\(fmt2($0.time)) \($0.label)" }.joined(separator: ", ")) }
         let open = bundle.loadComments().comments.filter { $0.status == .open }
         lines.append("Comments: \(open.count) open" + (open.isEmpty ? "" : " — call comments_list"))
-        let w = warnings(p)
+        let w = warnings(p, transcripts: bundle.transcripts(for: p))
         if !w.isEmpty {
             lines.append("")
             lines.append("Warnings:")
@@ -192,6 +196,9 @@ enum Describe {
         case .text: s += "text \"\(c.text?.text.prefix(40) ?? "")\""
         case .solid: s += "solid \(c.color?.hex ?? "")"
         case .adjustment: s += "adjustment layer"
+        case .sequence:
+            let seq = c.mediaId.flatMap { p.sequence($0) }
+            s += "nested \"\(seq?.name ?? "?")\" [\(fmt(c.sourceIn))–\(fmt(c.sourceIn + c.duration)) of \(fmt(seq?.duration ?? 0))s, \(seq?.tracks.flatMap(\.clips).count ?? 0) clips]"
         }
         var extra: [String] = []
         if c.speed != 1 { extra.append("speed \(fmt2(c.speed))") }
@@ -234,26 +241,8 @@ enum Describe {
         return lines.joined(separator: "\n")
     }
 
-    static func warnings(_ p: Project) -> [String] {
-        var out: [String] = []
-        if let main = p.tracks.first(where: { $0.kind == .video && !$0.clips.isEmpty }) {
-            var cursor = 0.0
-            for c in main.clips {
-                if c.start - cursor > 0.02 { out.append("gap on \(main.id) at \(fmt2(cursor))–\(fmt2(c.start)) shows background") }
-                cursor = c.end
-            }
-        }
-        for t in p.tracks {
-            for c in t.clips where c.duration < 0.25 && c.kind == .media {
-                out.append("\(c.id) on \(t.id) is only \(fmt2(c.duration))s, likely a flash frame")
-            }
-        }
-        let pictureEnd = p.tracks.filter { $0.kind == .video }.map(\.end).max() ?? 0
-        for t in p.tracks where t.kind == .audio {
-            if let last = t.clips.last, pictureEnd > 0, last.end > pictureEnd + 0.5 {
-                out.append("\(last.id) on \(t.id) runs \(fmt2(last.end - pictureEnd))s past the picture; trim it or fade it out")
-            }
-        }
+    static func warnings(_ p: Project, transcripts: [String: Transcript] = [:]) -> [String] {
+        var out = p.qualityIssues(transcripts: transcripts)
         for m in p.media where !FileManager.default.fileExists(atPath: m.path) { out.append("media \(m.id) is missing at \(m.path)") }
         return out
     }
@@ -290,4 +279,15 @@ enum Describe {
     }
 
     static func fmtFps(_ f: Double) -> String { f.rounded() == f ? String(Int(f)) : String(format: "%.3f", f) }
+}
+
+extension Toolbox {
+    /// Issues an edit introduced, for the edit's response.
+    func newIssues(_ p: Project, _ before: Project) -> String {
+        guard let b = session.bundle else { return "" }
+        let tr = b.transcripts(for: p)
+        let fresh = Set(p.qualityIssues(transcripts: tr)).subtracting(before.qualityIssues(transcripts: b.transcripts(for: before)))
+        guard !fresh.isEmpty else { return "" }
+        return "\nCheck: " + fresh.sorted().prefix(5).joined(separator: "; ")
+    }
 }

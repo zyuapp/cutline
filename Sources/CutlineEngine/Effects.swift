@@ -15,7 +15,11 @@ enum EffectRenderer {
         var time: Double
         /// The image has no transparent areas, so edge pixels can be extended under blurs.
         var opaque: Bool
+        /// Identifies the picture's source frame, so expensive per-frame masks can be cached.
+        var source: MaskCache.Key? = nil
     }
+
+    static let masks = MaskCache()
 
     /// Applies a stack in order. `param` returns the (possibly animated) value of fx.<id>.<name>.
     static func apply(_ effects: [Effect], to image: CIImage, context: Context, param: @escaping (Effect, String) -> ParamValue?) -> CIImage {
@@ -81,6 +85,16 @@ enum EffectRenderer {
             return img.applyingFilter("CIColorMonochrome", parameters: [kCIInputColorKey: CIColor(red: color.r, green: color.g, blue: color.b), kCIInputIntensityKey: n("amount")])
         case "color.invert":
             return img.applyingFilter("CIColorInvert")
+        case "mask.person", "mask.subject":
+            let kind: Segmentation.Kind = type == "mask.subject" ? .subject : .person(Segmentation.Quality(rawValue: v("quality").string ?? "balanced") ?? .balanced)
+            let mask = ctx.source.flatMap { masks.mask(kind: kind, key: $0, image: img, smoothing: Double(n("smoothing"))) } ?? Segmentation.mask(kind, img)
+            guard let mask else { return img }
+            return Segmentation.apply(mask: mask, to: img, feather: n("feather") * ctx.unit, invert: v("invert").bool ?? false, expand: n("expand") * ctx.unit).cropped(to: e)
+        case "key.chroma":
+            let color = v("color").string.flatMap { $0 == "auto" ? nil : RGBA(hex: $0) }
+            return ChromaKey.key(img, color: color, tolerance: Double(n("tolerance")), softness: Double(n("softness")), spill: Double(n("spill")), edgeFeather: n("feather") * ctx.unit).cropped(to: e)
+        case "stylize.glitch":
+            return TransitionRenderer.glitch(img, amount: Double(n("amount")), frame: Int((ctx.time * 30).rounded()), e)
         case "color.grade", "color.curves", "color.hsl", "color.look", "color.lut":
             guard let cube = ColorCubes.cube(type, v) else { return img }
             return img.applyingFilter("CIColorCubeWithColorSpace", parameters: [

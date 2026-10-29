@@ -24,8 +24,9 @@ public final class AudioStems: @unchecked Sendable {
         var reverse: Bool
     }
 
-    func sound(of track: Track) -> [ClipSound] {
-        track.clips.filter { $0.kind == .media }.map {
+    func sound(of track: Track, in project: Project? = nil) -> [ClipSound] {
+        let clips = project.map { p in track.clips.flatMap { $0.kind == .sequence ? p.expanded($0).map(\.clip) : [$0] } } ?? track.clips
+        return clips.filter { $0.kind == .media }.map {
             ClipSound(id: $0.id, media: $0.mediaId ?? "", start: $0.start, duration: $0.duration, sourceIn: $0.sourceIn, speed: $0.speed, volume: $0.volume, fadeIn: $0.audioFadeIn, fadeOut: $0.audioFadeOut, lead: $0.audioLead, lag: $0.audioLag, volumeCurve: $0.anim["audio.volume"], speedCurve: $0.anim["time.speed"], reverse: $0.reverse)
         }
     }
@@ -58,7 +59,7 @@ public final class AudioStems: @unchecked Sendable {
         let fx = track.effects.filter { EffectCatalog.isAudio($0.type) }
         let ids = Set(track.clips.compactMap(\.mediaId))
         return hash([
-            (try? Self.encoder.encode(sound(of: track))) ?? Data(),
+            (try? Self.encoder.encode(sound(of: track, in: project))) ?? Data(),
             (try? Self.encoder.encode(fx)) ?? Data(),
             Data(mediaStamps(ids, in: project).utf8),
         ])

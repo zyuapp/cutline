@@ -34,7 +34,7 @@ extension Project {
     /// Words heard on the timeline, mapped from source transcripts through every clip.
     public func timelineWords(transcripts: [String: Transcript], trackIds: [String] = []) -> [TimelineWord] {
         var out: [TimelineWord] = []
-        for track in tracks where !track.muted && (trackIds.isEmpty || trackIds.contains(track.id)) {
+        for track in flattenedForSound where !track.muted && (trackIds.isEmpty || trackIds.contains(track.id)) {
             for clip in track.clips where clip.kind == .media && clip.volume > 0.001 {
                 guard let mid = clip.mediaId, let tr = transcripts[mid] else { continue }
                 let heard = clip.audioSourceRange, span = clip.audioRange

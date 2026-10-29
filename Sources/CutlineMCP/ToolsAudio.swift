@@ -24,13 +24,9 @@ extension Toolbox {
             return .text(lines.joined(separator: "\n"))
         })
 
-        add(Tool(name: "recipe", description: "Common multi-step edits, done in one undoable step. duck: lower music while people speak (writes audio.volume animation from the transcripts). loudness_normalize: measure the mix and set the master gain to hit a loudness target. split_edit: J or L cut between two adjacent clips, so sound leads or trails the picture. Each reports exactly what it changed; dry_run:true previews.", schema: Schema.object([
-            "name": Schema.string("Recipe", values: ["duck", "loudness_normalize", "split_edit"]),
-            "args": ["type": "object", "description": """
-                duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech (default: all others), amount_db: 12, attack: 0.3, release: 0.8}. \
-                loudness_normalize: {target_lufs: -14, ceiling_db: -1, limit: true (adds or tunes a master limiter so peaks stay under the ceiling)}. \
-                split_edit: {edit: "clip_a|clip_b", offset: seconds (+ J cut: clip_b's sound starts early; − L cut: clip_a's sound runs over clip_b)}.
-                """],
+        add(Tool(name: "recipe", description: "Common multi-step edits, each one undoable step that reports exactly what it changed (dry_run:true previews). Sound: duck, loudness_normalize, split_edit. Time: speed_ramp, freeze_frame. Framing: punch_in, pip, split_screen, reframe. Rhythm: beat_cut. Style: look, glitch, whip_pan. args per recipe are listed below.", schema: Schema.object([
+            "name": Schema.string("Recipe", values: Toolbox.recipeNames),
+            "args": ["type": "object", "description": .string(Toolbox.recipeDocs)],
             "dry_run": Schema.bool("Report what would change without applying it"),
         ], required: ["name"])) { [unowned self] args in
             let a = Args(args.raw["args"])
@@ -75,7 +71,7 @@ extension Toolbox {
                     return note
                 }
             default:
-                throw EditError("Unknown recipe")
+                return try await moreRecipes(try args.string("name"), a, dry: dry)
             }
         })
     }
@@ -197,7 +193,7 @@ extension Toolbox {
         }
         var summary = ""
         let p = try session.edit(label) { summary = try body(&$0) }
-        return .text(summary + Toolbox.changesText(p, before) + "\n" + footer(p))
+        return .text(summary + Toolbox.changesText(p, before) + newIssues(p, before) + "\n" + footer(p))
     }
 
     func duck(_ p: inout Project, _ a: Args) throws -> String {

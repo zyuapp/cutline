@@ -130,6 +130,9 @@ public enum EffectCatalog {
             ParamSpec("color", .color, .string("#FFFFFF"), "Line color"),
             ParamSpec("width", .number, .number(0.005), min: 0, max: 0.05, unit: "of frame height", "Line width"),
         ]),
+        EffectType(id: "stylize.glitch", category: "stylize", summary: "Digital glitch: RGB split, torn slices and blocky pixels that change every frame; animate amount for hits", params: [
+            ParamSpec("amount", .number, .number(0.6), min: 0, max: 1, "Strength"),
+        ]),
         EffectType(id: "distort.bulge", category: "distort", summary: "Bulges outward (positive) or pinches inward (negative)", params: [
             ParamSpec("amount", .number, .number(0.5), min: -1, max: 1, "Strength and direction"),
             ParamSpec("radius", .number, .number(0.3), min: 0, max: 1.5, "Size as a fraction of the frame height"),
@@ -142,6 +145,26 @@ public enum EffectCatalog {
             ParamSpec("roundness", .number, .number(0), min: 0, max: 0.5, "Corner radius as a fraction of the shorter side"),
         ]),
         EffectType(id: "mask.ellipse", category: "mask", summary: "Keeps an ellipse; e.g. a spotlight or a circular face cam", params: shape),
+        EffectType(id: "mask.person", category: "mask", summary: "Keeps the people (Apple person segmentation); invert to keep the background, e.g. text behind a person or a background swap", params: [
+            ParamSpec("quality", .choice(["fast", "balanced", "accurate"]), .string("balanced"), "Edge quality against speed"),
+            ParamSpec("feather", .number, .number(0.003), min: 0, max: 0.05, unit: "of frame height", "Soft edge"),
+            ParamSpec("expand", .number, .number(0), min: -0.05, max: 0.05, unit: "of frame height", "Grow (positive) or shrink the mask"),
+            ParamSpec("smoothing", .number, .number(0.4), min: 0, max: 0.95, animatable: false, "Blends each frame's mask with the last to stop flicker"),
+            ParamSpec("invert", .bool, .bool(false), "Keep everything except the people"),
+        ]),
+        EffectType(id: "mask.subject", category: "mask", summary: "Keeps the main subjects, people, animals or objects (Apple foreground segmentation)", params: [
+            ParamSpec("feather", .number, .number(0.003), min: 0, max: 0.05, unit: "of frame height", "Soft edge"),
+            ParamSpec("expand", .number, .number(0), min: -0.05, max: 0.05, unit: "of frame height", "Grow or shrink the mask"),
+            ParamSpec("smoothing", .number, .number(0.4), min: 0, max: 0.95, animatable: false, "Temporal smoothing against flicker"),
+            ParamSpec("invert", .bool, .bool(false), "Keep the background instead"),
+        ]),
+        EffectType(id: "key.chroma", category: "mask", summary: "Green or blue screen key with spill suppression; put a background on the track below", params: [
+            ParamSpec("color", .text, .string("auto"), "Screen color as hex, or auto to detect it"),
+            ParamSpec("tolerance", .number, .number(0.35), min: 0, max: 1, "How far from the screen color still counts as screen"),
+            ParamSpec("softness", .number, .number(0.25), min: 0, max: 1, "Width of the partly transparent edge"),
+            ParamSpec("spill", .number, .number(0.8), min: 0, max: 1, "Removes screen-colored light on the subject"),
+            ParamSpec("feather", .number, .number(0.001), min: 0, max: 0.02, unit: "of frame height", "Edge softening"),
+        ]),
         EffectType(id: "audio.eq", category: "audio", summary: "Equalizer: low cut, low shelf, mid bell, high shelf, high cut", params: [
             num("highpass_hz", 0, 0, 2000, "Hz", "Remove rumble below this frequency; 0 off. 80 is typical for voice"),
             num("lowpass_hz", 0, 0, 22000, "Hz", "Remove hiss above this frequency; 0 off"),
@@ -205,7 +228,7 @@ public enum EffectCatalog {
         let titles = [
             "blur.gaussian": "blur", "blur.motion": "motion blur", "blur.zoom": "zoom blur", "blur.sharpen": "sharpening",
             "color.adjust": "color correction", "color.grade": "color wheels", "color.curves": "curves", "color.hsl": "HSL", "color.look": "look", "color.lut": "LUT", "color.monochrome": "black and white", "color.invert": "invert",
-            "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask",
+            "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask", "mask.person": "person mask", "mask.subject": "subject mask", "key.chroma": "chroma key",
             "distort.bulge": "bulge", "distort.twirl": "twirl",
         ]
         return titles[type] ?? shortName(type)

@@ -18,6 +18,8 @@ public struct Project: Codable, Equatable, Sendable {
     public var markers: [Marker]
     public var master: MasterAudio
     public var transitions: [Transition]
+    /// Groups of tracks nested into single clips.
+    public var sequences: [NestedSequence]
 
     public init(name: String, canvas: Canvas = Canvas()) {
         formatVersion = Project.currentFormat
@@ -32,9 +34,10 @@ public struct Project: Codable, Equatable, Sendable {
         markers = []
         master = MasterAudio()
         transitions = []
+        sequences = []
     }
 
-    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions }
+    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions, sequences }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -47,6 +50,7 @@ public struct Project: Codable, Equatable, Sendable {
         markers = try c.decodeIfPresent([Marker].self, forKey: .markers) ?? []
         master = try c.decodeIfPresent(MasterAudio.self, forKey: .master) ?? MasterAudio()
         transitions = try c.decodeIfPresent([Transition].self, forKey: .transitions) ?? []
+        sequences = try c.decodeIfPresent([NestedSequence].self, forKey: .sequences) ?? []
     }
 
     public var duration: Seconds {
@@ -179,6 +183,8 @@ public enum ClipKind: String, Codable, Sendable, CaseIterable {
     case solid
     /// Has no picture of its own; its effects apply to everything composited below it.
     case adjustment
+    /// A nested sequence (`Project.sequences`), played as one clip.
+    case sequence
 }
 
 public enum BlendMode: String, Codable, Sendable, Hashable, CaseIterable {

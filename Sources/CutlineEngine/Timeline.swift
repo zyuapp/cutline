@@ -43,6 +43,13 @@ public enum TimelineBuilder {
             if let id = w.transition.from { tails[id] = max(tails[id] ?? 0, w.tail) }
             if let id = w.transition.to { heads[id] = max(heads[id] ?? 0, w.head) }
         }
+        for c in project.tracks.flatMap(\.clips) where c.kind == .sequence {
+            guard let seq = c.mediaId.flatMap({ project.sequence($0) }) else { continue }
+            for w in project.inside(seq).transitionWindows where w.transition.hasVideo {
+                if let id = w.transition.from { tails["\(c.id)/\(id)"] = w.tail }
+                if let id = w.transition.to { heads["\(c.id)/\(id)"] = w.head }
+            }
+        }
         let duration = max(project.duration, project.canvas.frameDuration)
         let comp = AVMutableComposition()
         var trackIDs: [String: CMPersistentTrackID] = [:]
@@ -73,7 +80,11 @@ public enum TimelineBuilder {
 
         for track in project.tracks {
             if let dryTrack, track.id != dryTrack { continue }
-            let clips = track.clips.filter { $0.kind == .media }
+            // Nested sequences contribute their own media clips, with ids "<sequence clip>/<inner clip>".
+            let clips: [(kind: TrackKind, clip: Clip)] = track.clips.flatMap { c -> [(kind: TrackKind, clip: Clip)] in
+                if c.kind == .sequence { return project.expanded(c).filter { $0.clip.kind == .media }.map { (track.kind == .audio ? .audio : $0.kind, $0.clip) } }
+                return c.kind == .media ? [(track.kind, c)] : []
+            }
             guard !clips.isEmpty else { continue }
             let trackGain = dryTrack != nil ? 1 : (track.muted ? 0 : track.volume) * master
             let hasAudioFx = track.effects.contains { EffectCatalog.isAudio($0.type) && $0.enabled }
@@ -86,7 +97,7 @@ public enum TimelineBuilder {
             var videoLanes: [(track: AVMutableCompositionTrack, end: Seconds)] = []
             // Split edits can overlap neighbouring sound, so each track gets as many audio lanes as it needs.
             var lanes: [(track: AVMutableCompositionTrack, params: AVMutableAudioMixInputParameters, end: Seconds)] = []
-            for clip in clips {
+            for (pictureKind, clip) in clips {
                 guard let mid = clip.mediaId, let media = project.mediaAsset(mid) else { continue }
                 if media.isImage {
                     if images[mid] == nil, dryTrack == nil { images[mid] = library.image(for: media) }
@@ -109,7 +120,7 @@ public enum TimelineBuilder {
                     base = 0
                 }
 
-                if dryTrack == nil, track.kind == .video, let v = video, let vr = videoRange {
+                if dryTrack == nil, pictureKind == .video, let v = video, let vr = videoRange {
                     let head = heads[clip.id] ?? 0, tail = tails[clip.id] ?? 0
                     let start = clip.start - head
                     var lane = videoLanes.firstIndex { $0.end <= start + 1e-6 }

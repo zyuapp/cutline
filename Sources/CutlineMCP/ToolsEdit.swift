@@ -452,6 +452,7 @@ extension Toolbox {
         case .solid: return "color clip"
         case .media: return c.name ?? c.mediaId.flatMap { p.mediaAsset($0)?.name } ?? "clip"
         case .adjustment: return c.name ?? "adjustment layer"
+        case .sequence: return c.name ?? c.mediaId.flatMap { p.sequence($0)?.name } ?? "nested sequence"
         }
     }
 

@@ -29,10 +29,10 @@ public final class RenderScene: @unchecked Sendable {
     var canvasRect: CGRect { CGRect(x: 0, y: 0, width: project.canvas.width, height: project.canvas.height) }
 
     /// Draws the frame at a timeline time. `source` returns the decoded frame of a clip.
-    func render(at t: Seconds, source: (String) -> CVPixelBuffer?) -> CIImage {
+    func render(at t: Seconds, background: Bool = true, source: (String) -> CVPixelBuffer?) -> CIImage {
         let canvas = canvasRect
         let unit = canvas.height
-        var out = CIImage(color: CIColor(cgColor: project.canvas.background.cgColor)).cropped(to: canvas)
+        var out = CIImage(color: background ? CIColor(cgColor: project.canvas.background.cgColor) : .clear).cropped(to: canvas)
         for track in project.tracks where track.kind == .video && !track.hidden {
             if let w = windows[track.id]?.first(where: { $0.contains(t) }) {
                 let a = w.transition.from.flatMap { project.clip($0) }
@@ -127,14 +127,36 @@ public final class RenderScene: @unchecked Sendable {
             layer = textImage(spec, reveal: anim.reveal)
         case .adjustment:
             return nil
+        case .sequence:
+            guard let child = child(for: clip) else { return nil }
+            layer = child.render(at: clip.sourceIn + local, background: false) { inner in source("\(clip.id)/\(inner)") }
+            center = CGPoint(x: canvas.midX + xf.x * canvas.width, y: canvas.midY - xf.y * canvas.height)
         }
         guard var layer else { return nil }
         // Effects run before the clip is scaled, so lengths are divided by the scale to stay in final frame units.
-        let ctx = EffectRenderer.Context(unit: unit / max(CGFloat(xf.scale), 0.01), time: t, opaque: opaque)
+        var ctx = EffectRenderer.Context(unit: unit / max(CGFloat(xf.scale), 0.01), time: t, opaque: opaque)
+        if clip.kind == .media, let mid = clip.mediaId { ctx.source = MaskCache.Key(mediaId: mid, time: images[mid] != nil ? 0 : clip.sourceTime(atTimeline: t)) }
         if !clip.effects.isEmpty {
             layer = EffectRenderer.apply(clip.effects, to: layer, context: ctx, param: param)
         }
         return place(layer, center: center, scale: xf.scale, rotation: xf.rotation, opacity: xf.opacity)
+    }
+
+    private var children: [String: RenderScene] = [:]
+    private let childLock = NSLock()
+
+    /// The scene inside a sequence clip, sharing this scene's frames and images.
+    func child(for clip: Clip) -> RenderScene? {
+        guard let seq = clip.mediaId.flatMap({ project.sequence($0) }) else { return nil }
+        return childLock.withLock {
+            if let c = children[clip.id] { return c }
+            let prefix = clip.id + "/"
+            var inner = orientations
+            for (k, v) in orientations where k.hasPrefix(prefix) { inner[String(k.dropFirst(prefix.count))] = v }
+            let c = RenderScene(project: project.inside(seq), captions: [], trackIDs: [:], orientations: inner, images: images)
+            children[clip.id] = c
+            return c
+        }
     }
 
     func alpha(_ img: CIImage, _ a: Double) -> CIImage {
