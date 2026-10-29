@@ -4,26 +4,22 @@ import Foundation
 
 extension Toolbox {
     func registerAudioTools() {
-        add(Tool(name: "timeline_measure", description: "Measure the edit's sound as exported, with audio effects applied: integrated loudness (LUFS), short-term and momentary maximums, loudness range and sample peak, for the whole mix and optionally each track. Targets: −14 LUFS for streaming and social, −16 for podcasts, −23 for broadcast (EBU R128); keep peaks at or below −1 dBFS.", schema: Schema.object([
+        add(Tool(name: "timeline_measure", description: "Measure the edit as exported. sound: integrated loudness (LUFS), short-term and momentary maximums, loudness range and sample peak for the mix (and each track with tracks:true); targets −14 LUFS for streaming and social, −16 podcasts, −23 broadcast; peaks at or below −1 dBFS. picture: exposure (luma with 2nd/98th percentiles), clipped whites, crushed blacks, saturation and color cast per shot, shot-to-shot mismatches, black stretches, flash frames and photosensitive flashing. text: each title's and caption's contrast against the picture behind it (WCAG; aim for 4.5:1) and whether it sits inside the title-safe area.", schema: Schema.object([
             "start": Schema.time("From this timeline time or anchor"),
             "end": Schema.time("Until this timeline time or anchor"),
-            "tracks": Schema.bool("Also measure each track on its own, default false"),
+            "what": Schema.strings("Any of sound, picture, text; default all three"),
+            "tracks": Schema.bool("Also measure each track's sound on its own, default false"),
         ])) { [unowned self] args in
             let p = try session.project()
             guard p.duration > 0 else { throw EditError("The timeline is empty") }
             var range: TimeRange?
             if args.has("start") || args.has("end") { range = TimeRange(try args.optTime("start") ?? 0, try args.optTime("end") ?? p.duration) }
-            let mix = try await LoudnessMeter.measure(try await session.timeline(for: p), range: range)
-            var lines = ["Mix: " + mix.summary + (p.master.gainDb != 0 ? " (master gain \(fmt1(p.master.gainDb)) dB)" : "")]
-            if args.bool("tracks", default: false) {
-                for track in p.tracks where track.clips.contains(where: { $0.kind == .media }) && !track.muted {
-                    var solo = p
-                    for i in solo.tracks.indices where solo.tracks[i].id != track.id { solo.tracks[i].muted = true }
-                    let r = try await LoudnessMeter.measure(try await session.timeline(for: solo), range: range)
-                    lines.append("\(track.id) \"\(track.name)\": " + r.summary)
-                }
-            }
-            if mix.peakDb > -1 { lines.append("Warning: peaks reach \(fmt1(mix.peakDb)) dBFS; add audio.limiter (ceiling −1) to the loudest track or lower the gain.") }
+            let what = Set(args.strings("what") ?? ["sound", "picture", "text"])
+            var lines: [String] = []
+            if what.contains("sound") { lines += try await measureSound(p, range: range, tracks: args.bool("tracks", default: false)) }
+            if what.contains("picture") { lines += try await measurePicture(p, range: range) }
+            if what.contains("text") { lines += try await measureText(p, range: range) }
+            guard !lines.isEmpty else { throw EditError("what is any of sound, picture, text") }
             return .text(lines.joined(separator: "\n"))
         })
 
@@ -83,12 +79,116 @@ extension Toolbox {
         })
     }
 
+    func measureSound(_ p: Project, range: TimeRange?, tracks: Bool) async throws -> [String] {
+        let mix = try await LoudnessMeter.measure(try await session.timeline(for: p), range: range)
+        var lines = ["Sound mix: " + mix.summary + (p.master.gainDb != 0 ? " (master gain \(fmt1(p.master.gainDb)) dB)" : "")]
+        if tracks {
+            for track in p.tracks where track.clips.contains(where: { $0.kind == .media }) && !track.muted {
+                var solo = p
+                for i in solo.tracks.indices where solo.tracks[i].id != track.id { solo.tracks[i].muted = true }
+                let r = try await LoudnessMeter.measure(try await session.timeline(for: solo), range: range)
+                lines.append("  \(track.id) \"\(track.name)\": " + r.summary)
+            }
+        }
+        if mix.peakDb > -1 { lines.append("  Warning: peaks reach \(fmt1(mix.peakDb)) dBFS; add audio.limiter (ceiling −1) to the loudest track or the master, or lower the gain.") }
+        return lines
+    }
+
+    func measurePicture(_ p: Project, range: TimeRange?) async throws -> [String] {
+        let b = try session.requireBundle()
+        let scale = min(1, 320 / Double(max(p.canvas.width, p.canvas.height)))
+        let built = try await TimelineBuilder.build(p, transcripts: b.transcripts(for: p), library: session.library, renderScale: scale)
+        let r = try await PictureMeter.measure(built, range: range)
+        guard !r.frames.isEmpty else { return ["Picture: no frames in range"] }
+        func summary(_ fs: ArraySlice<FrameStats>) -> String {
+            let n = Double(fs.count)
+            let luma = fs.map(\.luma).reduce(0, +) / n, lo = fs.map(\.p2).reduce(0, +) / n, hi = fs.map(\.p98).reduce(0, +) / n
+            let clip = fs.map(\.clipped).reduce(0, +) / n, crush = fs.map(\.crushed).reduce(0, +) / n, sat = fs.map(\.saturation).reduce(0, +) / n
+            let cb = fs.map(\.cb).reduce(0, +) / n, cr = fs.map(\.cr).reduce(0, +) / n
+            var s = "luma \(fmt2(luma)) (\(fmt2(lo))–\(fmt2(hi))), sat \(fmt2(sat))"
+            if clip > 0.005 { s += ", clipped whites \(fmt1(clip * 100))%" }
+            if crush > 0.02 { s += ", crushed blacks \(fmt1(crush * 100))%" }
+            let cast = Toolbox.castName(cb: cb, cr: cr)
+            if !cast.isEmpty { s += ", cast \(cast)" }
+            return s
+        }
+        var lines = ["Picture (\(r.frames.count) frames): " + summary(r.frames[...])]
+        // Shots: spans between cuts on the visible video tracks.
+        var cuts = Set<Double>([0, p.duration])
+        for t in p.tracks where t.kind == .video && !t.hidden { for c in t.clips where c.kind == .media || c.kind == .solid { cuts.insert(c.start); cuts.insert(c.end) } }
+        let bounds = cuts.sorted()
+        var previous: (luma: Double, cb: Double, cr: Double, label: String)?
+        for (a, z) in zip(bounds, bounds.dropFirst()) where z - a > 0.3 {
+            let fs = r.frames.filter { $0.time >= a + 0.05 && $0.time < z - 0.05 }
+            guard !fs.isEmpty else { continue }
+            let main = p.tracks.filter { $0.kind == .video && !$0.hidden }.compactMap { $0.clip(at: (a + z) / 2) }.filter { $0.kind == .media || $0.kind == .solid }.last
+            let label = "\(fmt2(a))–\(fmt2(z)) \(main?.id ?? "")"
+            lines.append("  \(label): " + summary(fs[...]))
+            let n = Double(fs.count)
+            let cur = (luma: fs.map(\.luma).reduce(0, +) / n, cb: fs.map(\.cb).reduce(0, +) / n, cr: fs.map(\.cr).reduce(0, +) / n, label: label)
+            if let prev = previous {
+                var why: [String] = []
+                if abs(cur.luma - prev.luma) > 0.15 { why.append("brightness \(fmt2(prev.luma))→\(fmt2(cur.luma))") }
+                if hypot(cur.cb - prev.cb, cur.cr - prev.cr) > 0.035 { why.append("color cast") }
+                if !why.isEmpty { lines.append("    mismatch with the shot before: " + why.joined(separator: ", ")) }
+            }
+            previous = cur
+        }
+        if !r.black.isEmpty { lines.append("Black: " + r.black.map { "\(fmt2($0.start))–\(fmt2($0.end))" }.joined(separator: ", ")) }
+        if !r.flashFrames.isEmpty { lines.append("Flash frames (1–2 frames that jump in brightness): " + r.flashFrames.map { fmt2($0) }.joined(separator: ", ")) }
+        if !r.flashes.isEmpty { lines.append("Warning: more than 3 flashes per second at " + r.flashes.map { "\(fmt2($0.start))–\(fmt2($0.end))" }.joined(separator: ", ") + " (photosensitive seizure risk, WCAG 2.3.1)") }
+        let short = p.tracks.filter { $0.kind == .video }.flatMap(\.clips).filter { $0.duration < 2.5 / p.canvas.fps }
+        if !short.isEmpty { lines.append("Clips shorter than 3 frames: " + short.map(\.id).joined(separator: ", ")) }
+        return lines
+    }
+
+    static func castName(cb: Double, cr: Double) -> String {
+        guard hypot(cb, cr) > 0.02 else { return "" }
+        let angle = atan2(cr, cb) * 180 / .pi
+        let name: String = switch angle {
+        case -22.5..<22.5: "blue"
+        case 22.5..<67.5: "magenta"
+        case 67.5..<112.5: "red"
+        case 112.5..<157.5: "orange"
+        case -67.5 ..< -22.5: "cyan"
+        case -112.5 ..< -67.5: "green"
+        case -157.5 ..< -112.5: "yellow-green"
+        default: "yellow"
+        }
+        return "\(name) \(fmt2(hypot(cb, cr)))"
+    }
+
+    func measureText(_ p: Project, range: TimeRange?) async throws -> [String] {
+        let b = try session.requireBundle()
+        let transcripts = b.transcripts(for: p)
+        var bare = p
+        for i in bare.tracks.indices { bare.tracks[i].clips.removeAll { $0.kind == .text } }
+        bare.captions.enabled = false
+        let built = try await TimelineBuilder.build(bare, transcripts: transcripts, library: session.library, renderScale: min(1, 640 / Double(max(p.canvas.width, p.canvas.height))))
+        let captions = p.captions.enabled ? p.captionSegments(transcripts: transcripts) : []
+        var checks = try await PictureMeter.checkText(p, captions: captions) { t in
+            try await Frames.timeline(built, times: [t], maxSize: CGSize(width: 640, height: 640))[0].image
+        }
+        if let range { checks = checks.filter { $0.time >= range.start && $0.time < range.end } }
+        guard !checks.isEmpty else { return ["Text: no titles or captions"] }
+        var lines = ["Text (contrast against the picture behind; WCAG asks 4.5:1, 3:1 for large text):"]
+        for c in checks {
+            var s = "  \(c.label) at \(fmt2(c.time))s: contrast \(fmt1(c.contrast)):1"
+            if c.contrast < 3 { s += " — hard to read; add text.stroke, text.background, a darker/lighter color, or move it" }
+            else if c.contrast < 4.5 { s += " — fine for large text only" }
+            s += c.safeOverflow > 0.001 ? ", outside title-safe by \(fmt1(c.safeOverflow * 100))% of the frame" : ", inside title-safe"
+            lines.append(s)
+        }
+        return lines
+    }
+
     /// Applies an edit body as one history entry, or reports it without applying when dry.
     func runEdit(_ label: String, dry: Bool, _ body: (inout Project) throws -> String) throws -> ToolResult {
         let before = try session.project()
         if dry {
             var p = before
             let summary = try body(&p)
+            p.pruneTransitions()
             try p.validate()
             return .text("Dry run, nothing changed.\n" + summary + Toolbox.changesText(p, before))
         }

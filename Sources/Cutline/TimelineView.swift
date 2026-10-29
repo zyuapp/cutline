@@ -486,6 +486,46 @@ final class TimelineCanvas: NSView {
             }
             drawLabel(clip, media: media, rect: rect, onPicture: isPicture && isMain, audioOnly: clip.kind == .media && !isPicture, dim: dim)
         }
+        drawTransitions(track, in: lane, ctx: ctx, glow: glow)
+    }
+
+    /// Transitions sit over the cut as a crossed tab spanning their window.
+    private func drawTransitions(_ track: Track, in lane: CGRect, ctx: CGContext, glow: CGFloat) {
+        for w in project.transitionWindows where w.trackId == track.id {
+            let x0 = xFor(w.start), x1 = xFor(w.end)
+            guard x1 >= headerW, x0 <= bounds.width else { continue }
+            let h = min(lane.height - 8, 22)
+            let rect = CGRect(x: x0, y: lane.midY - h / 2, width: max(8, x1 - x0), height: h)
+            let tab = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
+            Theme.NS.desk.withAlphaComponent(0.82).setFill()
+            tab.fill()
+            let lit = glow > 0 && ([w.transition.from, w.transition.to].contains { $0.map(changed.contains) ?? false })
+            let ink = lit ? Theme.NS.claude : Theme.NS.ink2
+            ink.withAlphaComponent(0.9).setStroke()
+            tab.lineWidth = 1
+            tab.stroke()
+            let cross = NSBezierPath()
+            let inset = rect.insetBy(dx: 3, dy: 4)
+            if w.transition.from != nil {
+                cross.move(to: CGPoint(x: inset.minX, y: inset.maxY))
+                cross.line(to: CGPoint(x: inset.maxX, y: inset.minY))
+            }
+            if w.transition.to != nil {
+                cross.move(to: CGPoint(x: inset.minX, y: inset.minY))
+                cross.line(to: CGPoint(x: inset.maxX, y: inset.maxY))
+            }
+            ink.withAlphaComponent(0.55).setStroke()
+            cross.lineWidth = 1
+            cross.stroke()
+            if rect.width > 64 {
+                let label = Typeface.attributed(w.transition.type, [.font: Typeface.ns(10.5, .medium), .foregroundColor: Theme.NS.ink])
+                let size = label.size()
+                let pill = CGRect(x: rect.midX - size.width / 2 - 4, y: rect.midY - size.height / 2 - 1, width: size.width + 8, height: size.height + 2)
+                Theme.NS.desk.setFill()
+                NSBezierPath(roundedRect: pill, xRadius: 3, yRadius: 3).fill()
+                label.draw(at: CGPoint(x: pill.minX + 4, y: pill.minY + 1))
+            }
+        }
     }
 
     private func drawScrim(_ rect: CGRect, ctx: CGContext) {

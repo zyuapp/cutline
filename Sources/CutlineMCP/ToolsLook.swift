@@ -97,13 +97,14 @@ extension Toolbox {
             return lines.joined(separator: "\n")
         })
 
-        add(Tool(name: "catalog", description: "Look up what Cutline can do. No arguments: effect types by category, blend modes, eases, parameter paths and time anchors. type: one effect's parameters with ranges, units and an example call. search: find effects by word. paths: every clip and track parameter path.", schema: Schema.object([
-            "type": Schema.string("Effect type id such as stylize.vignette"),
+        add(Tool(name: "catalog", description: "Look up what Cutline can do. No arguments: effect types by category, transitions, blend modes, eases, parameter paths and time anchors. type: one effect's parameters with ranges, units and an example call. search: find effects by word. paths: every clip and track parameter path.", schema: Schema.object([
+            "type": Schema.string("Effect or transition type id such as stylize.vignette or wipe"),
             "search": Schema.string("Word to search for, e.g. \"blur\" or \"warm\""),
             "paths": Schema.bool("List every clip and track parameter path"),
         ])) { args in
             if let id = args.optString("type") {
-                guard let t = EffectCatalog.type(id) else { throw EditError("No effect \(id). Types: \(EffectCatalog.all.map(\.id).joined(separator: ", "))") }
+                if let t = TransitionCatalog.type(id) { return .text(Toolbox.describeTransitionType(t)) }
+                guard let t = EffectCatalog.type(id) else { throw EditError("No effect or transition \(id). Effects: \(EffectCatalog.all.map(\.id).joined(separator: ", ")). Transitions: \(TransitionCatalog.all.map(\.id).joined(separator: ", "))") }
                 return .text(Toolbox.describeEffectType(t))
             }
             if let q = args.optString("search")?.lowercased() {
@@ -324,6 +325,8 @@ extension Toolbox {
             lines.append("  \(cat): \(summary)")
             for t in EffectCatalog.all where t.category == cat { lines.append("    \(t.id): \(t.summary)") }
         }
+        lines.append("Transitions (transition_set; catalog type=<id> for parameters):")
+        for t in TransitionCatalog.all { lines.append("    \(t.id): \(t.summary)") }
         lines += [
             "Blend modes (param_set blend): " + BlendMode.allCases.map(\.rawValue).joined(separator: ", "),
             "Eases for animation keys: " + Easing.allCases.map(\.rawValue).joined(separator: ", "),

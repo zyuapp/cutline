@@ -17,6 +17,7 @@ public struct Project: Codable, Equatable, Sendable {
     public var captions: Captions
     public var markers: [Marker]
     public var master: MasterAudio
+    public var transitions: [Transition]
 
     public init(name: String, canvas: Canvas = Canvas()) {
         formatVersion = Project.currentFormat
@@ -30,9 +31,10 @@ public struct Project: Codable, Equatable, Sendable {
         captions = Captions()
         markers = []
         master = MasterAudio()
+        transitions = []
     }
 
-    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master }
+    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -44,6 +46,7 @@ public struct Project: Codable, Equatable, Sendable {
         captions = try c.decodeIfPresent(Captions.self, forKey: .captions) ?? Captions()
         markers = try c.decodeIfPresent([Marker].self, forKey: .markers) ?? []
         master = try c.decodeIfPresent(MasterAudio.self, forKey: .master) ?? MasterAudio()
+        transitions = try c.decodeIfPresent([Transition].self, forKey: .transitions) ?? []
     }
 
     public var duration: Seconds {

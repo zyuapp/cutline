@@ -175,7 +175,9 @@ extension Clip {
             switch parts[2] {
             case "mix": effects[i].mix = v.number ?? 1
             case "enabled": effects[i].enabled = v.bool ?? true
-            default: effects[i].params[parts[2]] = v
+            default:
+                try Effect.checkResource(type: effects[i].type, param: parts[2], value: v)
+                effects[i].params[parts[2]] = v
             }
             return
         }
@@ -322,7 +324,9 @@ extension Track {
             switch parts[2] {
             case "mix": effects[i].mix = v.number ?? 1
             case "enabled": effects[i].enabled = v.bool ?? true
-            default: effects[i].params[parts[2]] = v
+            default:
+                try Effect.checkResource(type: effects[i].type, param: parts[2], value: v)
+                effects[i].params[parts[2]] = v
             }
             return
         }
@@ -360,4 +364,20 @@ func editDistance(_ a: String, _ b: String) -> Int {
         prev = cur
     }
     return prev[b.count]
+}
+
+extension Effect {
+    /// Checks parameters that are only meaningful once parsed or loaded: curve strings and LUT files.
+    public static func checkResource(type: String, param: String, value: ParamValue) throws {
+        guard let s = value.string, !s.isEmpty else { return }
+        switch (type, param) {
+        case ("color.curves", _):
+            _ = try ColorMath.curves(master: s, red: nil, green: nil, blue: nil)
+        case ("color.lut", "file"):
+            guard let text = try? String(contentsOfFile: s, encoding: .utf8) else { throw EditError("Cannot read LUT file \(s)") }
+            _ = try ColorMath.parseCube(text)
+        default:
+            break
+        }
+    }
 }

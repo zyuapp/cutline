@@ -131,9 +131,14 @@ extension Toolbox {
             let frames = try await Frames.timeline(built, times: times, maxSize: CGSize(width: cell * 1.5, height: cell * 1.5))
             guard let jpeg = Frames.contactSheet(frames, columns: large ? min(2, frames.count) : nil, cellWidth: cell) else { throw EditError("Could not render frames") }
             var lines: [String] = []
+            let windows = p.transitionWindows.filter(\.transition.hasVideo)
             for f in frames {
                 let visible = p.tracks.reversed().compactMap { t -> String? in
-                    guard !t.hidden, let c = t.clip(at: f.time) else { return nil }
+                    guard !t.hidden else { return nil }
+                    if let w = windows.first(where: { $0.trackId == t.id && $0.contains(f.time) }) {
+                        return "\(t.id):\(w.transition.id) \(w.transition.type) \(Int((w.progress(at: f.time) * 100).rounded()))% \(w.transition.from ?? "∅")→\(w.transition.to ?? "∅")"
+                    }
+                    guard let c = t.clip(at: f.time) else { return nil }
                     return "\(t.id):\(c.id)" + (c.kind == .media ? "@\(fmt2(c.sourceTime(atTimeline: f.time)))" : "")
                 }
                 lines.append("\(fmt2(f.time))s  " + (visible.isEmpty ? "(background)" : visible.joined(separator: "  ")))

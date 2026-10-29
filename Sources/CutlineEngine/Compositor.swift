@@ -8,9 +8,12 @@ import Metal
 public final class RenderScene: @unchecked Sendable {
     public let project: Project
     public let captions: [CaptionSegment]
+    /// Composition track of each clip's picture, by clip id.
     let trackIDs: [String: CMPersistentTrackID]
     let orientations: [String: CGImagePropertyOrientation]
     let images: [String: CIImage]
+    /// Video transition windows by track id.
+    let windows: [String: [TransitionWindow]]
     private let cache = NSCache<NSString, CIImage>()
 
     init(project: Project, captions: [CaptionSegment], trackIDs: [String: CMPersistentTrackID], orientations: [String: CGImagePropertyOrientation], images: [String: CIImage]) {
@@ -19,88 +22,43 @@ public final class RenderScene: @unchecked Sendable {
         self.trackIDs = trackIDs
         self.orientations = orientations
         self.images = images
+        windows = Dictionary(grouping: project.transitionWindows.filter(\.transition.hasVideo), by: \.trackId)
         cache.countLimit = 400
     }
 
     var canvasRect: CGRect { CGRect(x: 0, y: 0, width: project.canvas.width, height: project.canvas.height) }
 
-    /// Draws the frame at a timeline time. `source` returns the decoded frame of a model track.
+    /// Draws the frame at a timeline time. `source` returns the decoded frame of a clip.
     func render(at t: Seconds, source: (String) -> CVPixelBuffer?) -> CIImage {
         let canvas = canvasRect
         let unit = canvas.height
         var out = CIImage(color: CIColor(cgColor: project.canvas.background.cgColor)).cropped(to: canvas)
         for track in project.tracks where track.kind == .video && !track.hidden {
+            if let w = windows[track.id]?.first(where: { $0.contains(t) }) {
+                let a = w.transition.from.flatMap { project.clip($0) }
+                let b = w.transition.to.flatMap { project.clip($0) }
+                let p = w.progress(at: t)
+                var combined = TransitionRenderer.render(w.transition, a: a.flatMap { layer($0, at: t, source: source) }, b: b.flatMap { layer($0, at: t, source: source) }, p: p, canvas: canvas, frame: Int((t * project.canvas.fps).rounded()))
+                if !track.effects.isEmpty {
+                    combined = EffectRenderer.apply(track.effects, to: combined, context: EffectRenderer.Context(unit: unit, time: t, opaque: false)) { _, _ in nil }
+                }
+                let mode = (p < 0.5 ? a ?? b : b ?? a)?.blend ?? .normal
+                out = EffectRenderer.blend(combined, over: out, mode: mode).cropped(to: canvas)
+                continue
+            }
             guard let clip = track.clip(at: t) else { continue }
-            let local = t - clip.start
-            var xf = clip.resolvedTransform(at: local)
-            guard xf.opacity > 0.001 else { continue }
-            let param: (Effect, String) -> ParamValue? = { e, name in clip.anim["fx.\(e.id).\(name)"]?.value(at: local) }
-
             if clip.kind == .adjustment {
+                let local = t - clip.start
+                let opacity = clip.resolvedTransform(at: local).opacity
+                guard opacity > 0.001 else { continue }
                 let ctx = EffectRenderer.Context(unit: unit, time: t, opaque: true)
-                var adjusted = EffectRenderer.apply(clip.effects, to: out, context: ctx, param: param)
+                var adjusted = EffectRenderer.apply(clip.effects, to: out, context: ctx) { e, name in clip.anim["fx.\(e.id).\(name)"]?.value(at: local) }
                 adjusted = EffectRenderer.apply(track.effects, to: adjusted, context: ctx) { _, _ in nil }
-                if xf.opacity < 0.999 { adjusted = alpha(adjusted, xf.opacity) }
+                if opacity < 0.999 { adjusted = alpha(adjusted, opacity) }
                 out = adjusted.composited(over: out).cropped(to: canvas)
                 continue
             }
-
-            var layer: CIImage?
-            var opaque = false
-            var center = CGPoint(x: canvas.midX + xf.x * canvas.width, y: canvas.midY - xf.y * canvas.height)
-            switch clip.kind {
-            case .media:
-                guard let mid = clip.mediaId else { continue }
-                var img: CIImage?
-                if let still = images[mid] {
-                    img = still
-                } else if let pb = source(track.id) {
-                    img = CIImage(cvPixelBuffer: pb).oriented(orientations[mid] ?? .up)
-                    opaque = true
-                }
-                guard var img else { continue }
-                img = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
-                let c = xf.crop
-                if !c.isEmpty {
-                    let e = img.extent
-                    img = img.cropped(to: CGRect(x: e.width * c.left, y: e.height * c.bottom, width: e.width * max(0.01, 1 - c.left - c.right), height: e.height * max(0.01, 1 - c.top - c.bottom)))
-                    img = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
-                }
-                let e = img.extent
-                guard e.width > 0, e.height > 0 else { continue }
-                // Bring the picture to canvas pixel scale first so effect sizes are resolution independent.
-                switch xf.fit {
-                case .fit:
-                    let s = min(canvas.width / e.width, canvas.height / e.height)
-                    img = img.transformed(by: CGAffineTransform(scaleX: s, y: s), highQualityDownsample: s < 1)
-                case .fill:
-                    let s = max(canvas.width / e.width, canvas.height / e.height)
-                    img = img.transformed(by: CGAffineTransform(scaleX: s, y: s), highQualityDownsample: s < 1)
-                case .stretch:
-                    img = img.transformed(by: CGAffineTransform(scaleX: canvas.width / e.width, y: canvas.height / e.height))
-                }
-                layer = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
-            case .solid:
-                let color = clip.value("color", at: local)?.color ?? clip.color ?? .black
-                layer = CIImage(color: CIColor(cgColor: color.cgColor)).cropped(to: canvas)
-                opaque = true
-            case .text:
-                guard let spec = clip.resolvedText(at: local) else { continue }
-                let anim = TextAnimator.state(spec: spec, local: local, duration: clip.duration)
-                xf.opacity *= anim.opacity
-                xf.scale *= anim.scale
-                center = CGPoint(x: canvas.width * (spec.x + xf.x), y: canvas.height * (1 - spec.y - xf.y - anim.yOffset))
-                layer = textImage(spec, reveal: anim.reveal)
-            case .adjustment:
-                continue
-            }
-            guard var layer else { continue }
-            // Effects run before the clip is scaled, so lengths are divided by the scale to stay in final frame units.
-            let ctx = EffectRenderer.Context(unit: unit / max(CGFloat(xf.scale), 0.01), time: t, opaque: opaque)
-            if !clip.effects.isEmpty {
-                layer = EffectRenderer.apply(clip.effects, to: layer, context: ctx, param: param)
-            }
-            var placed = place(layer, center: center, scale: xf.scale, rotation: xf.rotation, opacity: xf.opacity)
+            guard var placed = layer(clip, at: t, source: source) else { continue }
             if !track.effects.isEmpty {
                 placed = EffectRenderer.apply(track.effects, to: placed, context: EffectRenderer.Context(unit: unit, time: t, opaque: false)) { _, _ in nil }
             }
@@ -110,6 +68,73 @@ public final class RenderScene: @unchecked Sendable {
             out = caption.composited(over: out)
         }
         return out.cropped(to: canvas)
+    }
+
+    /// A clip's picture at timeline time `t` with its effects and transform applied, in canvas space.
+    /// `t` may fall outside the clip while a transition borrows its handles.
+    func layer(_ clip: Clip, at t: Seconds, source: (String) -> CVPixelBuffer?) -> CIImage? {
+        let canvas = canvasRect
+        let unit = canvas.height
+        let local = t - clip.start
+        var xf = clip.resolvedTransform(at: local)
+        guard xf.opacity > 0.001 else { return nil }
+        let param: (Effect, String) -> ParamValue? = { e, name in clip.anim["fx.\(e.id).\(name)"]?.value(at: local) }
+        var layer: CIImage?
+        var opaque = false
+        var center = CGPoint(x: canvas.midX + xf.x * canvas.width, y: canvas.midY - xf.y * canvas.height)
+        switch clip.kind {
+        case .media:
+            guard let mid = clip.mediaId else { return nil }
+            var img: CIImage?
+            if let still = images[mid] {
+                img = still
+            } else if let pb = source(clip.id) {
+                img = CIImage(cvPixelBuffer: pb).oriented(orientations[mid] ?? .up)
+                opaque = true
+            }
+            guard var img else { return nil }
+            img = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
+            let c = xf.crop
+            if !c.isEmpty {
+                let e = img.extent
+                img = img.cropped(to: CGRect(x: e.width * c.left, y: e.height * c.bottom, width: e.width * max(0.01, 1 - c.left - c.right), height: e.height * max(0.01, 1 - c.top - c.bottom)))
+                img = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
+            }
+            let e = img.extent
+            guard e.width > 0, e.height > 0 else { return nil }
+            // Bring the picture to canvas pixel scale first so effect sizes are resolution independent.
+            switch xf.fit {
+            case .fit:
+                let s = min(canvas.width / e.width, canvas.height / e.height)
+                img = img.transformed(by: CGAffineTransform(scaleX: s, y: s), highQualityDownsample: s < 1)
+            case .fill:
+                let s = max(canvas.width / e.width, canvas.height / e.height)
+                img = img.transformed(by: CGAffineTransform(scaleX: s, y: s), highQualityDownsample: s < 1)
+            case .stretch:
+                img = img.transformed(by: CGAffineTransform(scaleX: canvas.width / e.width, y: canvas.height / e.height))
+            }
+            layer = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
+        case .solid:
+            let color = clip.value("color", at: local)?.color ?? clip.color ?? .black
+            layer = CIImage(color: CIColor(cgColor: color.cgColor)).cropped(to: canvas)
+            opaque = true
+        case .text:
+            guard let spec = clip.resolvedText(at: local) else { return nil }
+            let anim = TextAnimator.state(spec: spec, local: min(max(local, 0), clip.duration), duration: clip.duration)
+            xf.opacity *= anim.opacity
+            xf.scale *= anim.scale
+            center = CGPoint(x: canvas.width * (spec.x + xf.x), y: canvas.height * (1 - spec.y - xf.y - anim.yOffset))
+            layer = textImage(spec, reveal: anim.reveal)
+        case .adjustment:
+            return nil
+        }
+        guard var layer else { return nil }
+        // Effects run before the clip is scaled, so lengths are divided by the scale to stay in final frame units.
+        let ctx = EffectRenderer.Context(unit: unit / max(CGFloat(xf.scale), 0.01), time: t, opaque: opaque)
+        if !clip.effects.isEmpty {
+            layer = EffectRenderer.apply(clip.effects, to: layer, context: ctx, param: param)
+        }
+        return place(layer, center: center, scale: xf.scale, rotation: xf.rotation, opacity: xf.opacity)
     }
 
     func alpha(_ img: CIImage, _ a: Double) -> CIImage {
@@ -244,7 +269,7 @@ final class CutlineInstruction: NSObject, AVVideoCompositionInstructionProtocol,
     init(timeRange: CMTimeRange, scene: RenderScene) {
         self.timeRange = timeRange
         self.scene = scene
-        requiredSourceTrackIDs = scene.trackIDs.values.sorted().map { NSNumber(value: $0) }
+        requiredSourceTrackIDs = Set(scene.trackIDs.values).sorted().map { NSNumber(value: $0) }
     }
 }
 
@@ -282,8 +307,8 @@ public final class CutlineCompositor: NSObject, AVVideoCompositing, @unchecked S
                     return
                 }
                 let scene = instruction.scene
-                let image = scene.render(at: request.compositionTime.seconds) { trackId in
-                    guard let id = scene.trackIDs[trackId] else { return nil }
+                let image = scene.render(at: request.compositionTime.seconds) { clipId in
+                    guard let id = scene.trackIDs[clipId] else { return nil }
                     return request.sourceFrame(byTrackID: id)
                 }
                 let w = CVPixelBufferGetWidth(out), h = CVPixelBufferGetHeight(out)

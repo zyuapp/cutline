@@ -53,6 +53,7 @@ final class Session {
         var p = try b.loadProject()
         let before = p
         try body(&p)
+        p.pruneTransitions()
         guard p != before else { return p }
         try b.commit(p, label: label)
         return p

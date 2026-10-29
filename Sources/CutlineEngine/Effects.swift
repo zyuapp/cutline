@@ -1,6 +1,7 @@
 import CoreImage
 import CutlineCore
 import Foundation
+import simd
 
 /// Renders catalog effects with Core Image.
 ///
@@ -80,6 +81,11 @@ enum EffectRenderer {
             return img.applyingFilter("CIColorMonochrome", parameters: [kCIInputColorKey: CIColor(red: color.r, green: color.g, blue: color.b), kCIInputIntensityKey: n("amount")])
         case "color.invert":
             return img.applyingFilter("CIColorInvert")
+        case "color.grade", "color.curves", "color.hsl", "color.look", "color.lut":
+            guard let cube = ColorCubes.cube(type, v) else { return img }
+            return img.applyingFilter("CIColorCubeWithColorSpace", parameters: [
+                "inputCubeDimension": cube.size, "inputCubeData": cube.data, "inputColorSpace": ColorCubes.space,
+            ]).cropped(to: e)
         case "stylize.glow":
             return local("CIBloom", [kCIInputRadiusKey: n("radius") * ctx.unit, kCIInputIntensityKey: n("amount")])
         case "stylize.vignette":
@@ -201,5 +207,79 @@ enum EffectRenderer {
         case .luminosity: name = "CILuminosityBlendMode"
         }
         return layer.applyingFilter(name, parameters: [kCIInputBackgroundImageKey: base])
+    }
+}
+
+/// 3D LUTs baked from color effect parameters or loaded from .cube files, cached by content.
+enum ColorCubes {
+    final class Cube {
+        let size: Int
+        let data: Data
+        init(size: Int, data: Data) {
+            self.size = size
+            self.data = data
+        }
+    }
+
+    static let space = CGColorSpace(name: CGColorSpace.sRGB)!
+    nonisolated(unsafe) static let cache: NSCache<NSString, Cube> = {
+        let c = NSCache<NSString, Cube>()
+        c.countLimit = 64
+        return c
+    }()
+
+    static func cube(_ type: String, _ v: @escaping (String) -> ParamValue) -> Cube? {
+        guard let spec = EffectCatalog.type(type) else { return nil }
+        var key = type
+        for p in spec.params {
+            let value = v(p.name)
+            key += "|" + (value.number.map { String(format: "%.4f", $0) } ?? value.description)
+        }
+        if type == "color.lut", let path = v("file").string {
+            let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            key += "|\(mtime)"
+        }
+        if let hit = cache.object(forKey: key as NSString) { return hit }
+        guard let cube = make(type, v) else { return nil }
+        cache.setObject(cube, forKey: key as NSString)
+        return cube
+    }
+
+    static func make(_ type: String, _ v: @escaping (String) -> ParamValue) -> Cube? {
+        let n: (String) -> Float = { Float(v($0).number ?? 0) }
+        let text: (String) -> String? = { v($0).string.flatMap { $0.isEmpty ? nil : $0 } }
+        let f: ColorMath.Transform
+        switch type {
+        case "color.grade":
+            let tint: (String) -> RGBA? = { v($0).color }
+            f = ColorMath.grade(lift: n("lift"), gamma: n("gamma"), gain: n("gain"), shadowsTint: tint("shadows"), shadowsAmount: n("shadows_amount"), midtonesTint: tint("midtones"), midtonesAmount: n("midtones_amount"), highlightsTint: tint("highlights"), highlightsAmount: n("highlights_amount"))
+        case "color.curves":
+            guard let t = try? ColorMath.curves(master: text("master"), red: text("red"), green: text("green"), blue: text("blue")) else { return nil }
+            f = t
+        case "color.hsl":
+            guard let t = try? ColorMath.hsl(range: v("range").string ?? "blues", hue: n("hue"), saturation: n("saturation"), lightness: n("lightness")) else { return nil }
+            f = t
+        case "color.look":
+            guard let t = try? ColorMath.look(v("look").string ?? "teal_orange", amount: n("amount")) else { return nil }
+            f = t
+        case "color.lut":
+            guard let path = text("file"), let s = try? String(contentsOfFile: path, encoding: .utf8), let lut = try? ColorMath.parseCube(s) else { return nil }
+            if lut.domainMin == SIMD3(0, 0, 0) && lut.domainMax == SIMD3(1, 1, 1) {
+                return Cube(size: lut.size, data: lut.rgba.withUnsafeBufferPointer { Data(buffer: $0) })
+            }
+            // Re-sample LUTs with a custom input domain onto 0…1.
+            let size = lut.size
+            f = { c in
+                let x = (c - lut.domainMin) / (lut.domainMax - lut.domainMin)
+                let i = simd_clamp(x, SIMD3(repeating: 0), SIMD3(repeating: 1)) * Float(size - 1)
+                let r = Int(i.x.rounded()), g = Int(i.y.rounded()), b = Int(i.z.rounded())
+                let o = ((b * size + g) * size + r) * 4
+                return SIMD3(lut.rgba[o], lut.rgba[o + 1], lut.rgba[o + 2])
+            }
+        default:
+            return nil
+        }
+        let data = ColorMath.cubeData(size: 33, f)
+        return Cube(size: 33, data: data.withUnsafeBufferPointer { Data(buffer: $0) })
     }
 }

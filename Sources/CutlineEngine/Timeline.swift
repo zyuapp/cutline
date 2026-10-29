@@ -37,6 +37,12 @@ public enum TimelineBuilder {
     /// `dryTrack` builds only that track's sound, before track gain and effects, for stem rendering.
     /// With `masterStage`, a rendered master stem (the mix through the master effects) replaces the tracks' sound.
     static func build(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary, renderScale: Double, stems: AudioStems?, dryTrack: String?, masterStage: Bool) async throws -> BuiltTimeline {
+        let project = project.resolvingAudioTransitions()
+        var heads: [String: Seconds] = [:], tails: [String: Seconds] = [:]
+        for w in project.transitionWindows where w.transition.hasVideo {
+            if let id = w.transition.from { tails[id] = max(tails[id] ?? 0, w.tail) }
+            if let id = w.transition.to { heads[id] = max(heads[id] ?? 0, w.head) }
+        }
         let duration = max(project.duration, project.canvas.frameDuration)
         let comp = AVMutableComposition()
         var trackIDs: [String: CMPersistentTrackID] = [:]
@@ -73,7 +79,8 @@ public enum TimelineBuilder {
                 stemURL = stems?.cachedStem(for: track, in: project)
                 if stemURL == nil { missingStems.append(track.id) }
             }
-            var videoTrack: AVMutableCompositionTrack?
+            // Clips meeting in a transition overlap by their handles, so they alternate between picture lanes.
+            var videoLanes: [(track: AVMutableCompositionTrack, end: Seconds)] = []
             // Split edits can overlap neighbouring sound, so each track gets as many audio lanes as it needs.
             var lanes: [(track: AVMutableCompositionTrack, params: AVMutableAudioMixInputParameters, end: Seconds)] = []
             for clip in clips {
@@ -86,11 +93,19 @@ public enum TimelineBuilder {
                 orientations[mid] = entry.orientation
 
                 if dryTrack == nil, track.kind == .video, let v = entry.video, let vr = entry.videoRange {
-                    if videoTrack == nil {
-                        videoTrack = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+                    let head = heads[clip.id] ?? 0, tail = tails[clip.id] ?? 0
+                    let start = clip.start - head
+                    var lane = videoLanes.firstIndex { $0.end <= start + 1e-6 }
+                    if lane == nil, let t = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                        videoLanes.append((t, -.infinity))
+                        lane = videoLanes.count - 1
                     }
-                    let src = CMTimeRange(start: time(clip.sourceIn), end: time(clip.sourceOut))
-                    try insert(src.intersection(vr), of: v, into: videoTrack!, at: time(clip.start), sourceDuration: src.duration, target: time(clip.duration))
+                    if let lane {
+                        let src = CMTimeRange(start: time(clip.sourceIn - head * clip.speed), end: time(clip.sourceOut + tail * clip.speed))
+                        try insert(src.intersection(vr), of: v, into: videoLanes[lane].track, at: time(start), sourceDuration: src.duration, target: time(clip.duration + head + tail))
+                        videoLanes[lane].end = clip.end + tail
+                        trackIDs[clip.id] = videoLanes[lane].track.trackID
+                    }
                 }
                 guard stemURL == nil, masterStem == nil, let a = entry.audio, let ar = entry.audioRange, clip.volume > 0 || clip.anim["audio.volume"] != nil else { continue }
                 let span = clip.audioRange, heard = clip.audioSourceRange
@@ -109,7 +124,6 @@ public enum TimelineBuilder {
                 addVolumeEnvelope(clip, trackGain: trackGain, to: lanes[lane!].params)
                 lanes[lane!].end = span.end
             }
-            if let videoTrack { trackIDs[track.id] = videoTrack.trackID }
             audioParams += lanes.map(\.params)
             if let stemURL {
                 let stem = AVURLAsset(url: stemURL)

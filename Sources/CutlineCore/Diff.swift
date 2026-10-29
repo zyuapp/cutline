@@ -45,6 +45,13 @@ extension Project {
         }
         if master.gainDb != old.master.gainDb { out.append("~ master gain \(fmt2(old.master.gainDb))→\(fmt2(master.gainDb)) dB") }
         if master.effects != old.master.effects { out.append("~ master effects: " + master.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ").ifEmpty("none")) }
+        let oldTr = Dictionary(uniqueKeysWithValues: old.transitions.map { ($0.id, $0) })
+        let newTr = Set(transitions.map(\.id))
+        for tr in transitions {
+            let desc = "\(tr.id) \(tr.type) \(fmt2(tr.duration))s \(tr.from ?? "∅")→\(tr.to ?? "∅")"
+            if let o = oldTr[tr.id] { if o != tr { out.append("~ transition " + desc) } } else { out.append("+ transition " + desc) }
+        }
+        for tr in old.transitions where !newTr.contains(tr.id) { out.append("- transition \(tr.id) \(tr.type)") }
         if captions != old.captions { out.append("~ captions") }
         if markers != old.markers { out.append("~ markers \(old.markers.count)→\(markers.count)") }
         if abs(duration - old.duration) > 1e-6 { out.append("duration \(fmt2(old.duration))→\(fmt2(duration))") }

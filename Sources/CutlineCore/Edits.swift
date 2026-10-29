@@ -140,6 +140,7 @@ extension Project {
         }
         let (left, right) = Project.split(clip, at: t)
         tracks[loc.track].clips.replaceSubrange(loc.clip...loc.clip, with: [left, right])
+        for i in transitions.indices where transitions[i].from == id { transitions[i].from = right.id }
         return (left.id, right.id)
     }
 

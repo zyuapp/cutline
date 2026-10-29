@@ -1,0 +1,60 @@
+import Foundation
+import Testing
+@testable import CutlineCore
+
+private func cutProject() -> Project {
+    var p = Project(name: "T")
+    p.media = [MediaAsset(id: "m", path: "/tmp/t.mov", name: "M", duration: 20, width: 1920, height: 1080, fps: 30, hasVideo: true, hasAudio: true)]
+    p.tracks[0].clips = [
+        Clip(id: "a", kind: .media, mediaId: "m", start: 0, duration: 4, sourceIn: 2),
+        Clip(id: "b", kind: .media, mediaId: "m", start: 4, duration: 4, sourceIn: 10),
+    ]
+    return p
+}
+
+@Test func transitionWindowsFollowAlignment() throws {
+    let p = cutProject()
+    let center = try p.window(Transition(id: "t", from: "a", to: "b", type: "dissolve", duration: 1))
+    #expect(center.start == 3.5 && center.end == 4.5 && center.tail == 0.5 && center.head == 0.5)
+    let start = try p.window(Transition(id: "t", from: "a", to: "b", type: "dissolve", duration: 1, align: .start))
+    #expect(start.start == 4 && start.tail == 1 && start.head == 0)
+    let edge = try p.window(Transition(id: "t", from: nil, to: "b", type: "wipe", duration: 0.5))
+    #expect(edge.start == 4 && edge.end == 4.5 && edge.head == 0)
+    #expect(abs(center.progress(at: 4) - 0.5) < 1e-9)
+}
+
+@Test func transitionNeedsHandlesAndAdjacency() throws {
+    var p = cutProject()
+    try p.checkTransition(Transition(id: "t", from: "a", to: "b", type: "dissolve", duration: 1))
+    p.tracks[0].clips[1].sourceIn = 0.2
+    #expect(throws: EditError.self) { try p.checkTransition(Transition(id: "t", from: "a", to: "b", type: "dissolve", duration: 1)) }
+    try p.checkTransition(Transition(id: "t", from: "a", to: "b", type: "dissolve", duration: 1, align: .start, part: .video))
+    #expect(throws: EditError.self) { try p.checkTransition(Transition(id: "t", from: "a", to: "b", type: "nope", duration: 1)) }
+    p.tracks[0].clips[1].start = 5
+    #expect(throws: EditError.self) { try p.window(Transition(id: "t", from: "a", to: "b", type: "dissolve", duration: 1)) }
+}
+
+@Test func transitionsFollowSplitsAndDropWithClips() throws {
+    var p = cutProject()
+    p.transitions = [Transition(id: "tr1", from: "a", to: "b", type: "dissolve", duration: 0.5)]
+    let (_, right) = try p.splitClip("a", at: 2)
+    #expect(p.transitions[0].from == right)
+    p.pruneTransitions()
+    #expect(p.transitions.count == 1)
+    try p.deleteClips([p.transitions[0].to!], ripple: false)
+    p.pruneTransitions()
+    #expect(p.transitions.isEmpty)
+}
+
+@Test func audioTransitionsBecomeCrossfades() throws {
+    var p = cutProject()
+    p.transitions = [Transition(id: "tr1", from: "a", to: "b", type: "dissolve", duration: 1)]
+    let r = p.resolvingAudioTransitions()
+    #expect(r.clip("a")?.audioLag == 0.5 && r.clip("a")?.audioFadeOut == 1)
+    #expect(r.clip("b")?.audioLead == 0.5 && r.clip("b")?.audioFadeIn == 1)
+    #expect(r.transitions.first?.part == .video)
+    #expect(r.resolvingAudioTransitions() == r)
+    try r.validate()
+    let changes = p.changes(from: cutProject())
+    #expect(changes.contains { $0.hasPrefix("+ transition tr1 dissolve") })
+}

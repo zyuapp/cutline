@@ -407,6 +407,7 @@ extension Toolbox {
                         lines[lines.count - 1] += " [$\(v) = \(made)]"
                     }
                 }
+                p.pruneTransitions()
                 try p.validate()
             }
             if args.bool("dry_run", default: false) {

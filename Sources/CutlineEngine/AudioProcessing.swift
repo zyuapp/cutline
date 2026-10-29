@@ -51,6 +51,8 @@ public final class AudioStems: @unchecked Sendable {
 
     /// Content hash of what a track sounds like before its fader and mute: clips and audio effects.
     public func key(for track: Track, in project: Project) -> String {
+        let project = project.resolvingAudioTransitions()
+        let track = project.tracks.first { $0.id == track.id } ?? track
         let fx = track.effects.filter { EffectCatalog.isAudio($0.type) }
         let ids = Set(track.clips.compactMap(\.mediaId))
         return hash([

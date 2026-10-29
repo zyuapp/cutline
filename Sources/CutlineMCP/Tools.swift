@@ -48,6 +48,7 @@ final class Toolbox {
         registerMediaTools()
         registerEditTools()
         registerLookTools()
+        registerTransitionTools()
         registerAudioTools()
         registerBatchTool()
         registerReviewTools()
@@ -65,6 +66,7 @@ final class Toolbox {
             if args.bool("dry_run", default: false) {
                 var p = before
                 let summary = try e.apply(&p, args)
+                p.pruneTransitions()
                 try p.validate()
                 return .text("Dry run, nothing changed.\n" + summary + Toolbox.changesText(p, before))
             }
@@ -165,6 +167,7 @@ enum Describe {
             lines.append("Master: gain \(fmt1(p.master.gainDb)) dB" + (p.master.effects.isEmpty ? "" : ", fx " + p.master.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ")))
         }
         lines.append("Captions: " + (cs.enabled ? "on, \(cs.style.animation.rawValue), size \(fmt2(cs.style.size)), y \(fmt2(cs.style.y)), \(cs.style.maxWordsPerLine) words/line" : "off"))
+        if !p.transitions.isEmpty { lines.append("Transitions: " + p.transitions.map { "\($0.id) \($0.type) \(fmt2($0.duration))s \($0.from ?? "∅")→\($0.to ?? "∅")" }.joined(separator: ", ")) }
         if !p.markers.isEmpty { lines.append("Markers: " + p.markers.map { "\(fmt2($0.time)) \($0.label)" }.joined(separator: ", ")) }
         let open = bundle.loadComments().comments.filter { $0.status == .open }
         lines.append("Comments: \(open.count) open" + (open.isEmpty ? "" : " — call comments_list"))

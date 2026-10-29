@@ -69,6 +69,36 @@ public enum EffectCatalog {
             ParamSpec("amount", .number, .number(1), min: 0, max: 1, "Strength"),
         ]),
         EffectType(id: "color.invert", category: "color", summary: "Negative image", params: []),
+        EffectType(id: "color.grade", category: "color", summary: "Color wheels: lift, gamma and gain for blacks, midtones and whites, plus split-toning tints per tonal range", params: [
+            ParamSpec("lift", .number, .number(0), min: -0.5, max: 0.5, "Raises (positive) or crushes (negative) the blacks"),
+            ParamSpec("gamma", .number, .number(1), min: 0.2, max: 5, "Midtones; above 1 brightens, below 1 darkens"),
+            ParamSpec("gain", .number, .number(1), min: 0, max: 4, "Scales the whites"),
+            ParamSpec("shadows", .color, .string("#000000"), "Tint pushed into the shadows, e.g. teal #2A7B8C"),
+            ParamSpec("shadows_amount", .number, .number(0), min: 0, max: 1, "Strength of the shadow tint"),
+            ParamSpec("midtones", .color, .string("#000000"), "Tint pushed into the midtones"),
+            ParamSpec("midtones_amount", .number, .number(0), min: 0, max: 1, "Strength of the midtone tint"),
+            ParamSpec("highlights", .color, .string("#000000"), "Tint pushed into the highlights, e.g. warm #FFB070"),
+            ParamSpec("highlights_amount", .number, .number(0), min: 0, max: 1, "Strength of the highlight tint"),
+        ]),
+        EffectType(id: "color.curves", category: "color", summary: "Tone curves for all channels and red, green, blue; points are \"x,y\" pairs 0…1 separated by spaces", params: [
+            ParamSpec("master", .text, .string(""), "All channels, e.g. \"0,0 0.25,0.2 0.75,0.82 1,1\" for an S-curve"),
+            ParamSpec("red", .text, .string(""), "Red channel curve"),
+            ParamSpec("green", .text, .string(""), "Green channel curve"),
+            ParamSpec("blue", .text, .string(""), "Blue channel curve, e.g. \"0,0.06 1,0.94\" lifts blue shadows"),
+        ]),
+        EffectType(id: "color.hsl", category: "color", summary: "Shift the hue, saturation or lightness of one color range, such as making skies deeper or greens warmer; stack one per range", params: [
+            ParamSpec("range", .choice(["reds", "oranges", "yellows", "greens", "aquas", "blues", "purples", "magentas"]), .string("blues"), "Which colors to change"),
+            ParamSpec("hue", .number, .number(0), min: -180, max: 180, unit: "degrees", "Hue rotation"),
+            ParamSpec("saturation", .number, .number(0), min: -1, max: 1, "-1 removes the color, 1 doubles it"),
+            ParamSpec("lightness", .number, .number(0), min: -1, max: 1, "Darker or lighter"),
+        ]),
+        EffectType(id: "color.look", category: "color", summary: "Finished creative grades: teal_orange, warm_film, cool_night, bleach_bypass, vintage_fade, high_contrast_bw, golden_hour, matrix_green, pastel, noir", params: [
+            ParamSpec("look", .choice(["teal_orange", "warm_film", "cool_night", "bleach_bypass", "vintage_fade", "high_contrast_bw", "golden_hour", "matrix_green", "pastel", "noir"]), .string("teal_orange"), "Look"),
+            ParamSpec("amount", .number, .number(1), min: 0, max: 1, "Strength"),
+        ]),
+        EffectType(id: "color.lut", category: "color", summary: "Applies a 3D LUT from a .cube file (Resolve, Premiere and camera LUTs)", params: [
+            ParamSpec("file", .text, .string(""), "Absolute path to a .cube file"),
+        ]),
         EffectType(id: "stylize.glow", category: "stylize", summary: "Bloom that makes highlights glow", params: [
             ParamSpec("amount", .number, .number(0.6), min: 0, max: 2, "Strength"),
             ParamSpec("radius", .number, .number(0.02), min: 0, max: 0.2, unit: "of frame height", "Spread"),
@@ -164,7 +194,7 @@ public enum EffectCatalog {
 
     /// The base for effect ids: "blur.gaussian" → "blur", "stylize.drop_shadow" → "shadow".
     public static func shortName(_ type: String) -> String {
-        let overrides = ["blur.gaussian": "blur", "color.adjust": "grade", "color.monochrome": "mono"]
+        let overrides = ["blur.gaussian": "blur", "color.adjust": "grade", "color.monochrome": "mono", "color.grade": "wheels"]
         if let o = overrides[type] { return o }
         let last = type.split(separator: ".").last.map(String.init) ?? type
         return last.split(separator: "_").last.map(String.init) ?? last
@@ -174,7 +204,7 @@ public enum EffectCatalog {
     public static func title(_ type: String) -> String {
         let titles = [
             "blur.gaussian": "blur", "blur.motion": "motion blur", "blur.zoom": "zoom blur", "blur.sharpen": "sharpening",
-            "color.adjust": "color correction", "color.monochrome": "black and white", "color.invert": "invert",
+            "color.adjust": "color correction", "color.grade": "color wheels", "color.curves": "curves", "color.hsl": "HSL", "color.look": "look", "color.lut": "LUT", "color.monochrome": "black and white", "color.invert": "invert",
             "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask",
             "distort.bulge": "bulge", "distort.twirl": "twirl",
         ]
