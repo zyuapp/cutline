@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "cutline": {
+      "command": "./.build/arm64-apple-macosx/release/cutline-mcp",
+      "env": {
+        "CUTLINE_APP": "./.build/arm64-apple-macosx/release/Cutline"
+      }
+    }
+  }
+}

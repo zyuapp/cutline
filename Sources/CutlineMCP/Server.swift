@@ -1,0 +1,96 @@
+import CutlineCore
+import Foundation
+
+/// MCP over stdio: newline-delimited JSON-RPC 2.0.
+public final class MCPServer {
+    public static let version = "0.1.0"
+    let toolbox = Toolbox()
+
+    static let instructions = """
+    Cutline is a video editor you drive entirely through these tools; a human watches the result in the Cutline preview app and leaves comments pinned to frames.
+
+    Workflow:
+    1. project_create (or project_open). The preview app opens automatically.
+    2. media_import the user's files. Analysis gives you word-level transcripts, pauses and scene cuts.
+    3. Read before cutting: media_transcript (source time) for speech, media_frames to look at footage.
+    4. Edit. For vertical/square canvases use fit "fill" on landscape footage (assemble and clip_add accept fit). For talking footage: assemble the best takes, then cut_silences, then source_cut for flubs. Add b-roll with clip_add track "new", titles with text_add, music on A1 with a low track volume and audio fades, captions with captions_set.
+    5. Verify every change: timeline_transcript for cuts, timeline_frames to see the picture, project_status for structure and warnings. Use preview_seek to show the human what you changed.
+    6. comments_list at the start of each turn; address each comment, then comment_reply to resolve it.
+    7. export when the human is happy.
+
+    Times are seconds. Source times refer to a media file; timeline times to the edit. Every edit is one undoable history entry; group related edits with batch.
+    """
+
+    public init() {}
+
+    public func run() async {
+        log("cutline-mcp \(Self.version) ready")
+        do {
+            for try await line in FileHandle.standardInput.bytes.lines {
+                guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+                await handle(line)
+            }
+        } catch {
+            log("stdin error: \(error)")
+        }
+    }
+
+    func handle(_ line: String) async {
+        guard let data = line.data(using: .utf8), let msg = try? JSONDecoder().decode(JSON.self, from: data) else {
+            send(["jsonrpc": "2.0", "id": .null, "error": ["code": -32700, "message": "Parse error"]])
+            return
+        }
+        if let batch = msg.array {
+            for m in batch { await dispatch(m) }
+        } else {
+            await dispatch(msg)
+        }
+    }
+
+    func dispatch(_ msg: JSON) async {
+        let id = msg["id"]
+        let method = msg["method"]?.string ?? ""
+        let params = msg["params"]
+        guard let id, !id.isNull else { return }
+        switch method {
+        case "initialize":
+            let requested = params?["protocolVersion"]?.string ?? "2025-06-18"
+            reply(id, [
+                "protocolVersion": .string(requested),
+                "capabilities": ["tools": ["listChanged": false]],
+                "serverInfo": ["name": "cutline", "title": "Cutline", "version": .string(Self.version)],
+                "instructions": .string(Self.instructions),
+            ])
+        case "ping":
+            reply(id, [:])
+        case "tools/list":
+            reply(id, ["tools": .array(toolbox.definitions)])
+        case "tools/call":
+            let name = params?["name"]?.string ?? ""
+            let started = Date()
+            let result = await toolbox.call(name, params?["arguments"])
+            log("\(name) \(result.isError ? "error" : "ok") \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
+            reply(id, result.json)
+        case "resources/list":
+            reply(id, ["resources": []])
+        case "prompts/list":
+            reply(id, ["prompts": []])
+        default:
+            send(["jsonrpc": "2.0", "id": id, "error": ["code": -32601, "message": .string("Method not found: \(method)")]])
+        }
+    }
+
+    func reply(_ id: JSON, _ result: JSON) {
+        send(["jsonrpc": "2.0", "id": id, "result": result])
+    }
+
+    func send(_ msg: JSON) {
+        var out = msg.encoded()
+        out.append("\n")
+        FileHandle.standardOutput.write(out.data(using: .utf8)!)
+    }
+
+    func log(_ s: String) {
+        FileHandle.standardError.write("[cutline] \(s)\n".data(using: .utf8)!)
+    }
+}
