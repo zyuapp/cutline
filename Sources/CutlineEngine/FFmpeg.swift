@@ -158,6 +158,8 @@ public struct ProbeInfo: Sendable {
     public var formatLongName: String
     public var duration: Seconds
     public var formatTimecode: String?
+    /// Reel or tape name from the container's or a stream's tags (reel_name, tape_name, reel).
+    public var reel: String?
     public var streams: [Stream]
 
     init(_ root: [String: Any]) {
@@ -172,6 +174,11 @@ public struct ProbeInfo: Sendable {
         formatLongName = format["format_long_name"] as? String ?? formatName
         duration = num(format["duration"]) ?? 0
         formatTimecode = (format["tags"] as? [String: Any])?["timecode"] as? String
+        let tagSets = [format["tags"] as? [String: Any] ?? [:]] + (root["streams"] as? [[String: Any]] ?? []).map { $0["tags"] as? [String: Any] ?? [:] }
+        reel = tagSets.lazy.compactMap { tags -> String? in
+            let lower = Dictionary(tags.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { a, _ in a })
+            return ["reel_name", "tape_name", "reel", "com.apple.proapps.reel"].lazy.compactMap { (lower[$0] as? String)?.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
+        }.first
         streams = (root["streams"] as? [[String: Any]] ?? []).map { s in
             let tags = s["tags"] as? [String: Any] ?? [:]
             let known = { (k: String) -> String? in

@@ -112,18 +112,19 @@ extension Toolbox {
                 let overlaps = p.overlappingSpeech(transcripts: transcripts)
                 if !overlaps.isEmpty { report.append("Overlapping speech at " + overlaps.prefix(5).map { "\(fmt2($0.start))s" }.joined(separator: ", ") + " interleaves two voices in the subtitles; see captions_list.") }
                 if subs == "sidecar" || subs == "both" {
-                    try p.subtitles(.srt, transcripts: transcripts, range: range).write(to: base.appendingPathExtension("srt"), atomically: true, encoding: .utf8)
-                    try p.subtitles(.vtt, transcripts: transcripts, range: range).write(to: base.appendingPathExtension("vtt"), atomically: true, encoding: .utf8)
+                    // Zero is the file's first frame, so a leader delays them.
+                    let lead = try leaderSpec(args.raw["leader"]).map { p.canvas.timecodeFormat.seconds($0.frames(p.canvas.timecodeFormat)) } ?? 0
+                    try p.subtitles(.srt, transcripts: transcripts, range: range, offset: lead).write(to: base.appendingPathExtension("srt"), atomically: true, encoding: .utf8)
+                    try p.subtitles(.vtt, transcripts: transcripts, range: range, offset: lead).write(to: base.appendingPathExtension("vtt"), atomically: true, encoding: .utf8)
                     report.append("Subtitles: \(base.lastPathComponent).srt and .vtt (\(p.subtitleCues(transcripts: transcripts, range: range).count) cues)")
                 }
             }
             var closed: [TimedText] = []
+            var sccCues: [TimedText] = []
             if args.bool("closed_captions", default: false) {
                 closed = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 4).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                 if closed.isEmpty { report.append("No transcribed speech, so no closed captions.") } else {
-                    let sidecar = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 4, range: range).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
-                    try CEA608.scc(sidecar, fps: p.canvas.fps).write(to: base.appendingPathExtension("scc"), atomically: true, encoding: .utf8)
-                    report.append("Closed captions: \(closed.count) cues embedded (CEA-608, CC1) and \(base.lastPathComponent).scc")
+                    sccCues = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 4, range: range).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                 }
             }
             var chapters: [TimedText] = []
@@ -181,6 +182,12 @@ extension Toolbox {
                 options.leader = l
                 let start = tcFormat.string((tcFormat.frames(programTC) ?? 0) - l.frames(tcFormat))
                 report.append("Leader: \(l.barsSeconds)s bars and 1 kHz tone at −20 dBFS from \(start), \(l.slateSeconds)s slate, \(l.blackSeconds)s black" + (l.pop && l.blackSeconds >= 2 ? " with a 2-pop" : "") + "; program at \(programTC)")
+            }
+            if !sccCues.isEmpty {
+                // Labeled on the delivered file's timecode track: program start timecode at the range start, after any leader.
+                let programFrame = (tcFormat.frames(programTC) ?? 0) + tcFormat.frameCount(range?.start ?? 0)
+                try CEA608.scc(sccCues, fps: p.canvas.fps, start: programFrame, format: tcFormat).write(to: base.appendingPathExtension("scc"), atomically: true, encoding: .utf8)
+                report.append("Closed captions: \(closed.count) cues embedded (CEA-608, CC1) and \(base.lastPathComponent).scc, timed on the file's timecode from \(tcFormat.string(programFrame))")
             }
             if preset.needsFFmpeg, !options.subtitles.isEmpty || !options.closedCaptions.isEmpty || !options.chapters.isEmpty {
                 report.append("\(preset.title) files carry no subtitle, caption or chapter tracks; use the sidecar files.")

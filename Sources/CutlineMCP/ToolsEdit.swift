@@ -50,7 +50,7 @@ extension Toolbox {
             "start": Schema.time("Timeline start (seconds or anchor)"),
             "end": Schema.time("Timeline end, instead of duration"),
             "mode": Schema.string("place (exact start, fail on overlap; default when start is given), append (default without start), overwrite (replace what is under it), insert (push everything later, on all tracks)", values: PlaceMode.allCases.map(\.rawValue)),
-            "source_in": Schema.time("Source start (seconds in the media, or a word anchor like \"talk.w12\")"),
+            "source_in": Schema.time("Source start (seconds in the media, a word anchor like \"talk.w12\", or source timecode like \"talk@01:00:12:10\")"),
             "source_out": Schema.time("Source end (seconds or word anchor such as \"talk.w40.end\")"),
             "duration": Schema.time("Timeline duration; images, solids and adjustment layers default to 5"),
             "speed": Schema.number("Playback speed, 1 = normal. With source_in, source_out and a duration or end, speed is computed to fit (fit to fill)"),

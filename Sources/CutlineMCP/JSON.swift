@@ -127,14 +127,14 @@ public struct Args {
     }
 
     static func parseSourceTime(_ v: JSON, name: String) throws -> Seconds {
-        if let s = v.string, Double(s) == nil, !s.contains(":"), let r = sourceResolver { return try r(s) }
+        if let s = v.string, Double(s) == nil, !s.contains(":") || s.contains("@"), let r = sourceResolver { return try r(s) }
         let saved = timelineResolver
         timelineResolver = nil
         defer { timelineResolver = saved }
         return try parseTime(v, name: name)
     }
 
-    /// A position in a media file: seconds, or a word anchor like "talk.w12.end".
+    /// A position in a media file: seconds, a word anchor like "talk.w12.end", or a source timecode like "talk@01:00:12:10".
     public func optSourceTime(_ k: String) throws -> Seconds? {
         guard let v = raw[k], !v.isNull else { return nil }
         return try Args.parseSourceTime(v, name: k)

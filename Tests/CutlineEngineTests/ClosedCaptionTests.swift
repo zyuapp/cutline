@@ -108,6 +108,15 @@ private func expectRoundTrip(_ cues: [TimedText], mode: CEA608.Mode, fps: Double
     #expect(body[1] == "00:00:02;00\t942c 942c")
     #expect(body[2].hasSuffix("942f 942f") && body[3] == "00:01:02;00\t942c 942c")
 
+    // On the delivered file's timecode: program at 01:00:00;00, or 00:59:30;00 with a 30 s leader before it.
+    let tc = TimecodeFormat(fps: ntsc)
+    let program = CEA608.scc([TimedText(start: 1, end: 2, text: "Hi")], fps: ntsc, start: 107_892, format: tc).components(separatedBy: "\n").filter { !$0.isEmpty }
+    #expect(program[1].hasPrefix("01:00:00;21\t") && program[2] == "01:00:02;00\t942c 942c", "\(program)")
+    let leader = CEA608.scc([TimedText(start: 1 + 900 / ntsc, end: 2 + 900 / ntsc, text: "Hi")], fps: ntsc, start: tc.frames("00:59:30;00")!, format: tc).components(separatedBy: "\n").filter { !$0.isEmpty }
+    #expect(leader[2] == "01:00:02;00\t942c 942c", "\(leader)")
+    let ndf = CEA608.scc([TimedText(start: 1, end: 2, text: "Hi")], fps: ntsc, start: 108_000, format: TimecodeFormat(fps: ntsc, dropFrame: false))
+    #expect(ndf.contains("\n01:00:02:00\t942c 942c"), "\(ndf)")
+
     #expect(CEA608.timecode(1799, fps: ntsc) == "00:00:59;29")
     #expect(CEA608.timecode(1800, fps: ntsc) == "00:01:00;02")
     #expect(CEA608.timecode(17982, fps: ntsc) == "00:10:00;00")

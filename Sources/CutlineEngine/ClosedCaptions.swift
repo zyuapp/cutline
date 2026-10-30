@@ -396,15 +396,19 @@ public enum CEA608 {
     // MARK: SCC
 
     /// A Scenarist SCC file: one line per run of consecutive frames, timecode then hex byte pairs.
-    public static func scc(_ cues: [TimedText], fps: Double = 30000.0 / 1001, mode: Mode = .popOn, channel: Int = 1) -> String {
-        scc(runs: encode(cues, fps: fps, mode: mode, channel: channel), fps: fps)
+    /// An SCC sidecar of cues timed from the file's first frame. With `start`, times are labeled on the file's
+    /// timecode track: `start` is the label of its first frame (counted as `format` does), so broadcast ingest
+    /// lines the captions up with the picture.
+    public static func scc(_ cues: [TimedText], fps: Double = 30000.0 / 1001, mode: Mode = .popOn, channel: Int = 1, start: Int = 0, format: TimecodeFormat? = nil) -> String {
+        scc(runs: encode(cues, fps: fps, mode: mode, channel: channel), fps: fps, start: start, format: format)
     }
 
-    public static func scc(runs: [Run], fps: Double) -> String {
+    public static func scc(runs: [Run], fps: Double, start: Int = 0, format: TimecodeFormat? = nil) -> String {
         let clock = Clock(fps)
         var out = "Scenarist_SCC V1.0\n"
         for run in runs {
-            out += "\n" + timecode(clock.frame(run.time), fps: fps) + "\t" + run.pairs.map { String(format: "%04x", $0) }.joined(separator: " ") + "\n"
+            let f = start + clock.frame(run.time)
+            out += "\n" + (format?.string(f) ?? timecode(f, fps: fps)) + "\t" + run.pairs.map { String(format: "%04x", $0) }.joined(separator: " ") + "\n"
         }
         return out
     }

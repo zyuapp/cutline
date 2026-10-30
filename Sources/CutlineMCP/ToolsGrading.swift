@@ -63,24 +63,30 @@ extension Toolbox {
         let b = try session.requireBundle()
         let current = try session.project()
         let plan = try Toolbox.matchPlan(a, current)
-        let refId = plan.ref.id
-        let reference = try await Toolbox.shotColor(plan.ref, current, times: plan.refTimes)
-        let refPrint = reference.middle.flatMap(ShotColor.featurePrint)
         let dir = b.cacheURL.appendingPathComponent("looks", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let made = try await Toolbox.matchShots(plan, current, dir: dir)
+        return try applyMatch(made.files, report: made.report, warnings: made.warnings, plan: plan, current: current, dry: dry)
+    }
+
+    /// Each shot's match LUT against the reference, in its own async frame: the debug build's task allocator
+    /// aborted when this loop shared match_color's.
+    static func matchShots(_ plan: MatchPlan, _ current: Project, dir: URL) async throws -> (files: [String: URL], report: [String], warnings: [String]) {
+        let reference = try await shotColor(plan.ref, current, times: plan.refTimes)
+        let refPrint = reference.middle.flatMap(ShotColor.featurePrint)
         var files: [String: URL] = [:]
         var report: [String] = [], warnings: [String] = []
         for id in plan.ids {
             guard let c = current.clip(id) else { throw EditError("No clip \(id)") }
             guard c.kind == .media, c.mediaId.flatMap({ current.mediaAsset($0) })?.hasVideo == true else { report.append("\(id): skipped (no picture)"); continue }
-            let shot = try await Toolbox.shotColor(c, current)
+            let shot = try await shotColor(c, current)
             let content = ShotColor.contentDistance(shot.middle.flatMap(ShotColor.featurePrint), refPrint)
-            let made = try Toolbox.matchShot(id, to: refId, shot.stats, reference.stats, content: content, strength: plan.strength, cap: plan.cap, dir: dir)
+            let made = try matchShot(id, to: plan.ref.id, shot.stats, reference.stats, content: content, strength: plan.strength, cap: plan.cap, dir: dir)
             files[id] = made.url
             report.append(made.line)
             if let w = made.warning { warnings.append(w) }
         }
-        return try applyMatch(files, report: report, warnings: warnings, plan: plan, current: current, dry: dry)
+        return (files, report, warnings)
     }
 
     /// The edit half of match_color, kept out of the async function: the debug build's task allocator

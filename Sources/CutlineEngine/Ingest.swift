@@ -216,9 +216,10 @@ public enum MediaIngest {
         m.transcoded = summary
         if m.hasVideo { m.fieldOrder = info.fieldOrder ?? m.fieldOrder }
         if m.timecodeStart == nil, let tc = info.timecode, let fps = info.video?.frameRate, fps > 0 {
-            let f = TimecodeFormat(fps: fps)
-            m.timecodeStart = f.frames(tc).map(f.seconds)
+            let f = TimecodeFormat(fps: fps, label: tc)
+            if let frames = f.frames(tc) { m.setTimecode(frames: frames, format: f) }
         }
+        if let reel = info.reel { m.reel = reel }
         return m
     }
 
@@ -230,6 +231,11 @@ public enum MediaIngest {
         m.originalPath = url.path
         m.transcoded = MediaAsset.pendingTranscode + summary(info)
         m.fieldOrder = v == nil ? nil : info.fieldOrder
+        if let tc = info.timecode, let fps = v?.frameRate, fps > 0 {
+            let f = TimecodeFormat(fps: fps, label: tc)
+            if let frames = f.frames(tc) { m.setTimecode(frames: frames, format: f) }
+        }
+        m.reel = info.reel
         return m
     }
 }

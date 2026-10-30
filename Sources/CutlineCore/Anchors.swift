@@ -118,13 +118,19 @@ extension Project {
         return String(format: "%02d:%02d:%02d:%02d", s / 3600, s / 60 % 60, s % 60, f)
     }
 
-    /// "<media>@HH:MM:SS:FF": a source time from the media's own timecode.
+    /// "<media>@HH:MM:SS:FF": a source time from the media's own timecode, counted at its rate and drop frame
+    /// (";" before the frames reads drop frame). Media without timecode count from 00:00:00:00.
     func sourceTimecode(_ s: String) throws -> (String, Seconds)? {
         guard let at = s.firstIndex(of: "@") else { return nil }
         let mid = String(s[..<at])
-        guard let m = mediaAsset(mid) else { return nil }
-        guard let t = Project.timecode(String(s[s.index(after: at)...]), fps: m.fps > 0 ? m.fps : canvas.fps) else { throw EditError("Timecodes look like \(mid)@01:00:12:10") }
-        return (mid, t - (m.timecodeStart ?? 0))
+        guard let m = mediaAsset(mid) else { throw EditError("No media \(mid) in \(s); source timecodes look like <media>@01:00:12:10") }
+        let label = String(s[s.index(after: at)...])
+        let start = m.timecodeString(fallback: canvas.fps) ?? "00:00:00:00"
+        guard let t = m.sourceSeconds(timecode: label, fallback: canvas.fps) else {
+            throw EditError("Timecodes look like \(mid)@\(start), with frames below \(m.timecodeFormat(fallback: canvas.fps).nominal)")
+        }
+        guard t > -1e-6 else { throw EditError("\(label) is before \(mid)'s first frame at \(start)") }
+        return (mid, max(0, t))
     }
 
     /// "1:02.5" or "1:00:02.5" → seconds.
@@ -189,7 +195,8 @@ extension Project {
 }
 
 extension Project {
-    /// A position inside a media file: seconds, or "media.w12" / "media.w12.end" with an optional offset.
+    /// A position inside a media file: seconds, "media.w12" / "media.w12.end", a beat or shot, or a source
+    /// timecode "media@01:00:12:10", with an optional offset.
     public func resolveSourceTime(_ raw: String, transcripts: [String: Transcript], index: AnchorIndex = AnchorIndex()) throws -> Seconds {
         let s = raw.trimmingCharacters(in: .whitespaces)
         if let n = Double(s) { return n }
@@ -198,7 +205,7 @@ extension Project {
         if let (_, src) = try sourceTimecode(base) { return src + offset }
         if let t = try resolveAnalysisAnchor(base, index: index, timeline: false) { return t + offset }
         guard let r = base.range(of: #"\.w(\d+)(\.end)?$"#, options: .regularExpression) else {
-            throw EditError("Source times are seconds in the media file, a word like \"<media>.w12\", a beat \"<media>.b8\" or a shot \"<media>.s2\"; got \(s)")
+            throw EditError("Source times are seconds in the media file, a word like \"<media>.w12\", a beat \"<media>.b8\", a shot \"<media>.s2\" or a source timecode \"<media>@01:00:12:10\"; got \(s)")
         }
         let mediaId = String(base[..<r.lowerBound])
         let tail = base[r].dropFirst(2)

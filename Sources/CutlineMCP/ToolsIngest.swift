@@ -135,8 +135,20 @@ extension Toolbox {
     static func mediaFacts(_ m: MediaAsset) -> String {
         var s = (m.isImage ? "image" : fmt2(m.duration) + "s") + " " + (m.hasVideo ? "\(m.width)×\(m.height)" + (m.isImage ? "" : " \(Describe.fmtFps(m.fps))fps") : "audio only")
         if m.isInterlaced { s += ", " + interlaceNote(m) }
+        if let tc = sourceTimecodeNote(m) { s += ", " + tc }
         if let t = m.transcoded, !m.isTranscoding { s += ", transcoded \(t) at \(m.path); the original stays the conform source" }
         return s
+    }
+
+    /// "TC 14:22:10:05 (non-drop), reel A001"; nil without source timecode or reel.
+    static func sourceTimecodeNote(_ m: MediaAsset) -> String? {
+        var parts: [String] = []
+        if let tc = m.timecodeString() {
+            let f = m.timecodeFormat()
+            parts.append("TC \(tc)" + (f.frameNum == 1001 && f.nominal % 30 == 0 ? (f.dropFrame ? " (drop frame)" : " (non-drop)") : ""))
+        }
+        if let r = m.reel { parts.append("reel \(r)") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
     static func interlaceNote(_ m: MediaAsset) -> String {

@@ -72,15 +72,55 @@ extension Project {
 }
 
 extension Project {
+    /// The project's media `m` (from an imported timeline) names: by file (its path or camera original against
+    /// each one's path and original), then id and name, then reel and name, then file name.
+    public func matchingMedia(_ m: MediaAsset) -> MediaAsset? {
+        let paths = [m.path, m.conformPath].filter { !$0.isEmpty }
+        if let same = media.first(where: { mine in paths.contains { Importer.samePath(mine, $0) } }) { return same }
+        if let same = media.first(where: { $0.id == m.id && $0.name == m.name }) { return same }
+        if let reel = m.reel, !reel.isEmpty, let same = media.first(where: { $0.reel == reel && $0.name == m.name }) { return same }
+        let file = Importer.fileName(m.conformPath)
+        guard !file.isEmpty, file.contains(".") else { return nil }
+        let named = media.filter { Importer.fileName($0.conformPath) == file || Importer.fileName($0.path) == file }
+        return named.count == 1 ? named[0] : nil
+    }
+
+    /// Replaces the media with `real`'s id by `real` (the same file, probed). When both carry a timecode and they
+    /// differ, its clips move so they keep their source timecode; without one, `real` keeps the old timecode.
+    public mutating func replaceMediaKeepingTimecode(_ real: MediaAsset) {
+        guard let i = media.firstIndex(where: { $0.id == real.id }) else { return }
+        var m = real
+        let old = media[i]
+        if m.timecodeStart == nil {
+            m.timecodeStart = old.timecodeStart
+            m.timecodeLabel = old.timecodeLabel
+        } else if let a = old.timecodeStart, let b = m.timecodeStart, abs(a - b) > 1e-6 {
+            func move(_ tracks: inout [Track]) {
+                for t in tracks.indices {
+                    for c in tracks[t].clips.indices where tracks[t].clips[c].kind == .media && tracks[t].clips[c].mediaId == m.id {
+                        tracks[t].clips[c].sourceIn += a - b
+                    }
+                }
+            }
+            move(&tracks)
+            for s in sequences.indices { move(&sequences[s].tracks) }
+        }
+        media[i] = m
+    }
+
     /// Adds another project's timeline (an imported EDL, FCPXML, OTIO or XML) as a new timeline and makes it current.
-    /// Its media are matched to this project's by file path, so clips point at media already here; the rest are added.
+    /// Its media are matched to this project's (`matchingMedia`), so clips point at media already here; the rest are
+    /// added. Clips of matched media whose imported timecode differs from the project's are moved to keep their
+    /// source timecode.
     @discardableResult
     public mutating func adoptTimeline(_ other: Project, name: String) throws -> (matched: Int, added: Int) {
         var rename: [String: String] = [:]
+        var shift: [String: Seconds] = [:]
         var matched = 0, added = 0
         for m in other.media {
-            if let same = media.first(where: { $0.path == m.path }) ?? media.first(where: { $0.id == m.id && $0.name == m.name }) {
+            if let same = matchingMedia(m) {
                 rename[m.id] = same.id
+                if let a = m.timecodeStart, let b = same.timecodeStart, abs(a - b) > 1e-6 { shift[m.id] = a - b }
                 matched += 1
             } else {
                 var copy = m
@@ -94,7 +134,11 @@ extension Project {
         func remap(_ tracks: [Track]) -> [Track] {
             tracks.map { t in
                 var t = t
-                for i in t.clips.indices { if let id = t.clips[i].mediaId { t.clips[i].mediaId = rename[id] ?? id } }
+                for i in t.clips.indices where t.clips[i].kind == .media {
+                    guard let id = t.clips[i].mediaId else { continue }
+                    t.clips[i].mediaId = rename[id] ?? id
+                    if let s = shift[id] { t.clips[i].sourceIn += s }
+                }
                 return t
             }
         }

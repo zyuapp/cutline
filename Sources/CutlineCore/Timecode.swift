@@ -38,13 +38,76 @@ public struct TimecodeFormat: Equatable, Sendable {
         return EDLTimecode.string(((frames % day) + day) % day, nominal: nominal, drop: dropFrame)
     }
 
+    /// Counting as `label` is written: drop frame when ";" or "." separates the frames, non-drop otherwise.
+    public init(fps: Double, label: String) {
+        self.init(fps: fps, dropFrame: TimecodeFormat.isDropLabel(label))
+    }
+
+    public static func isDropLabel(_ label: String) -> Bool { label.contains(";") || label.contains(".") }
+
     /// Whole frames in `seconds` at this rate.
     public func frameCount(_ seconds: Seconds) -> Int { Int((seconds * Double(frameDen) / Double(frameNum)).rounded()) }
 
     public func seconds(_ frames: Int) -> Seconds { Double(frames * frameNum) / Double(frameDen) }
+
+    /// Exact frames per second, e.g. 30000/1001.
+    public var rate: Double { Double(frameDen) / Double(frameNum) }
+
+    /// Frame count of a label read at this rate; ";" forces drop frame where the rate has it.
+    public func frames(reading label: String) -> Int? {
+        TimecodeFormat.isDropLabel(label) && !dropFrame && EDLTimecode.dropFrames(nominal) > 0
+            ? TimecodeFormat(fps: rate, dropFrame: true).frames(label) : frames(label)
+    }
 }
 
 extension Canvas {
     /// Timecode of the first timeline frame in exports, "01:00:00:00" unless set.
     public var startTimecode: String { timecodeStart ?? TimecodeFormat.defaultStart }
+}
+
+extension MediaAsset {
+    /// How the media's source timecode counts: at its own frame rate (`fallback` without one), drop frame as its
+    /// label is written, or as `dropFrame` says (nil: the rate's default) when there is no label.
+    public func timecodeFormat(fallback fps: Double = 30, dropFrame: Bool? = nil) -> TimecodeFormat {
+        let rate = self.fps > 0 && !isImage ? self.fps : fps
+        return timecodeLabel.map { TimecodeFormat(fps: rate, label: $0) } ?? TimecodeFormat(fps: rate, dropFrame: dropFrame)
+    }
+
+    /// Frames from midnight to the first frame; nil without source timecode. The label wins when it names the
+    /// same frame as `timecodeStart`.
+    public func timecodeFrames(fallback fps: Double = 30) -> Int? {
+        guard let start = timecodeStart else { return nil }
+        let f = timecodeFormat(fallback: fps)
+        if let label = timecodeLabel, let n = f.frames(label), abs(f.seconds(n) - start) < 0.5 / f.rate { return n }
+        return f.frameCount(start)
+    }
+
+    /// The source timecode label of the first frame; nil without one.
+    public func timecodeString(fallback fps: Double = 30) -> String? {
+        timecodeFrames(fallback: fps).map { timecodeFormat(fallback: fps).string($0) }
+    }
+
+    /// Frames from midnight of the source frame at `t` seconds into the media (0 at its first frame).
+    public func sourceFrames(at t: Seconds, fallback fps: Double = 30) -> Int {
+        (timecodeFrames(fallback: fps) ?? 0) + timecodeFormat(fallback: fps).frameCount(t)
+    }
+
+    /// Seconds into the media of a source timecode label; ";" in it counts drop frame. Nil when malformed.
+    public func sourceSeconds(timecode label: String, fallback fps: Double = 30) -> Seconds? {
+        let f = timecodeFormat(fallback: fps)
+        guard let n = f.frames(reading: label) else { return nil }
+        return f.seconds(n - (timecodeFrames(fallback: fps) ?? 0))
+    }
+
+    /// Sets the source timecode to `frames` from midnight, counted as `format` does.
+    public mutating func setTimecode(frames: Int, format: TimecodeFormat) {
+        timecodeStart = format.seconds(frames)
+        timecodeLabel = format.string(frames)
+    }
+
+    /// Keeps `seconds` as the start and labels the nearest frame, counted as `format` does.
+    public mutating func setTimecode(seconds: Seconds, format: TimecodeFormat) {
+        timecodeStart = seconds
+        timecodeLabel = format.string(format.frameCount(seconds))
+    }
 }

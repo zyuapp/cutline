@@ -58,6 +58,7 @@ extension Toolbox {
                 if let s = args.optString("align") {
                     guard let v = TransitionAlign(rawValue: s) else { throw EditError("align is center, start or end") }
                     tr.align = v
+                    tr.cutOffset = nil
                 }
                 if let s = args.optString("part") {
                     guard let v = TransitionPart(rawValue: s) else { throw EditError("part is video, audio or both") }
