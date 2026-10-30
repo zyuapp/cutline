@@ -103,6 +103,11 @@ extension Toolbox {
             return needs
         case "remove_object", "track_mask":
             return media(ofClips: [a.optString("clip")].compactMap { $0 }).map { AnalysisNeed(mediaId: $0, feature: .scenes, without: name == "track_mask" ? "tracking stops only at cuts it detects from the frames, which can miss a soft cut" : "shot cuts are found only by comparing neighbouring frames while it renders, which can miss a soft cut") }
+        case "clip_gain_ride":
+            var ids = a.strings("clips") ?? []
+            if let tid = a.optString("track"), let t = p.tracks.first(where: { $0.id == tid }) { ids += t.clips.map(\.id) }
+            let media = ids.compactMap { p.clip($0)?.mediaId }.filter { p.mediaAsset($0)?.hasAudio == true }
+            return Array(Set(media)).sorted().map { AnalysisNeed(mediaId: $0, feature: .transcript, without: "phrases come from the sound's own pauses instead of the transcript") }
         default:
             return []
         }

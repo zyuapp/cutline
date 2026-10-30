@@ -139,7 +139,7 @@ extension Toolbox {
             "output": "Bus id, or master", "sends": "[{bus, level_db, pre_fader, remove}]; [] clears",
             "sends[].bus": "", "sends[].level_db": "", "sends[].pre_fader": "", "sends[].remove": "",
         ]),
-        "audio_bus": ToolBrief(text: "Add, change or remove a submix bus (effects incl. Audio Units, fader, automation, mute/solo, output). Route tracks with track_update output/sends.", args: [
+        "audio_bus": ToolBrief(text: "Add, change or remove a submix bus (effects, fader, automation, mute/solo, output); route tracks via track_update output/sends.", args: [
             "bus": "Bus id", "action": "", "name": "", "output": "master or a bus id", "tracks": "Tracks to route into it", "layout": "",
             "volume": "", "gain_db": "", "volume_keys": "[{t, v}] timeline seconds", "muted": "", "solo": "",
             "type": "Effect type, as effect_add", "params": "", "effect_id": "", "index": "", "mix": "", "enabled": "", "remove_effect": "",
@@ -218,7 +218,7 @@ extension Toolbox {
             "what": "sound, picture, text, scopes, compare; default the first three", "start": "", "end": "", "at": "For scopes",
             "tracks": "Each track's sound too", "platform": "Text against its UI-free area", "reference": "For compare: clip id or time",
         ]),
-        "recipe": ToolBrief(text: recipeDescription, args: ["name": "", "args": "", "wait": "Seconds for needed analysis"]),
+        "recipe": ToolBrief(text: recipeDescription, args: ["name": "", "args": "", "wait": "Seconds for analysis"]),
         "batch": ToolBrief(text: "Edit tools in order as ONE undo step, all or nothing. as:\"x\" names a result \"$x\"; $last, $last_clip… work anywhere.", args: [
             "operations": "[{tool, args, as}]", "operations[].tool": "Edit tool", "operations[].args": "", "operations[].as": "",
             "label": "History label", "if_history": "Only if the current entry is this id", "verify": "Timeline times to render after",

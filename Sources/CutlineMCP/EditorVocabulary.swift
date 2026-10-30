@@ -183,8 +183,14 @@ extension Toolbox {
         EditorTerm(term: "Loudness", aliases: "loudness, lufs, loudness normalization, ebu r128, atsc a85, true peak, loudness meter", summary: "recipe loudness_normalize sets integrated loudness and a true-peak ceiling; timeline_measure what sound reports LUFS.", calls: [
             ("recipe", #"{"name":"loudness_normalize","args":{"target_lufs":-23,"ceiling_db":-1}}"#),
         ]),
-        EditorTerm(term: "Dialogue cleanup", aliases: "voice isolation, dialogue isolation, enhance speech, noise reduction audio, de-noise, de-hum, de-ess, repair", summary: "audio.voice_isolation and the repair effects (noise, hum, sibilance, clicks) on clips or tracks.", calls: [
+        EditorTerm(term: "Dialogue cleanup", aliases: "voice isolation, dialogue isolation, enhance speech, noise reduction audio, de-noise, de-hum, de-ess, de-reverb, repair", summary: "audio.voice_isolation and the repair effects (noise, hum, sibilance, clicks, reverb) on clips or tracks; recipe spectral_repair for coughs, bumps and beeps.", calls: [
             ("effect_add", #"{"target":"<clip>","type":"audio.voice_isolation","params":{"amount":0.8}}"#),
+        ]),
+        EditorTerm(term: "Dialogue leveler", aliases: "dialogue leveler, auto match, auto level, clip gain, gain rides, riding levels, rubber banding dialogue", summary: "Resolve's Dialogue Leveler / Premiere's Auto Match: recipe clip_gain_ride writes per-phrase audio.volume keys to a target (−23 LUFS for a DME mix); audio.leveler levels live.", calls: [
+            ("recipe", #"{"name":"clip_gain_ride","args":{"clips":["<clip>"],"target_lufs":-23,"max_db":10}}"#),
+        ]),
+        EditorTerm(term: "Spectral repair", aliases: "izotope rx, spectral repair, spectral editing, de-click, de-plosive, de-cough, remove beep, resolve fairlight repair", summary: "recipe spectral_repair rebuilds a time range and band from the surrounding sound (or attenuates it) and lists detected clicks, thumps and tones; recipe match_eq is RX's EQ Match.", calls: [
+            ("recipe", #"{"name":"spectral_repair","args":{"clip":"<clip>","at":5.2,"duration":0.25}}"#),
         ]),
         EditorTerm(term: "Sync clips", aliases: "synchronize clips, merge clips, sync sound, dual system sound, waveform sync, pluraleyes", summary: "recipe sync_audio lines up a separate recorder with the camera by waveform.", calls: [
             ("recipe", #"{"name":"sync_audio","args":{"audio":"<recorder media>"}}"#),
