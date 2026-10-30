@@ -130,8 +130,9 @@ private func scene() -> (Project, [String: Transcript]) {
     var s = TextSpec(text: "Meet Ada, the first")
     s.spans = [TextSpan(match: "ada", color: .black), TextSpan(from: 2, to: 6, weight: 900)]
     let pieces = s.styledPieces()
-    #expect(pieces.map(\.text) == ["Me", "et ", "Ad", "a", ", the first"])
+    #expect(pieces.map(\.text) == ["Me", "et ", "A", "da", ", the first"])
     #expect(pieces[2].style?.color == .black && pieces[2].style?.weight == 900)
+    #expect(pieces[3].style?.color == .black && pieces[3].style?.weight == nil)
     #expect(pieces[1].style?.color == nil && pieces[4].style == nil)
     #expect(pieces.map(\.text).joined() == s.text)
 }
