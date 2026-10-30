@@ -44,6 +44,14 @@ extension SpeakerAnalysis {
         wordSpeakers.replaceSubrange(lo..<hi, with: Array(repeating: who, count: count))
         let elo = min(old.lowerBound, emphasis.count), ehi = min(old.upperBound, emphasis.count)
         emphasis.replaceSubrange(elo..<ehi, with: Array(repeating: 0, count: count))
+        let shift = count - old.count
+        guard shift != 0, var list = pins else { return }
+        func moved(_ i: Int) -> Int { i >= old.upperBound ? i + shift : min(i, old.lowerBound + max(0, count - 1)) }
+        for i in list.indices {
+            list[i].from = moved(list[i].from)
+            list[i].to = moved(list[i].to)
+        }
+        pins = list.filter { $0.from <= $0.to }
     }
 
     /// Sets who speaks words `range` and rebuilds the turns from the words.
@@ -51,13 +59,21 @@ extension SpeakerAnalysis {
         if wordSpeakers.count < transcript.words.count { wordSpeakers += Array(repeating: nil, count: transcript.words.count - wordSpeakers.count) }
         if emphasis.count < transcript.words.count { emphasis += Array(repeating: 0, count: transcript.words.count - emphasis.count) }
         for i in range where i < wordSpeakers.count { wordSpeakers[i] = speaker }
+        pins = (pins ?? []) + [SpeakerPin(from: range.lowerBound, to: range.upperBound, speaker: speaker)]
         rebuildSegments(transcript)
+        guard range.upperBound < transcript.words.count else { return }
+        let lo = transcript.words[range.lowerBound].start, hi = transcript.words[range.upperBound].end
+        for i in segments.indices where segments[i].end > lo && segments[i].start < hi && segments[i].speaker == speaker {
+            segments[i].via = "pinned"
+            segments[i].identity = 1
+        }
     }
 
     /// Renames speakers everywhere, e.g. ["S1": "Anna"]. Two names mapped to one merge.
     public mutating func rename(_ names: [String: String], transcript: Transcript) {
         wordSpeakers = wordSpeakers.map { $0.map { names[$0] ?? $0 } }
         for i in segments.indices { segments[i].speaker = names[segments[i].speaker] ?? segments[i].speaker }
+        pins = pins.map { $0.map { SpeakerPin(from: $0.from, to: $0.to, speaker: names[$0.speaker] ?? $0.speaker) } }
         rebuildSegments(transcript)
     }
 
@@ -76,8 +92,10 @@ extension SpeakerAnalysis {
         }
         // A rebuilt turn is as certain as the least certain scored turn it overlaps.
         for i in segs.indices {
-            let scores = old.filter { $0.end > segs[i].start && $0.start < segs[i].end }.compactMap(\.confidence)
-            segs[i].confidence = scores.min()
+            let over = old.filter { $0.end > segs[i].start && $0.start < segs[i].end }
+            segs[i].confidence = over.compactMap(\.confidence).min()
+            segs[i].identity = over.compactMap(\.identity).min()
+            if let via = over.first?.via, over.allSatisfy({ $0.via == via && $0.speaker == segs[i].speaker }) { segs[i].via = via }
         }
         segments = segs
         var order: [String] = []

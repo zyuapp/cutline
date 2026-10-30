@@ -119,9 +119,9 @@ extension Toolbox {
             return Toolbox.compactTargets(lines, p)
         })
 
-        add(Tool(name: "catalog", description: "Look up what Cutline can do. No arguments: effect types by category, transitions, blend modes, eases, parameter paths and time anchors. type: one effect's parameters with ranges, units and an example call. search: find effects by word. paths: every clip and track parameter path.", schema: Schema.object([
+        add(Tool(name: "catalog", description: "Look up what Cutline can do. No arguments: effect types by category, transitions, blend modes, eases, parameter paths and time anchors. type: one effect's parameters with ranges, units and an example call. search: a task or words (\"blur a face\", \"remove silences\", \"logo\") ranked across how-tos, effects, recipes, tools and parameters, with example calls. paths: every clip and track parameter path.", schema: Schema.object([
             "type": Schema.string("Effect or transition type id such as stylize.vignette or wipe"),
-            "search": Schema.string("Word to search for, e.g. \"blur\" or \"warm\""),
+            "search": Schema.string("A task or words, e.g. \"face blur\", \"stabilize\" or \"warm\""),
             "paths": Schema.bool("List every clip and track parameter path"),
             "recipe": Schema.string("A recipe's arguments, or \"all\""),
             "tool": Schema.string("A tool's full description and every argument"),
@@ -142,13 +142,7 @@ extension Toolbox {
                 guard let t = EffectCatalog.type(id) else { throw EditError("No effect or transition \(id). Effects: \(EffectCatalog.listed.map(\.id).joined(separator: ", ")). Transitions: \(TransitionCatalog.all.map(\.id).joined(separator: ", "))") }
                 return .text(Toolbox.describeEffectType(t))
             }
-            if let q = args.optString("search")?.lowercased() {
-                let hits = EffectCatalog.listed.filter { t in
-                    t.id.contains(q) || t.summary.lowercased().contains(q) || t.params.contains { $0.name.contains(q) || $0.summary.lowercased().contains(q) }
-                }
-                guard !hits.isEmpty else { return .text("No effects match \(q). Call catalog with no arguments for the full list.") }
-                return .text(hits.map { "\($0.id): \($0.summary). Params: " + $0.params.map(\.name).joined(separator: ", ") }.joined(separator: "\n"))
-            }
+            if let q = args.optString("search") { return .text(catalogSearch(q)) }
             if args.bool("paths", default: false) { return .text(Toolbox.describePaths()) }
             return .text(Toolbox.catalogOverview())
         })
@@ -419,7 +413,7 @@ extension Toolbox {
             "Parameter paths: transform.{scale,x,y,rotation,opacity,fit,crop.left|top|right|bottom,3d,z}, blend, fade.{in,out}, audio.{volume,fade_in,fade_out,lead,lag,channels}, text.*, color, fx.<id>.<param>. catalog paths=true lists them all.",
             "Units: lengths are fractions of frame height; positions (text.x/y, fx.gen.x/y, transform.pos_x/pos_y) are fractions of the frame with 0,0 top left, but transform.x/y offset the clip's center from the frame center (0 centered, ±0.5 on an edge); angles are degrees clockwise.",
             "Time anchors (anywhere a time is taken): seconds, \"m:ss.f\", \"<media>.w12\" / \"<media>.w12.end\" (transcript words; source-time arguments resolve them in the media), \"<media>.b8\" / \"<media>.d2\" / \"<media>.s3\" (beats, downbeats, shots), \"beat:12\", \"<media>@01:00:12:10\" (that media's source timecode at its own rate, \";\" before the frames for drop frame; a source time), \"tc:00:00:10:00\" (timeline timecode), \"<clip id>.start\" / \".end\", \"marker:<label>\", \"start\", \"end\", each with optional +/- seconds.",
-            "Every edit tool takes dry_run:true to preview its changes. batch groups edits into one undo step and can name results with as:\"x\" for later \"$x\".",
+            "Every edit tool takes dry_run:true to preview its changes. batch groups edits into one undo step and can name results with as:\"x\" for later \"$x\"; in any tool \"$last\", \"$last_clip\", \"$last_track\", \"$last_media\" and \"$last_effect\" are the latest ids created.",
             Toolbox.busDocs,
         ]
         return lines.joined(separator: "\n")

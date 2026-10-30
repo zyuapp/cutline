@@ -20,6 +20,8 @@ final class Session {
     let jobs = JobBoard()
     /// Jobs left pending in the bundle when the last `open` found it, which a runner continues.
     var resumed: [String] = []
+    /// Ids the latest calls created, for "$last" ("last") and "$last_clip"… ("last_clip"…) references.
+    var lastRefs: [String: String] = [:]
 
     init() {
         jobs.factory = { [weak self] in self?.work(for: $0) }
@@ -40,6 +42,7 @@ final class Session {
         let b = ProjectBundle(url: url)
         bundle = b
         built = nil
+        lastRefs = [:]
         resumed = resumeJobs(b)
         var recent = Session.recentProjects.filter { $0 != url.path }
         recent.insert(url.path, at: 0)

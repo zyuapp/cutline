@@ -188,7 +188,7 @@ extension Toolbox {
             return .text(lines.joined(separator: "\n"))
         })
 
-        add(Tool(name: "transcript_edit", description: "Correct a media file's transcript and who speaks: replace misheard words (from/to + text), add missed words (insert), set the speaker of words (from/to + speaker) or rename speakers everywhere (rename {\"S1\": \"Anna\"}). Captions, subtitles, timeline_transcript and speaker-based recipes use the corrected transcript. Replacing words with a different number of words shifts later word ids; the result says by how much.", schema: Schema.object([
+        add(Tool(name: "transcript_edit", description: "Correct a media file's transcript and who speaks: replace misheard words (from/to + text), add missed words (insert), set the speaker of words (from/to + speaker; pinned, so re-analysis keeps it and labels the rest of that voice to match) or rename speakers everywhere (rename {\"S1\": \"Anna\"}). Captions, subtitles, timeline_transcript and speaker-based recipes use the corrected transcript. Replacing words with a different number of words shifts later word ids; the result says by how much.", schema: Schema.object([
             "media_id": Schema.string("Media id"),
             "from": Schema.string("First word: \"wN\" or \"<media>.wN\""),
             "to": Schema.string("Last word (default: from)"),
@@ -242,7 +242,7 @@ extension Toolbox {
                 var sa = speakers ?? SpeakerAnalysis(mediaId: id, speakers: [], segments: [], wordSpeakers: [], emphasis: [])
                 sa.assign(r, to: who, transcript: t)
                 speakers = sa
-                report.append("w\(r.lowerBound)–w\(r.upperBound) spoken by \(who)")
+                report.append("w\(r.lowerBound)–w\(r.upperBound) spoken by \(who) (pinned: media_analyze features:[\"speakers\"] keeps it and names the rest of this voice in the scene)")
             }
             if let names = args.raw["rename"]?.object {
                 guard var sa = speakers else { throw EditError("No speaker analysis for \(id) to rename") }

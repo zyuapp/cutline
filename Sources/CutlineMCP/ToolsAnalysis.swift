@@ -17,7 +17,8 @@ extension Session {
         if want.contains(.shots), media.hasVideo {
             let cuts = b.visualAnalysis(media.id)?.sceneCuts ?? []
             let checkpoint = b.cacheURL.appendingPathComponent("checkpoints", isDirectory: true).appendingPathComponent("\(media.id)-shots.json")
-            let shots = try await VisionAnalyzer.analyze(url: media.url, mediaId: media.id, sceneCuts: cuts, duration: media.isImage ? 1 : media.duration, checkpoint: checkpoint) { p in progress?(0.65 + 0.25 * p) }
+            var shots = try await VisionAnalyzer.analyze(url: media.url, mediaId: media.id, sceneCuts: cuts, duration: media.isImage ? 1 : media.duration, checkpoint: checkpoint) { p in progress?(0.65 + 0.25 * p) }
+            if !media.isImage, !shots.faces.isEmpty { shots.faces = try await FaceIdentity.identify(url: media.url, tracks: shots.faces) }
             try b.saveAnalysis(shots, media.id, "shots")
             let people = shots.shots.map(\.people).max() ?? 0
             notes.append("shots: \(shots.shots.count) described (\(media.id).s0…s\(max(0, shots.shots.count - 1))), \(people == 0 ? "no people" : "up to \(people) people"), \(shots.faces.count) face tracks")
@@ -34,7 +35,7 @@ extension Session {
            let transcript = b.transcript(media.id) {
             var active = try await ActiveSpeakerDetector.analyze(url: media.url, transcript: transcript, speakers: speakers, shots: shots)
             // Faces talking together are two people, and one face talking is one: label the voices again with that.
-            let refined = try await Diarizer.analyze(url: media.url, transcript: transcript, faces: active, faceTracks: shots.faces)
+            let refined = try await Diarizer.analyze(url: media.url, transcript: transcript, faces: active, faceTracks: shots.faces, enrollment: Session.enrollment(speakers, transcript: transcript))
             if refined.wordSpeakers != speakers.wordSpeakers {
                 try b.saveAnalysis(refined, media.id, "speakers")
                 active = ActiveSpeakerDetector.relabel(active, with: refined, transcript: transcript)
@@ -54,7 +55,7 @@ extension Session {
 
 extension Toolbox {
     func registerAnalysisTools() {
-        add(Tool(name: "analysis_read", description: "Read what analysis found, compactly, so you know the footage without looking at frames. what: summary (default; everything known about the media), beats (tempo, beat and downbeat times with anchor ids), speakers (turns), shots (descriptions, shot size, people, text, aesthetics), sounds (events), faces, levels (loudness over time). Without media_id: beats on the timeline (beat:N anchors) and analysis jobs. Times are source seconds unless noted.", schema: Schema.object([
+        add(Tool(name: "analysis_read", description: "Read what analysis found, compactly, so you know the footage without looking at frames. what: summary (default; everything known about the media), beats (tempo, beat and downbeat times with anchor ids), speakers (turns with voice confidence, identity across scenes and whether a turn was pinned or named from a pinned voice), shots (descriptions, shot size, people, text, aesthetics), sounds (events), faces, levels (loudness over time). Without media_id: beats on the timeline (beat:N anchors) and analysis jobs. Times are source seconds unless noted.", schema: Schema.object([
             "media_id": Schema.string("Media id; omit for the timeline"),
             "what": Schema.string("What to read", values: ["summary", "beats", "speakers", "shots", "sounds", "faces", "levels", "jobs"]),
             "start": Schema.time("From this source time"),
@@ -128,8 +129,11 @@ extension Toolbox {
                         let t = b.transcript(id)
                         for seg in s.segments where seg.end > lo && seg.start < hi {
                             let words = t?.words.filter { $0.start >= seg.start - 0.01 && $0.end <= seg.end + 0.01 }.map(\.text) ?? []
-                            let sure = seg.confidence.map { " (confidence \(fmt2($0)))" } ?? ""
-                            lines.append("  \(fmt2(seg.start))–\(fmt2(seg.end)) \(seg.speaker)\(sure): " + words.prefix(14).joined(separator: " ") + (words.count > 14 ? " …" : ""))
+                            lines.append("  \(fmt2(seg.start))–\(fmt2(seg.end)) \(seg.speaker)\(Toolbox.turnEvidence(seg)): " + words.prefix(14).joined(separator: " ") + (words.count > 14 ? " …" : ""))
+                        }
+                        lines.append("  (voice: how clearly the voice is this speaker's within the file; identity: whether it is the same person as this speaker's turns in other scenes, by voice; pinned/enrolled/named: set by hand, named from a pinned turn in the scene, or carried from one.)")
+                        if s.segments.contains(where: { ($0.identity ?? 1) < 0.6 }) {
+                            lines.append("Low identity: voices change with each scene's room and mic. Pin a turn per character and scene with transcript_edit from/to + speaker:\"<name>\", then media_analyze features:[\"speakers\"] names the rest of each pinned voice (enroll:true also pins every hand-named word).")
                         }
                     }
                 } else if what == "speakers" { lines.append("No speaker analysis; run media_analyze features:[\"speakers\"].") }
@@ -146,6 +150,15 @@ extension Toolbox {
             }
             return .text(lines.joined(separator: "\n").ifEmptyText("No \(what) analysis for \(id)."))
         })
+    }
+
+    /// " (voice 0.93, identity 0.40)", " (pinned)"… for a speaker turn.
+    static func turnEvidence(_ seg: SpeakerSegment) -> String {
+        var parts: [String] = []
+        if let via = seg.via { parts.append(via) }
+        if let c = seg.confidence { parts.append("voice \(fmt2(c))") }
+        if let i = seg.identity, seg.via != "pinned", seg.via != "enrolled" { parts.append("identity \(fmt2(i))") }
+        return parts.isEmpty ? "" : " (" + parts.joined(separator: ", ") + ")"
     }
 
     /// The analysis feature an analysis_read `what` needs; nil for reads of import-time results.

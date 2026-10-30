@@ -130,12 +130,18 @@ final class Toolbox {
             return r
         }
         do {
-            let args = try resolvingAliases(name, args, schema: tool.schema)
+            let given = name == "batch" ? args : try args.map { try Toolbox.resolveLast($0, session.lastRefs) }
+            let args = try resolvingAliases(name, given, schema: tool.schema)
             try checkArguments(name, args, schema: tool.schema)
             let project = try? session.project()
             installResolvers(project)
             let resolved = try args.map { try Toolbox.resolveMediaAliases($0, media: project?.media ?? []) }
-            return try await tool.run(Args(resolved))
+            var result = try await tool.run(Args(resolved))
+            if !result.isError, let note = recordCreated(name, before: project, after: try? session.project()),
+               let i = result.content.firstIndex(where: { $0["text"]?.string != nil }), let text = result.content[i]["text"]?.string {
+                result.content[i] = ["type": "text", "text": .string(text + "\n" + note)]
+            }
+            return result
         } catch {
             var r = ToolResult.text("Error: \(error.localizedDescription)")
             r.isError = true

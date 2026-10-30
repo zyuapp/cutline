@@ -20,7 +20,8 @@ extension Session {
     /// Runs analysis features for one media file and stores the results in the bundle.
     /// Beats run only on music-like media (little speech) unless asked for explicitly. `finished` hears each
     /// feature as it is saved, with its notes; long transcripts and shot analysis also checkpoint within a feature.
-    func analyze(_ media: MediaAsset, features: [Feature], language: String, explicit: Bool, progress: (@Sendable (Double) -> Void)? = nil, finished: (@Sendable (String, [String]) -> Void)? = nil) async throws -> String {
+    /// `enroll`: true makes every hand-named word a pin, false starts speakers afresh, nil keeps pins and names.
+    func analyze(_ media: MediaAsset, features: [Feature], language: String, explicit: Bool, enroll: Bool? = nil, progress: (@Sendable (Double) -> Void)? = nil, finished: (@Sendable (String, [String]) -> Void)? = nil) async throws -> String {
         let b = try requireBundle()
         var notes: [String] = []
         var reported = 0
@@ -73,9 +74,10 @@ extension Session {
         step(.beats)
         progress?(0.45)
         if want.contains(.speakers), let transcript, words >= (explicit ? 1 : 20) {
-            let s = try await Diarizer.analyze(url: heard.url, transcript: transcript)
+            let enrollment = enroll == false ? nil : Session.enrollment(b.analysis(SpeakerAnalysis.self, media.id, "speakers"), transcript: transcript, namedArePins: enroll == true)
+            let s = try await Diarizer.analyze(url: heard.url, transcript: transcript, enrollment: enrollment)
             try b.saveAnalysis(s, media.id, "speakers")
-            notes.append("speakers: \(s.speakers.count) (\(s.speakers.joined(separator: ", ")))")
+            notes.append("speakers: \(s.speakers.count) (\(s.speakers.joined(separator: ", ")))" + Session.enrollmentNote(s))
         }
         step(.speakers)
         progress?(0.55)
@@ -94,6 +96,20 @@ extension Session {
         notes += perception.filter { !notes.contains($0) }
         built = nil
         return notes.joined(separator: "; ")
+    }
+
+    /// Pins and names of `previous` to keep; with `namedArePins`, every hand-named word is pinned too.
+    static func enrollment(_ previous: SpeakerAnalysis?, transcript: Transcript, namedArePins: Bool = false) -> Diarizer.Enrollment? {
+        guard var e = Diarizer.Enrollment(previous, wordCount: transcript.words.count) else { return nil }
+        if namedArePins { e.pinned = zip(e.pinned, e.named).map { $0 ?? $1 } }
+        return e
+    }
+
+    static func enrollmentNote(_ s: SpeakerAnalysis) -> String {
+        let pins = s.pins?.count ?? 0
+        let named = s.namedSpeakers
+        guard pins > 0 || !named.isEmpty else { return "" }
+        return " — kept \(pins) pinned turn(s)" + (named.isEmpty ? "" : "; named " + named.joined(separator: ", ") + " from pinned and earlier-named turns")
     }
 
     /// Spellings transcription should use for `media`: its vocabulary, caption replacement targets and named speakers.

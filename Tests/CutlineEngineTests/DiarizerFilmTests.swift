@@ -179,34 +179,83 @@ private let filmDifferent: [(Seconds, Seconds)] = [
     (348, 362), (317, 348), (348, 356.5), (362, 365), (299.5, 317), (343, 317), (343, 348),
 ]
 
-@Test(.enabled(if: FileManager.default.fileExists(atPath: tearsOfSteelPath)))
-func tearsOfSteelWholeFilmKeepsVoicesApart() async throws {
+/// The same character, played by the same actor, in different scenes (checked on frames): young Thom on the bridge
+/// at 25.5–38.7 and in the memory replay at 317–362; Celia at 23 and 32 and in the replay at 348; Barley in the
+/// control room at 193 and 237 and in close-up at 343.
+private let crossSame: [(Seconds, Seconds)] = [(25.5, 317), (38.7, 358.3), (28, 362), (23, 348), (32, 348), (193, 343), (237, 343)]
+private let crossDifferent: [(Seconds, Seconds)] = [(25.5, 343), (237, 317), (23, 343), (348, 193), (32, 317)]
+/// One sentence per character and scene, away from the scored pairs' own sentences where the scene has another.
+private let filmPins: [(Seconds, String)] = [(35, "Thom"), (356.5, "Thom"), (23, "Celia"), (191, "Barley"), (341, "Barley")]
+
+func tearsOfSteelFilmTranscript() -> Transcript {
     let words = tearsOfSteelFilmWords.split(whereSeparator: \.isWhitespace).map { tok -> Word in
         let parts = tok.split(separator: "@")
         let times = parts[1].split(separator: "-").map { Double($0)! }
         return Word(text: String(parts[0]), start: times[0], end: times[1])
     }
-    let transcript = Transcript(mediaId: "tos", locale: "en-US", words: words)
-    let samples = try await Diarizer.decodeMono(url: URL(fileURLWithPath: tearsOfSteelPath))
-    let result = Diarizer.analyze(samples: samples, sampleRate: Diarizer.decodeRate, transcript: transcript)
+    return Transcript(mediaId: "tos", locale: "en-US", words: words)
+}
+
+private struct FilmScore {
+    var early: (Int, Int, Int, Int)
+    var replay: (Int, Int, Int, Int)
+    var cross: (Int, Int, Int, Int)
+
+    var line: String {
+        func f(_ s: (Int, Int, Int, Int)) -> String { "same \(s.0)/\(s.1) different \(s.2)/\(s.3)" }
+        return "0–240 s \(f(early)), 290–372 s \(f(replay)), across scenes \(f(cross))"
+    }
+
+    static func rate(_ s: (Int, Int, Int, Int)) -> Double { Double(s.0 + s.2) / Double(s.1 + s.3) }
+}
+
+private func scoreFilm(_ result: SpeakerAnalysis, words: [Word], label: String) -> FilmScore {
     for s in result.segments where s.start < 372 {
         let text = words.filter { $0.start >= s.start - 0.01 && $0.end <= s.end + 0.01 }.map(\.text).joined(separator: " ")
-        print(String(format: "film %7.2f–%7.2f %@ %.2f %@", s.start, s.end, s.speaker, s.confidence ?? -1, text))
+        print(String(format: "%@ %7.2f–%7.2f %@ %.2f id %@ %@ %@", label, s.start, s.end, s.speaker, s.confidence ?? -1, s.identity.map { String(format: "%.2f", $0) } ?? "-", s.via ?? "", text))
     }
     func speaker(_ t: Seconds) -> String? {
         let i = words.indices.min { abs((words[$0].start + words[$0].end) / 2 - t) < abs((words[$1].start + words[$1].end) / 2 - t) }!
         return result.wordSpeakers[i]
     }
-    func score(_ range: ClosedRange<Seconds>) -> (same: Int, of: Int, different: Int, ofDifferent: Int) {
-        let s = filmSame.filter { range.contains($0.0) }, d = filmDifferent.filter { range.contains($0.0) }
-        return (s.filter { speaker($0.0) == speaker($0.1) }.count, s.count, d.filter { speaker($0.0) != speaker($0.1) }.count, d.count)
+    func score(_ same: [(Seconds, Seconds)], _ different: [(Seconds, Seconds)]) -> (Int, Int, Int, Int) {
+        (same.filter { speaker($0.0) == speaker($0.1) }.count, same.count, different.filter { speaker($0.0) != speaker($0.1) }.count, different.count)
     }
-    let early = score(0...240), replay = score(290...372)
-    print("film speakers \(result.speakers.count), 0–240 s same \(early.same)/\(early.of) different \(early.different)/\(early.ofDifferent), 290–372 s same \(replay.same)/\(replay.of) different \(replay.different)/\(replay.ofDifferent)")
+    let out = FilmScore(early: score(filmSame.filter { $0.0 <= 240 }, filmDifferent.filter { $0.0 <= 240 }),
+                        replay: score(filmSame.filter { $0.0 >= 290 }, filmDifferent.filter { $0.0 >= 290 }),
+                        cross: score(crossSame, crossDifferent))
+    print("\(label) speakers \(result.speakers.count) (\(result.speakers.joined(separator: ", "))), \(out.line)")
+    return out
+}
+
+@Test(.enabled(if: FileManager.default.fileExists(atPath: tearsOfSteelPath)))
+func tearsOfSteelWholeFilmKeepsVoicesApart() async throws {
+    let transcript = tearsOfSteelFilmTranscript()
+    let words = transcript.words
+    let samples = try await Diarizer.decodeMono(url: URL(fileURLWithPath: tearsOfSteelPath))
+    let result = Diarizer.analyze(samples: samples, sampleRate: Diarizer.decodeRate, transcript: transcript)
+    let auto = scoreFilm(result, words: words, label: "film")
     #expect((2...6).contains(result.speakers.count))
     // Over the whole film Thom and Celia share the room and mic of their scenes, yet stay two voices.
-    #expect(Double(early.same + early.different) / Double(early.of + early.ofDifferent) >= 0.85)
-    #expect(Double(replay.same + replay.different) / Double(replay.of + replay.ofDifferent) >= 0.8)
+    #expect(FilmScore.rate(auto.early) >= 0.85)
+    #expect(FilmScore.rate(auto.replay) >= 0.8)
+    // Turns heard in several scenes say how surely they are one person there.
+    #expect(result.segments.contains { $0.identity != nil })
+
+    // A sentence pinned per character and scene names the rest of each scene's voice and keeps characters apart.
+    var pinned = [String?](repeating: nil, count: words.count)
+    let units = Diarizer.sentenceUnits(words, order: Array(words.indices))
+    for (t, name) in filmPins {
+        let u = units.first { $0.start - 0.05 <= t && t <= $0.end + 0.05 }!
+        for w in u.words { pinned[w] = name }
+    }
+    let enrolled = Diarizer.analyze(samples: samples, sampleRate: Diarizer.decodeRate, transcript: transcript, enrollment: Diarizer.Enrollment(pinned: pinned))
+    let named = scoreFilm(enrolled, words: words, label: "enrolled")
+    for (i, n) in pinned.enumerated() where n != nil { #expect(enrolled.wordSpeakers[i] == n) }
+    #expect(Set(enrolled.pins?.map(\.speaker) ?? []) == ["Thom", "Celia", "Barley"])
+    #expect(FilmScore.rate(named.early) >= 0.85)
+    #expect(FilmScore.rate(named.replay) >= 0.8)
+    #expect(FilmScore.rate(named.cross) > FilmScore.rate(auto.cross))
 }
 
 @Test func talkingFacesLinkSentences() {

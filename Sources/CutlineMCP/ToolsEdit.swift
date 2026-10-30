@@ -610,7 +610,7 @@ extension Toolbox {
 
     func registerBatchTool() {
         let batchable = edits.keys.sorted()
-        add(Tool(name: "batch", description: "Run several edit tools in order as ONE history entry (one undo step). If any fails, nothing is applied. Name an operation's result with as:\"x\" (the clip or effect it created) and use \"$x\" in later arguments, e.g. add an adjustment layer as \"adj\" then effect_add target \"$adj\". dry_run:true reports the combined changes without applying them.", schema: Schema.object([
+        add(Tool(name: "batch", description: "Run several edit tools in order as ONE history entry (one undo step). If any fails, nothing is applied. Name an operation's result with as:\"x\" (the clip, effect, track or media it created) and use \"$x\" in later arguments, e.g. add an adjustment layer as \"adj\" then effect_add target \"$adj\"; \"$last\", \"$last_clip\", \"$last_effect\", \"$last_track\" and \"$last_media\" name the latest creations, here and in any tool. dry_run:true reports the combined changes without applying them.", schema: Schema.object([
             "label": Schema.string("History label for the whole change"),
             "operations": Schema.array(Schema.object([
                 "tool": Schema.string("Edit tool name", values: batchable),
@@ -627,6 +627,7 @@ extension Toolbox {
             }
             var lines: [String] = []
             var vars: [String: String] = [:]
+            var last = session.lastRefs
             let label = args.optString("label") ?? "Batch of \(ops.count) edits"
             let before = try session.project()
             let run: (inout Project) throws -> Void = { p in
@@ -635,21 +636,21 @@ extension Toolbox {
                     guard let e = self.edits[name] else {
                         throw EditError("Operation \(i + 1): \(name) can't run inside batch" + (name == "recipe" ? "; call recipe on its own (it is already one undo step)" : "") + ". Batchable tools: \(self.edits.keys.sorted().joined(separator: ", "))")
                     }
-                    let opArgs = Toolbox.substitute(op["args"] ?? [:], vars)
-                    let clipsBefore = Set(p.tracks.flatMap(\.clips).map(\.id))
-                    let fxBefore = Set(p.tracks.flatMap { t in t.effects.map(\.id) + t.clips.flatMap { $0.effects.map(\.id) } })
+                    let opBefore = p
                     do {
+                        let opArgs = try Toolbox.resolveLast(Toolbox.substitute(op["args"] ?? [:], vars), last, strict: false)
                         self.installResolvers(p)
                         lines.append(try e.apply(&p, Args(opArgs)))
                     } catch {
                         throw EditError("Operation \(i + 1) (\(name)) failed, nothing applied: \(error.localizedDescription)")
                     }
+                    let made = Toolbox.created(opBefore, p)
+                    if let first = made.first { last["last"] = first.ids[0] }
+                    for m in made { last["last_" + m.kind] = m.ids[0] }
                     if let v = op["as"]?.string {
-                        let newClips = Set(p.tracks.flatMap(\.clips).map(\.id)).subtracting(clipsBefore)
-                        let newFx = Set(p.tracks.flatMap { t in t.effects.map(\.id) + t.clips.flatMap { $0.effects.map(\.id) } }).subtracting(fxBefore)
-                        guard let made = newClips.sorted().first ?? newFx.sorted().first else { throw EditError("Operation \(i + 1) created nothing to name \(v)") }
-                        vars[v] = made
-                        lines[lines.count - 1] += " [$\(v) = \(made)]"
+                        guard let id = made.first?.ids.first else { throw EditError("Operation \(i + 1) created nothing to name \(v)") }
+                        vars[v] = id
+                        lines[lines.count - 1] += " [$\(v) = \(id)]"
                     }
                 }
                 p.pruneTransitions()
