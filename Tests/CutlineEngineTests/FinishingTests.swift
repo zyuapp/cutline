@@ -507,3 +507,177 @@ private func timelineFrame(_ url: URL, effects: [Effect], at t: Seconds, size: (
     #expect(psnr(after) > psnr(before) + 3)
     #expect(squareErr < 0.05)
 }
+
+// MARK: Inpainting what no frame shows
+
+/// A still camera on a railing, a static post in front of it, and fresh sensor noise every frame.
+private struct StaticPost {
+    let w = 320, h = 180, frames = 14
+    let post = (x: 152, y: 24, w: 24, h: 116)
+    var clean: Plane
+    var shot: [Plane] = []
+    var boxes: [TrackSample]
+
+    init(noise: Float = 0.012) {
+        clean = quantized(Pattern.railing.picture(w, h))
+        var rng = LCG(state: 17)
+        for _ in 0..<frames {
+            var f = addNoise(clean, sigma: noise, rng: &rng)
+            for y in post.y..<(post.y + post.h) {
+                for x in post.x..<(post.x + post.w) {
+                    let o = (y * w + x) * 3
+                    f.data[o] = 0.35; f.data[o + 1] = 0.3; f.data[o + 2] = 0.25
+                }
+            }
+            shot.append(quantized(f))
+        }
+        let box = NormRect(x: Double(post.x) / Double(w), y: Double(post.y) / Double(h), width: Double(post.w) / Double(w), height: Double(post.h) / Double(h))
+        boxes = [TrackSample(t: 0, box: box, confidence: 1), TrackSample(t: 1, box: box, confidence: 1)]
+    }
+
+    /// The padded hole.
+    func hole(pad: Int) -> (Int, Int) -> Bool {
+        { x, y in x >= post.x - pad && x < post.x + post.w + pad && y >= post.y - pad && y < post.y + post.h + pad }
+    }
+
+    func settings(_ patch: Bool = true) -> ObjectRemover.Settings {
+        var s = ObjectRemover.Settings(samples: boxes, padding: 3 / Float(h), window: 0.3, feather: 1 / Float(h), mix: 1)
+        s.patchFill = patch
+        return s
+    }
+}
+
+/// Mean absolute change between consecutive frames inside `keep`.
+private func flicker(_ frames: [Plane], where keep: (Int, Int) -> Bool) -> Double {
+    (1..<frames.count).map { mse(frames[$0], frames[$0 - 1], where: keep).mae }.reduce(0, +) / Double(frames.count - 1)
+}
+
+/// Share of the hole's columns where both rails stay dark between light sky.
+private func railsContinue(_ p: Plane, columns: Range<Int>) -> Double {
+    func luma(_ x: Int, _ y: Int) -> Float { let o = (y * p.width + x) * 3; return 0.3 * p.data[o] + 0.59 * p.data[o + 1] + 0.11 * p.data[o + 2] }
+    var good = 0, total = 0
+    for x in columns {
+        for (lo, hi) in [(40, 46), (100, 104)] {
+            total += 1
+            let rail = (lo..<hi).map { luma(x, $0) }.reduce(0, +) / Float(hi - lo)
+            if rail < 0.3, luma(x, lo - 3) > 0.5, luma(x, hi + 2) > 0.5 { good += 1 }
+        }
+    }
+    return Double(good) / Double(max(1, total))
+}
+
+@Test func objectRemovalInpaintsAStaticObjectAndHoldsItStill() async throws {
+    let scene = StaticPost()
+    let began = Date()
+    let patched = try await process(scene.shot, stages: [ObjectRemover(scene.settings(), fps: 30, context: ciContext)])
+    let took = Date().timeIntervalSince(began) / Double(scene.frames)
+    let smooth = try await process(scene.shot, stages: [ObjectRemover(scene.settings(false), fps: 30, context: ciContext)])
+    // The same fill made frame by frame with no guide from the frame before.
+    let independent = scene.shot.map { f -> Plane in
+        var rgb = f.data
+        let hole = (0..<(scene.w * scene.h)).map { scene.hole(pad: 3)($0 % scene.w, $0 / scene.w) }
+        Inpainter.fill(&rgb, width: scene.w, height: scene.h, hole: hole)
+        return Plane(width: scene.w, height: scene.h, data: rgb)
+    }
+    let inHole = scene.hole(pad: 2)
+    let cols = scene.post.x..<(scene.post.x + scene.post.w)
+    let err = patched.map { mse($0, scene.clean, where: inHole).mae }.reduce(0, +) / Double(scene.frames)
+    let errSmooth = smooth.map { mse($0, scene.clean, where: inHole).mae }.reduce(0, +) / Double(scene.frames)
+    let rails = patched.map { railsContinue($0, columns: cols) }.min()!, railsSmooth = railsContinue(smooth[5], columns: cols)
+    let noiseFlicker = flicker(scene.shot, where: { x, y in !scene.hole(pad: 6)(x, y) })
+    let held = flicker(patched, where: inHole), loose = flicker(independent, where: inHole)
+    print("static post: hole MAE \(String(format: "%.4f", err)) (smooth \(String(format: "%.4f", errSmooth))), rails continue in \(String(format: "%.0f%%", rails * 100)) of columns (smooth \(String(format: "%.0f%%", railsSmooth * 100))), frame-to-frame change in the fill \(String(format: "%.4f", held)) guided vs \(String(format: "%.4f", loose)) frame by frame (sensor noise \(String(format: "%.4f", noiseFlicker))), \(String(format: "%.0f", took * 1000)) ms a frame")
+    saveForReview(patched[6], "post-patch")
+    saveForReview(smooth[6], "post-smooth")
+    #expect(err < errSmooth * 0.3)
+    #expect(rails > 0.9 && railsSmooth < 0.2)
+    #expect(held < loose)
+    #expect(held < noiseFlicker * 1.5)
+    // Away from the post the picture is untouched.
+    #expect(mse(patched[6], scene.shot[6]) { x, y in !scene.hole(pad: 6)(x, y) }.mae < 0.001)
+}
+
+@Test func objectRemovalTakesTheBackgroundFromACleanPlate() async throws {
+    let scene = StaticPost()
+    // A plate shot a little brighter and offset by the camera settling 3 px right and 2 px down.
+    var plate = Plane(width: scene.w, height: scene.h)
+    for y in 0..<scene.h {
+        for x in 0..<scene.w {
+            let sx = min(scene.w - 1, max(0, x - 3)), sy = min(scene.h - 1, max(0, y - 2))
+            for c in 0..<3 { plate.data[(y * scene.w + x) * 3 + c] = min(1, scene.clean.data[(sy * scene.w + sx) * 3 + c] + 0.05) }
+        }
+    }
+    var s = scene.settings()
+    s.plate = buffer(quantized(plate))
+    let out = try await process(Array(scene.shot.prefix(4)), stages: [ObjectRemover(s, fps: 30, context: ciContext)])
+    let err = mse(out[2], scene.clean, where: scene.hole(pad: 2)).mae
+    print("clean plate: hole MAE \(String(format: "%.4f", err))")
+    #expect(err < 0.015)
+}
+
+@Test func cleanPlateFrameComesFromTheClipsMedia() async throws {
+    // The post walks in after 0.1 s; frame 0 shows the railing clear.
+    let scene = StaticPost()
+    let frames = scene.shot.enumerated().map { $0.offset < 3 ? quantized(scene.clean) : $0.element } + Array(scene.shot.suffix(6))
+    let url = try await writeMovie(frames), cleanURL = try await writeMovie([Plane](repeating: quantized(scene.clean), count: frames.count))
+    defer { [url, cleanURL].forEach { try? FileManager.default.removeItem(at: $0) } }
+    let fx = Effect(id: "rm", type: "video.remove_object", params: ["boxes": .string(ObjectTrack.encodeBoxes(scene.boxes)), "padding": .number(3.0 / 180), "clean_plate_at": .number(0)])
+    let result = try await timelineFrame(url, effects: [fx], at: 0.2, size: (scene.w, scene.h), render: true)
+    defer { result.request.map { try? FileManager.default.removeItem(at: $0.url) } }
+    let reference = try await timelineFrame(cleanURL, effects: [], at: 0.2, size: (scene.w, scene.h), render: false).frame
+    let err = mse(result.frame, reference, where: scene.hole(pad: 2)).mae
+    print("clean plate frame: hole MAE \(String(format: "%.4f", err))")
+    #expect(result.missing.isEmpty)
+    #expect(err < 0.02)
+}
+
+/// Removes a railing post from a still of a bridge shot in Tears of Steel, held for a dozen frames with fresh grain so
+/// no frame shows what's behind it; at the film's size and at 1080p. CUTLINE_REAL=1 runs it, CUTLINE_SAVE_FRAMES
+/// keeps the frames.
+@Test(.enabled(if: FileManager.default.fileExists(atPath: film) && ProcessInfo.processInfo.environment["CUTLINE_REAL"] != nil))
+func objectRemovalOnRealFootage() async throws {
+    let gen = AVAssetImageGenerator(asset: AVURLAsset(url: URL(fileURLWithPath: film)))
+    gen.requestedTimeToleranceBefore = .zero
+    gen.requestedTimeToleranceAfter = .zero
+    let still = Plane(cgImage: try await gen.image(at: CMTime(seconds: 280, preferredTimescale: 600)).image)
+    // The post right of the walker, rails crossing it, down to the frame's bottom edge.
+    let box = NormRect(x: 449.0 / 862, y: 162.0 / 360, width: 52.0 / 862, height: 198.0 / 360)
+    let samples = [TrackSample(t: 0, box: box, confidence: 1), TrackSample(t: 10, box: box, confidence: 1)]
+    for scale in [1, 2] {
+        let base = scale == 1 ? still : upscaled(still, by: scale)
+        let w = base.width, h = base.height
+        var rng = LCG(state: 3)
+        let input = (0..<12).map { _ in quantized(addNoise(base, sigma: 0.01, rng: &rng)) }
+        for patch in scale == 1 ? [true, false] : [true] {
+            var s = ObjectRemover.Settings(samples: samples, padding: 0.01, window: 0.4, feather: 0.004, mix: 1)
+            s.patchFill = patch
+            let began = Date()
+            let out = try await process(input, stages: [ObjectRemover(s, fps: 24, context: ciContext)])
+            let perFrame = Date().timeIntervalSince(began) / Double(input.count)
+            let pad = 0.01 * Double(h)
+            let x0 = Int(box.x * Double(w) - pad), x1 = Int((box.x + box.width) * Double(w) + pad), y0 = Int(box.y * Double(h) - pad)
+            let inHole = { (x: Int, y: Int) in x >= x0 && x <= x1 && y >= y0 }
+            let held = flicker(out, where: inHole), grain = flicker(input, where: { x, y in !inHole(x, y) })
+            print("real footage \(w)×\(h), \(patch ? "patch" : "smooth") fill: hole \(x1 - x0 + 1)×\(h - y0) px (\(String(format: "%.1f%%", Double((x1 - x0 + 1) * (h - y0)) / Double(w * h) * 100)) of the frame), \(String(format: "%.0f", perFrame * 1000)) ms a frame, frame-to-frame change in the fill \(String(format: "%.4f", held)) (grain elsewhere \(String(format: "%.4f", grain)))")
+            saveForReview(out[6], "tos-\(w)-\(patch ? "patch" : "smooth")")
+            #expect(held < grain * 1.5)
+        }
+        saveForReview(input[6], "tos-\(w)-input")
+    }
+}
+
+private func upscaled(_ p: Plane, by k: Int) -> Plane {
+    var out = Plane(width: p.width * k, height: p.height * k)
+    for y in 0..<out.height {
+        for x in 0..<out.width {
+            let sx = min(Float(p.width - 1), max(0, (Float(x) + 0.5) / Float(k) - 0.5)), sy = min(Float(p.height - 1), max(0, (Float(y) + 0.5) / Float(k) - 0.5))
+            let ax = Int(sx), ay = Int(sy), bx = min(p.width - 1, ax + 1), by = min(p.height - 1, ay + 1)
+            let fx = sx - Float(ax), fy = sy - Float(ay)
+            for c in 0..<3 {
+                let v = { (xx: Int, yy: Int) in p.data[(yy * p.width + xx) * 3 + c] }
+                out.data[(y * out.width + x) * 3 + c] = (v(ax, ay) * (1 - fx) + v(bx, ay) * fx) * (1 - fy) + (v(ax, by) * (1 - fx) + v(bx, by) * fx) * fy
+            }
+        }
+    }
+    return out
+}

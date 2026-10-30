@@ -114,6 +114,18 @@ extension Toolbox {
         var params: [String: ParamValue] = ["boxes": .string(boxes)]
         if let trackId { params["track"] = .string(trackId) }
         for name in ["padding", "window", "feather"] { if let v = a.optDouble(name) { params[name] = .number(v) } }
+        if let fill = a.optString("fill") { params["fill"] = .string(fill) }
+        if let plate = a.optString("clean_plate") {
+            let path = (plate as NSString).expandingTildeInPath
+            guard FileManager.default.fileExists(atPath: path) else { throw EditError("No clean plate image at \(plate)") }
+            params["clean_plate"] = .string(path)
+            note += " Clean plate \((path as NSString).lastPathComponent)."
+        }
+        if let at = try a.optTime("clean_plate_at") {
+            let src = c.sourceTime(atTimeline: min(max(at, c.start), c.end - 1e-3))
+            params["clean_plate_at"] = .number(src)
+            note += " Clean plate from source \(fmt2(src))s."
+        }
         var result = try runEdit("Remove object from \(Toolbox.clipName(clipId, current))", dry: dry) { p in
             guard let loc = p.locateClip(clipId), let type = EffectCatalog.type("video.remove_object") else { throw EditError("No clip \(clipId)") }
             var clip = p.tracks[loc.track].clips[loc.clip]

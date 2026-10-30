@@ -306,10 +306,13 @@ public enum EffectCatalog {
             ParamSpec("motion_threshold", .number, .number(0.04), min: 0.005, max: 0.5, animatable: false, "How far an aligned neighbour pixel may differ from this frame, beyond the measured noise, before it counts as motion and is left out (fraction of full scale); higher removes more noise but can smear moving edges"),
             ParamSpec("spatial", .number, .number(0), min: 0, max: 1, animatable: false, "Edge-preserving spatial noise reduction after the temporal pass, for noise left on moving areas"),
         ]),
-        EffectType(id: "video.remove_object", category: "video", summary: "Object removal like Resolve's Object Removal or a basic Content-Aware Fill: paints a tracked object out with the background from other frames where it shows (aligned to this frame, temporal median), and fills what no frame shows by diffusion. Use recipe remove_object; rendered in the background", params: trackedBoxSpecs + [
+        EffectType(id: "video.remove_object", category: "video", summary: "Object removal like Resolve's Object Removal or After Effects' Content-Aware Fill: paints a tracked object out with the background from a clean plate or from other frames where it shows (aligned to this frame, temporal median), and fills what no frame shows by patch-based inpainting that carries straight lines and edges across and holds still from frame to frame. Use recipe remove_object; rendered in the background", params: trackedBoxSpecs + [
             ParamSpec("padding", .number, .number(0.02), min: 0, max: 0.2, unit: "of frame height", animatable: false, "Room around the tracked box that is replaced too, covering shadows, motion blur and tracking slop"),
             ParamSpec("window", .number, .number(1.5), min: 0.2, max: 4, unit: "seconds", animatable: false, "How far before and after each frame to look for the background"),
             ParamSpec("feather", .number, .number(0.004), min: 0, max: 0.05, unit: "of frame height", animatable: false, "Soft edge between the fill and the picture"),
+            ParamSpec("fill", .choice(["patch", "smooth"]), .string("patch"), "What fills pixels no frame shows: patches from around the hole (texture and lines continue) or a smooth membrane"),
+            ParamSpec("clean_plate", .text, .string(""), animatable: false, "Image file of the background without the object (a still from the same camera), used first wherever it shows"),
+            ParamSpec("clean_plate_at", .number, .number(-1), min: -1, max: 1_000_000, unit: "source seconds", animatable: false, "Frame of this clip's media to take the background from, as a clean plate; -1 for none"),
         ]),
         EffectType(id: "audio.eq", category: "audio", summary: "Equalizer: low cut, low shelf, mid bell, high shelf, high cut", params: [
             num("highpass_hz", 0, 0, 2000, "Hz", "Remove rumble below this frequency; 0 off. 80 is typical for voice"),
