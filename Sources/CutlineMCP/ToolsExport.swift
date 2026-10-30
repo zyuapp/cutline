@@ -102,9 +102,9 @@ extension Toolbox {
             }
             var closed: [TimedText] = []
             if args.bool("closed_captions", default: false) {
-                closed = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 2).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
+                closed = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 4).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                 if closed.isEmpty { report.append("No transcribed speech, so no closed captions.") } else {
-                    let sidecar = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 2, range: range).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
+                    let sidecar = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 4, range: range).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                     try CEA608.scc(sidecar, fps: p.canvas.fps).write(to: base.appendingPathExtension("scc"), atomically: true, encoding: .utf8)
                     report.append("Closed captions: \(closed.count) cues embedded (CEA-608, CC1) and \(base.lastPathComponent).scc")
                 }

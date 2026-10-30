@@ -162,8 +162,14 @@ extension Project {
         return out
     }
 
+    /// The crossfade room tone uses for `range`: `crossfade`, shortened to half the range so short gaps get short fades.
+    public static func roomToneCrossfade(_ crossfade: Seconds, range: TimeRange) -> Seconds {
+        min(max(0, crossfade), range.duration / 2)
+    }
+
     /// Fills a timeline range with room tone on `trackId`: clips of `mediaId` from the quiet `source` span, crossfaded
-    /// into each other and into whatever sound meets the range's edges. Returns the new clip ids.
+    /// into each other and into whatever sound meets the range's edges. The crossfade shrinks to fit short ranges
+    /// (see `roomToneCrossfade`), and no fade runs longer than its clip. Returns the new clip ids.
     @discardableResult
     public mutating func fillRoomTone(_ range: TimeRange, mediaId: String, source: TimeRange, trackId: String, crossfade: Seconds = 0.25) throws -> [String] {
         guard let m = mediaAsset(mediaId) else { throw EditError("No media \(mediaId)") }
@@ -171,7 +177,7 @@ extension Project {
         guard source.start >= -eps, source.end <= m.duration + eps, source.duration > 0 else {
             throw EditError("The room-tone span \(fmt2(source.start))–\(fmt2(source.end))s isn't inside \(mediaId) (0–\(fmt2(m.duration))s)")
         }
-        let x = max(0, crossfade)
+        let x = Project.roomToneCrossfade(crossfade, range: range)
         var ids: [String] = []
         for piece in try roomTonePieces(range: range, source: source, crossfade: x) {
             var c = Clip(id: Project.newClipId(), kind: .media, name: "Room tone", mediaId: mediaId, start: piece.start, duration: piece.duration, sourceIn: piece.sourceIn)
@@ -179,7 +185,12 @@ extension Project {
             c.audioLag = x / 2
             c.audioFadeIn = c.audioLead + x / 2
             c.audioFadeOut = x
-            try addClip(c, trackId: trackId, mode: .place)
+            let placed = try addClip(c, trackId: trackId, mode: .place)
+            if let loc = locateClip(placed.id) {
+                let d = placed.duration
+                tracks[loc.track].clips[loc.clip].audioFadeIn = min(placed.audioFadeIn, d)
+                tracks[loc.track].clips[loc.clip].audioFadeOut = min(placed.audioFadeOut, d)
+            }
             ids.append(c.id)
         }
         return ids

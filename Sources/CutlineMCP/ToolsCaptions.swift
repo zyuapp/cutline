@@ -3,7 +3,7 @@ import Foundation
 
 extension Toolbox {
     func registerCaptionTools() {
-        add(Tool(name: "captions_list", description: "List the caption cues on the timeline with their times, text and the source words they cover (\"<media>.wN\"), which tracks are captioned, and where two people talk over each other. Use the word anchors with caption_edit.", schema: Schema.object([
+        add(Tool(name: "captions_list", description: "List the caption cues on the timeline with their times, text and the source words they cover (\"<media>.wN\"), which tracks are captioned, and where two people talk over each other. Burned-in captions, subtitles (SRT/VTT, embedded) and closed captions share these cues; a cue with more words than the caption style's max_words_per_line × max_lines shows burned-in as consecutive pages (noted per cue). Use the word anchors with caption_edit.", schema: Schema.object([
             "start": Schema.time("Only from this timeline time"),
             "end": Schema.time("Only until this timeline time"),
         ])) { [unowned self] args in
@@ -11,17 +11,18 @@ extension Toolbox {
             let p = try session.project()
             let transcripts = b.transcripts(for: p)
             let lo = try args.optTime("start") ?? 0, hi = try args.optTime("end") ?? .infinity
-            let segments = p.captionSegments(transcripts: transcripts).filter { $0.end > lo && $0.start < hi }
+            let cues = p.captionCues(transcripts: transcripts).filter { $0.end > lo && $0.start < hi }
+            let pages = p.captionSegments(transcripts: transcripts)
             let ids = p.captions.trackIds.isEmpty ? p.captionTrackIds : p.captions.trackIds
             let names = ids.compactMap { id in p.tracks.first { $0.id == id }.map { "\($0.name) (\(id))" } }
             var lines = ["Captioned tracks: " + (names.isEmpty ? "none" : names.joined(separator: ", ")) + (p.captions.trackIds.isEmpty ? " — dialogue by default; set track_ids in captions_set or a track's role to change" : "")]
             if !p.captions.enabled { lines.append("Captions are off on the picture (captions_set); subtitles and closed captions on export use these cues too.") }
-            for s in segments {
-                let words = s.words
-                let range = [words.first?.anchor, words.last?.anchor].compactMap { $0 }
-                lines.append("[\(fmt2(s.start))–\(fmt2(s.end))] \(s.text.replacingOccurrences(of: "\n", with: " / "))   (\(range.first ?? "?")…\(range.last ?? "?"))")
+            for c in cues {
+                let first = c.words.first?.anchor ?? "?", last = c.words.last?.endAnchor ?? "?"
+                let shown = pages.filter { $0.start >= c.start - 1e-6 && $0.start < c.end - 1e-6 }.count
+                lines.append("#\(c.id) [\(fmt2(c.start))–\(fmt2(c.end))] \(c.text)   (\(first)…\(last))" + (shown > 1 ? " — burned in as \(shown) pages" : ""))
             }
-            if segments.isEmpty { lines.append("No caption cues in that range.") }
+            if cues.isEmpty { lines.append("No caption cues in that range.") }
             let overlaps = p.overlappingSpeech(transcripts: transcripts).filter { $0.end > lo && $0.start < hi }
             if !overlaps.isEmpty {
                 lines.append("Overlapping speech (captions interleave both voices): " + overlaps.map { "\(fmt2($0.start))–\(fmt2($0.end))" }.joined(separator: ", ") + ". Hide one voice with caption_edit hidden:true, or restrict track_ids.")
@@ -30,7 +31,7 @@ extension Toolbox {
             return .text(lines.joined(separator: "\n"))
         })
 
-        addEdit(EditTool(name: "caption_edit", description: "Correct one caption cue: rewrite its text, shift its timing, hide it, or start a new cue at a word. Pick the cue by timeline time (at) or by its source words (from/to, \"<media>.wN\" from captions_list). Edits follow the words through later cuts. clear:true removes edits on those words. To fix a misheard word everywhere use captions_set replacements; to fix the transcript itself use transcript_edit.", schema: Schema.object([
+        addEdit(EditTool(name: "caption_edit", description: "Correct one caption cue: rewrite its text, shift its timing, hide it, start a new cue at a word (break_before), or join it with the next cue (merge). Pick the cue by timeline time (at) or by its source words (from/to, \"<media>.wN\" from captions_list). Edits follow the words through later cuts and apply to burned-in captions, subtitles and closed captions alike. clear:true removes edits on those words. To fix a misheard word everywhere use captions_set replacements; to fix the transcript itself use transcript_edit.", schema: Schema.object([
             "at": Schema.time("Timeline time inside the cue"),
             "from": Schema.string("First word, \"<media>.wN\""),
             "to": Schema.string("Last word, \"<media>.wN\" (default: from)"),
@@ -39,10 +40,25 @@ extension Toolbox {
             "end_offset": Schema.number("Seconds added to the cue's end"),
             "hidden": Schema.bool("Hide those words from captions"),
             "break_before": Schema.bool("Start a new cue at the first word"),
+            "merge": Schema.bool("Join the cue (at at, or holding from) with the next cue"),
             "clear": Schema.bool("Remove edits on those words"),
-        ]), label: { a, _ in a.bool("clear", default: false) ? "Clear caption edit" : a.optString("text").map { "Caption text: \($0.prefix(30))" } ?? (a.bool("hidden", default: false) ? "Hide caption" : "Retime caption") }) { [unowned self] p, args in
+        ]), label: { a, _ in a.bool("clear", default: false) ? "Clear caption edit" : a.bool("merge", default: false) ? "Merge caption cues" : a.optString("text").map { "Caption text: \($0.prefix(30))" } ?? (a.bool("hidden", default: false) ? "Hide caption" : "Retime caption") }) { [unowned self] p, args in
             let b = try session.requireBundle()
             let transcripts = b.transcripts(for: p)
+            let cues = p.captionCues(transcripts: transcripts)
+            if args.bool("merge", default: false) {
+                let index: Int?
+                if let from = args.optString("from") {
+                    let (m, w) = try Toolbox.wordAnchor(from)
+                    index = cues.firstIndex { c in Project.cueWords(c).map { $0.media == m && $0.first <= w && w <= $0.last } ?? false }
+                } else if let at = try args.optTime("at") {
+                    index = cues.firstIndex { $0.start <= at && at < $0.end }
+                } else {
+                    throw EditError("Pass at, or from, for the cue to merge with the next")
+                }
+                guard let index else { throw EditError("No caption cue there; see captions_list") }
+                return try p.mergeCaptionCue(index, transcripts: transcripts)
+            }
             var media: String, first: Int, last: Int
             if let from = args.optString("from") {
                 (media, first) = try Toolbox.wordAnchor(from)
@@ -50,20 +66,19 @@ extension Toolbox {
                 guard to.0 == media else { throw EditError("from and to must be words of one media file") }
                 (first, last) = (min(first, to.1), max(first, to.1))
             } else if let at = try args.optTime("at") {
-                guard let seg = p.captionSegments(transcripts: transcripts).first(where: { $0.start <= at && at < $0.end }) else { throw EditError("No caption cue at \(fmt2(at))s; see captions_list") }
-                let anchors = try seg.words.compactMap(\.anchor).map(Toolbox.wordAnchor)
-                guard let a = anchors.first else { throw EditError("That cue has no source words") }
-                let same = anchors.filter { $0.0 == a.0 }
-                guard same.count == anchors.count else { throw EditError("That cue mixes two clips' words; use from/to") }
-                (media, first, last) = (a.0, same.map(\.1).min()!, same.map(\.1).max()!)
+                guard let cue = cues.first(where: { $0.start <= at && at < $0.end }) else { throw EditError("No caption cue at \(fmt2(at))s; see captions_list") }
+                guard cue.words.contains(where: { $0.anchor != nil }) else { throw EditError("That cue has no source words") }
+                guard let span = Project.cueWords(cue) else { throw EditError("That cue mixes two clips' words; use from/to") }
+                (media, first, last) = span
             } else {
                 throw EditError("Pass at, or from (and to)")
             }
             guard let t = transcripts[media], last < t.words.count else { throw EditError("No word \(media).w\(last)") }
-            p.captions.edits.removeAll { $0.mediaId == media && $0.fromWord <= last && $0.toWord >= first }
-            if args.bool("clear", default: false) { return "Cleared caption edits on \(media).w\(first)–w\(last)" }
+            let clearing = args.bool("clear", default: false)
+            p.captions.edits.removeAll { $0.mediaId == media && $0.fromWord <= last && $0.toWord >= first && (clearing || !$0.isMergeOnly) }
+            if clearing { return "Cleared caption edits on \(media).w\(first)–w\(last)" }
             let edit = CaptionEdit(mediaId: media, fromWord: first, toWord: last, text: args.optString("text"), startOffset: args.optDouble("start_offset"), endOffset: args.optDouble("end_offset"), hidden: args.optBool("hidden"), breakBefore: args.optBool("break_before"))
-            guard edit.text != nil || edit.startOffset != nil || edit.endOffset != nil || edit.hidden != nil || edit.breakBefore != nil else { throw EditError("Pass text, start_offset, end_offset, hidden or break_before") }
+            guard edit.text != nil || edit.startOffset != nil || edit.endOffset != nil || edit.hidden != nil || edit.breakBefore != nil else { throw EditError("Pass text, start_offset, end_offset, hidden, break_before or merge") }
             p.captions.edits.append(edit)
             let old = t.words[first...last].map(\.text).joined(separator: " ")
             return "Caption edit on \(media).w\(first)–w\(last) (\"\(old)\")"

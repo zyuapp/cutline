@@ -891,8 +891,10 @@ public struct CaptionEdit: Codable, Equatable, Sendable {
     public var hidden: Bool?
     /// Starts a new cue at the first word.
     public var breakBefore: Bool?
+    /// Keeps the word after the last one in the same cue. Applies alongside any other edit on these words.
+    public var mergeNext: Bool?
 
-    public init(mediaId: String, fromWord: Int, toWord: Int, text: String? = nil, startOffset: Seconds? = nil, endOffset: Seconds? = nil, hidden: Bool? = nil, breakBefore: Bool? = nil) {
+    public init(mediaId: String, fromWord: Int, toWord: Int, text: String? = nil, startOffset: Seconds? = nil, endOffset: Seconds? = nil, hidden: Bool? = nil, breakBefore: Bool? = nil, mergeNext: Bool? = nil) {
         self.mediaId = mediaId
         self.fromWord = fromWord
         self.toWord = toWord
@@ -901,10 +903,16 @@ public struct CaptionEdit: Codable, Equatable, Sendable {
         self.endOffset = endOffset
         self.hidden = hidden
         self.breakBefore = breakBefore
+        self.mergeNext = mergeNext
     }
 
     public func covers(_ mediaId: String, _ word: Int) -> Bool {
         mediaId == self.mediaId && word >= fromWord && word <= toWord
+    }
+
+    /// Only joins cues; it doesn't change words' text, timing or visibility.
+    public var isMergeOnly: Bool {
+        mergeNext != nil && text == nil && startOffset == nil && endOffset == nil && hidden == nil && breakBefore == nil
     }
 }
 

@@ -13,6 +13,11 @@ extension Project {
         let oldMedia = Set(old.media.map(\.id)), newMedia = Set(media.map(\.id))
         for id in newMedia.subtracting(oldMedia).sorted() { out.append("+ media \(id)") }
         for id in oldMedia.subtracting(newMedia).sorted() { out.append("- media \(id)") }
+        let mediaBefore = Dictionary(old.media.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for m in media {
+            guard let o = mediaBefore[m.id], o != m else { continue }
+            out.append("~ media \(m.id): " + MediaAsset.changedFields(o, m).joined(separator: ", ").ifEmpty("details"))
+        }
 
         let oldTracks = Dictionary(uniqueKeysWithValues: old.tracks.map { ($0.id, $0) })
         let newTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
@@ -58,7 +63,9 @@ extension Project {
             if let o = oldTr[tr.id] { if o != tr { out.append("~ transition " + desc) } } else { out.append("+ transition " + desc) }
         }
         for tr in old.transitions where !newTr.contains(tr.id) { out.append("- transition \(tr.id) \(tr.type)") }
-        if captions != old.captions { out.append("~ captions") }
+        if captions != old.captions { out.append("~ captions: " + Captions.changedFields(old.captions, captions).joined(separator: ", ").ifEmpty("settings")) }
+        if sequences != old.sequences { out.append("~ nested sequences \(old.sequences.count)→\(sequences.count)") }
+        if syncGroups != old.syncGroups { out.append("~ sync groups \(old.syncGroups.count)→\(syncGroups.count)") }
         if markers != old.markers { out.append("~ markers \(old.markers.count)→\(markers.count)") }
         if abs(duration - old.duration) > 1e-6 { out.append("duration \(fmt2(old.duration))→\(fmt2(duration))") }
         return out
@@ -77,6 +84,11 @@ extension Clip {
             if va != vb, let vb { f.append("\(spec.name) \(va.map(\.description) ?? "–")→\(vb)") }
         }
         if a.name != b.name { f.append("name") }
+        if let ta = a.text, let tb = b.text {
+            if ta.spans != tb.spans { f.append("text spans \(ta.spans?.count ?? 0)→\(tb.spans?.count ?? 0)") }
+            if ta.animator != tb.animator { f.append(tb.animator == nil ? "text animator removed" : "text animator") }
+        }
+        if a.mediaId != b.mediaId { f.append("media \(a.mediaId ?? "–")→\(b.mediaId ?? "–")") }
         let ea = Dictionary(uniqueKeysWithValues: a.effects.map { ($0.id, $0) })
         let eb = Dictionary(uniqueKeysWithValues: b.effects.map { ($0.id, $0) })
         for e in b.effects where ea[e.id] == nil { f.append("+fx \(e.id) (\(e.type))") }
@@ -94,6 +106,61 @@ extension Clip {
             if let c = b.anim[path] { f.append("animate \(path) (\(c.keys.count) keys)") } else { f.append("stop animating \(path)") }
         }
         return f
+    }
+}
+
+extension MediaAsset {
+    static func changedFields(_ a: MediaAsset, _ b: MediaAsset) -> [String] {
+        var f: [String] = []
+        if a.name != b.name { f.append("name \"\(a.name)\"→\"\(b.name)\"") }
+        if a.bin != b.bin { f.append("bin \(a.bin ?? "none")→\(b.bin ?? "none")") }
+        if a.metadata != b.metadata {
+            let ma = a.metadata ?? [:], mb = b.metadata ?? [:]
+            for k in Set(ma.keys).union(mb.keys).sorted() where ma[k] != mb[k] {
+                f.append(mb[k].map { "\(k) \(ma[k] ?? "–")→\($0)" } ?? "-\(k)")
+            }
+        }
+        if a.tags != b.tags { f.append("tags \(a.tags?.count ?? 0)→\(b.tags?.count ?? 0)") }
+        if a.path != b.path { f.append("relinked to \(b.url.lastPathComponent)") }
+        if a.reel != b.reel { f.append("reel \(b.reel ?? "none")") }
+        if a.timecodeStart != b.timecodeStart { f.append("timecode start") }
+        if a.log != b.log { f.append("log \(b.log.map { "\($0)" } ?? "none")") }
+        if a.signalRange != b.signalRange { f.append("signal range") }
+        if a.duration != b.duration || a.width != b.width || a.height != b.height || a.fps != b.fps || a.hasVideo != b.hasVideo || a.hasAudio != b.hasAudio {
+            f.append("format \(a.width)×\(a.height)@\(fmt2(a.fps)) \(fmt2(a.duration))s → \(b.width)×\(b.height)@\(fmt2(b.fps)) \(fmt2(b.duration))s")
+        }
+        return f
+    }
+}
+
+extension Captions {
+    static func changedFields(_ a: Captions, _ b: Captions) -> [String] {
+        var f: [String] = []
+        if a.enabled != b.enabled { f.append(b.enabled ? "on" : "off") }
+        if a.style != b.style { f.append("style") }
+        if a.replacements != b.replacements { f.append("replacements \(a.replacements.count)→\(b.replacements.count)") }
+        if a.hiddenWords != b.hiddenWords { f.append("hidden words \(a.hiddenWords.count)→\(b.hiddenWords.count)") }
+        if a.trackIds != b.trackIds { f.append("tracks \(b.trackIds.isEmpty ? "dialogue" : b.trackIds.joined(separator: ","))") }
+        if a.edits != b.edits {
+            let added = b.edits.filter { !a.edits.contains($0) }, removed = a.edits.filter { !b.edits.contains($0) }
+            var parts: [String] = []
+            for e in added { parts.append("+\(e.summary)") }
+            for e in removed { parts.append("-\(e.summary)") }
+            f.append("cue edits " + parts.prefix(4).joined(separator: " ") + (parts.count > 4 ? " …" : ""))
+        }
+        return f
+    }
+}
+
+extension CaptionEdit {
+    var summary: String {
+        var what: [String] = []
+        if let t = text { what.append("text \"\(t.prefix(24))\"") }
+        if startOffset != nil || endOffset != nil { what.append("timing") }
+        if hidden == true { what.append("hidden") }
+        if breakBefore == true { what.append("break") }
+        if mergeNext == true { what.append("merge") }
+        return "\(mediaId).w\(fromWord)\(toWord != fromWord ? "–w\(toWord)" : "")(\(what.joined(separator: ",")))"
     }
 }
 

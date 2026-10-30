@@ -194,6 +194,7 @@ extension Project {
         for clip in doomed {
             guard let loc = locateClip(clip.id) else { continue }
             tracks[loc.track].clips.remove(at: loc.clip)
+            isolateSound(trackIndex: loc.track, around: TimeRange(clip.start, clip.end))
             if ripple {
                 for i in tracks[loc.track].clips.indices where tracks[loc.track].clips[i].start >= clip.end - eps {
                     tracks[loc.track].clips[i].start = canvas.snap(tracks[loc.track].clips[i].start - clip.duration)
@@ -324,18 +325,53 @@ extension Project {
             }
             let keepsLeft = c.start < r.start - eps
             let keepsRight = c.end > r.end + eps
+            let heard = c.audioRange
             if keepsLeft {
                 var left = Project.trimmedRight(c, to: r.start)
+                left.audioLag = heard.end - left.end
                 if keepsRight { left.fadeOut = 0; left.audioFadeOut = 0 }
                 out.append(left)
             }
             if keepsRight {
                 var right = Project.trimmedLeft(c, to: r.end)
+                right.audioLead = right.start - heard.start
                 if keepsLeft { right.id = Project.newClipId(); right.fadeIn = 0; right.audioFadeIn = 0 }
                 out.append(right)
             }
         }
         tracks[t].clips = out.sorted { $0.start < $1.start }
+        isolateSound(trackIndex: t, around: r)
+    }
+
+    /// After `r` was emptied on track `t` (or opened, for an insert): sound of clips before `r` stops by its start and
+    /// sound of clips after it starts at its end, so nothing is heard inside it. A clip touching `r` whose sound stopped
+    /// short of its picture edge for a split edit with a clip that is now gone plays to that edge again, unless another
+    /// clip's sound still covers it.
+    mutating func isolateSound(trackIndex t: Int, around r: TimeRange) {
+        let tol = canvas.frameDuration / 2
+        var clips = tracks[t].clips
+        for i in clips.indices where hasSound(clips[i]) {
+            if clips[i].end <= r.start + eps {
+                clips[i].limitSound(to: r.start)
+            } else if clips[i].start >= r.end - eps {
+                clips[i].limitSound(from: r.end)
+            }
+        }
+        func covered(_ span: TimeRange, except i: Int) -> Bool {
+            clips.indices.contains { j in
+                j != i && hasSound(clips[j]) && (clips[j].audioRange.intersection(span).map { $0.duration > eps } ?? false)
+            }
+        }
+        for i in clips.indices where hasSound(clips[i]) {
+            let c = clips[i], heard = c.audioRange
+            if abs(c.end - r.start) < tol, heard.end < c.end - eps, heard.end > c.start, !covered(TimeRange(heard.end, c.end), except: i) {
+                clips[i].audioLag = 0
+            }
+            if abs(c.start - r.end) < tol, heard.start > c.start + eps, heard.start < c.end, !covered(TimeRange(c.start, heard.start), except: i) {
+                clips[i].audioLead = 0
+            }
+        }
+        tracks[t].clips = clips
     }
 
     mutating func rippleInsert(at time: Seconds, duration: Seconds, splitTrack: Int) {
@@ -343,6 +379,7 @@ extension Project {
             _ = try? splitClip(c.id, at: time)
         }
         for t in tracks.indices {
+            isolateSound(trackIndex: t, around: TimeRange(time, time))
             for i in tracks[t].clips.indices where tracks[t].clips[i].start >= time - eps {
                 tracks[t].clips[i].start = canvas.snap(tracks[t].clips[i].start + duration)
             }
@@ -350,16 +387,21 @@ extension Project {
         for i in markers.indices where markers[i].time >= time { markers[i].time += duration }
     }
 
+    /// Halves of a clip cut at `t`. Each half keeps only the sound the clip played on its side of `t`, so a cut inside
+    /// a split edit's overlap doesn't play the neighbour's share twice.
     static func split(_ c: Clip, at t: Seconds) -> (Clip, Clip) {
+        let heard = c.audioRange
         var left = trimmedRight(c, to: t)
         left.fadeOut = 0
         left.audioFadeOut = 0
-        left.audioLag = 0
+        left.audioLag = heard.end - left.end
+        left.limitSound(to: t)
         var right = trimmedLeft(c, to: t)
         right.id = newClipId()
         right.fadeIn = 0
         right.audioFadeIn = 0
-        right.audioLead = 0
+        right.audioLead = right.start - heard.start
+        right.limitSound(from: t)
         return (left, right)
     }
 
@@ -382,6 +424,22 @@ extension Project {
         c.fadeOut = min(c.fadeOut, c.duration)
         c.audioFadeOut = min(c.audioFadeOut, c.duration)
         return c
+    }
+}
+
+extension Clip {
+    /// Keeps the clip's sound inside `lo...hi` of the timeline, leaving its picture; no overlap leaves it silent.
+    mutating func limitSound(from lo: Seconds = -.infinity, to hi: Seconds = .infinity) {
+        let heard = audioRange
+        guard heard.start < lo - eps || heard.end > hi + eps else { return }
+        let s = max(heard.start, lo), e = min(heard.end, hi)
+        if e <= s + eps {
+            audioLead = 0
+            audioLag = -duration
+            return
+        }
+        if s > heard.start { audioLead = start - s }
+        if e < heard.end { audioLag = e - end }
     }
 }
 

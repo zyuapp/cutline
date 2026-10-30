@@ -64,16 +64,21 @@ extension Toolbox {
                 var trackId = a.optString(name == "room_tone" ? "track" : "into") ?? ""
                 if p.trackIndex(trackId) == nil { trackId = p.addTrack(kind: .audio, name: "Room tone").id }
                 var lines: [String] = []
+                var skipped = 0
                 for r in fill {
                     let ids = try p.fillRoomTone(r, mediaId: mid, source: source, trackId: trackId, crossfade: crossfade)
-                    lines.append("\(fmt2(r.start))–\(fmt2(r.end))s: \(ids.count) clip(s)")
+                    if ids.isEmpty { skipped += 1; continue }
+                    let x = Project.roomToneCrossfade(crossfade, range: r)
+                    lines.append("\(fmt2(r.start))–\(fmt2(r.end))s: \(ids.count) clip(s)" + (x < crossfade - 1e-9 ? ", crossfade \(fmt2(x))s to fit" : ""))
                 }
+                if skipped > 0 { lines.append("\(skipped) gap(s) shorter than a frame left as they are") }
                 return "Room tone from \(mid) \(fmt2(source.start))–\(fmt2(source.end))s on \(trackId), crossfaded \(fmt2(crossfade))s: " + lines.joined(separator: "; ") + ". Set its level with param_set target \(trackId)/* audio.volume or track_update volume."
             }
         case "speed_ramp":
             let id = try a.string("clip")
             return try runEdit("Speed ramp on \(Toolbox.clipName(id, current))", dry: dry) { p in
-                try p.speedRamp(id, at: try a.optTime("at"), speed: a.optDouble("speed") ?? 0.3, ramp: a.optDouble("ramp") ?? 0.3, hold: a.optDouble("hold") ?? 0.8)
+                let done = try p.speedRamp(id, at: try a.optTime("at"), speed: a.optDouble("speed") ?? 0.3, ramp: a.optDouble("ramp") ?? 0.3, hold: a.optDouble("hold") ?? 0.8)
+                return done + (p.retimedSpeechWarning(id, transcripts: b.transcripts(for: p)).map { "\n" + $0 } ?? "")
             }
         case "freeze_frame":
             let at = try a.time("at")
