@@ -14,7 +14,7 @@ extension Toolbox {
             "end": Schema.time("Export until this timeline time"),
             "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (.srt and .vtt) or both", values: ["none", "embed", "sidecar", "both"]),
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
-            "interchange": Schema.strings("Also write otio, fcpxml and/or edl next to the video"),
+            "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
             "reveal": Schema.bool("Show the file in Finder when done, default false"),
             "deliver": Schema.string("What to make: video (default); audio (mix only, see audio_format); stems (one audio file per role: dialogue, music, effects); stills (frames at `times`); image_sequence; gif; archive (copy the project and its media, trimmed with trim:true, to path)", values: ["video", "audio", "stems", "stills", "image_sequence", "gif", "archive"]),
@@ -94,7 +94,8 @@ extension Toolbox {
                 case "otio": try p.otio().write(to: base.appendingPathExtension("otio"))
                 case "fcpxml": try p.fcpxml().write(to: base.appendingPathExtension("fcpxml"), atomically: true, encoding: .utf8)
                 case "edl": try p.edl(title: p.name).write(to: base.appendingPathExtension("edl"), atomically: true, encoding: .utf8)
-                default: throw EditError("interchange is otio, fcpxml or edl")
+                case "xml": try p.xmeml().write(to: base.appendingPathExtension("xml"), atomically: true, encoding: .utf8)
+                default: throw EditError("interchange is otio, fcpxml, edl or xml (Final Cut Pro 7 XML for Premiere and Resolve)")
                 }
                 report.append("Interchange: \(base.lastPathComponent).\(kind)")
             }
