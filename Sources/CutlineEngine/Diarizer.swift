@@ -6,8 +6,8 @@ import Foundation
 /// Speaker diarization and word emphasis from audio plus a word-level transcript.
 public enum Diarizer {
     static let decodeRate = 16_000.0
-    static let maxSegmentGap = 0.5
-    static let maxSegmentDuration = 3.0
+    static let maxSegmentGap = 0.3
+    static let maxSegmentDuration = 2.0
     static let minEmbeddingDuration = 0.6
     /// Average-linkage cosine distance above which clusters stay apart.
     static let mergeThreshold = 1.25
@@ -198,7 +198,7 @@ public enum Diarizer {
 
     /// Per-dimension weights for [20 MFCC means, 20 MFCC stds, median F0, F0 spread].
     static let featureWeights: [Float] = Array(repeating: 1, count: FrameFeatures.mfccCount)
-        + Array(repeating: 0.5, count: FrameFeatures.mfccCount) + [2, 0.5]
+        + Array(repeating: 0.5, count: FrameFeatures.mfccCount) + [3, 0.5]
 
     /// Z-scores each dimension across segments, filling missing (NaN) values with the mean.
     static func standardized(_ vectors: [[Float]]) -> [[Float]] {
@@ -208,7 +208,8 @@ public enum Diarizer {
             let present = vectors.map { $0[d] }.filter { !$0.isNaN }
             let mean = present.isEmpty ? 0 : present.reduce(0, +) / Float(present.count)
             let variance = present.isEmpty ? 0 : present.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Float(present.count)
-            let sd = variance.squareRoot()
+            // Floors keep near-constant features (one steady voice) from being stretched into false differences.
+            let sd = max(variance.squareRoot(), d < featureFloors.count ? featureFloors[d] : 0)
             let weight = d < featureWeights.count ? featureWeights[d] : 1
             for i in out.indices {
                 let x = out[i][d].isNaN ? mean : out[i][d]
@@ -261,12 +262,28 @@ public enum Diarizer {
         let k: Int
         if valid.contains(kThreshold), scores[kThreshold]! >= scores[best]! - 0.05 {
             k = kThreshold
-        } else if kThreshold == 1, scores[best]! < confidentSilhouette {
+        } else if kThreshold == 1, scores[best]! < confidentSilhouette, pitchGap(raw, labels: cuts[best]!) < distinctPitch {
             k = 1
         } else {
             k = best
         }
         return k == 1 ? [Int](repeating: 0, count: n) : cuts[k]!
+    }
+
+    /// Semitones between cluster median pitches that mark clearly different voices (e.g. a low and a high voice).
+    static let distinctPitch: Float = 5
+
+    /// Largest gap between any two clusters' median pitch, in semitones; 0 when pitch is unknown.
+    static func pitchGap(_ raw: [[Float]], labels: [Int]) -> Float {
+        let pitchIndex = 2 * FrameFeatures.mfccCount
+        var medians: [Float] = []
+        for l in Set(labels) {
+            let p = raw.indices.filter { labels[$0] == l }.map { raw[$0][pitchIndex] }.filter { !$0.isNaN }.sorted()
+            guard p.count >= 2 else { continue }
+            medians.append(p[p.count / 2])
+        }
+        guard let lo = medians.min(), let hi = medians.max() else { return 0 }
+        return hi - lo
     }
 
     struct Merge {
@@ -337,7 +354,7 @@ public enum Diarizer {
     }
 
     /// Absolute floors on per-dimension spread, in feature units (log mel energy, semitones).
-    static let featureFloors: [Float] = Array(repeating: 1, count: 2 * FrameFeatures.mfccCount) + [2, 1]
+    static let featureFloors: [Float] = Array(repeating: 1, count: 2 * FrameFeatures.mfccCount) + [3, 1]
 
     /// Smallest weighted effect size between any two clusters of raw features, with spreads floored by `featureFloors`.
     static func minSeparation(_ raw: [[Float]], labels: [Int]) -> Double {
