@@ -23,7 +23,8 @@ extension GeneratorCatalog {
         EffectType(id: "shape", category: "generator", summary: "Shape layer: rects, ellipses, polygons, stars, lines and SVG paths with solid or gradient fills, strokes, dashes, trim paths, path morphing and repeaters; every shape property animates as fx.gen.<shape id>.<property>", params: [
             ParamSpec("shapes", .text, .string(defaultShapes), ShapeLayers.docs),
         ]),
-        EffectType(id: "particles", category: "generator", summary: "Particle emitter: sparks, confetti, snow, dust, bubbles, stars or an image, with gravity, wind, drag, turbulence, size and color over life; the same seed always gives the same particles", params: [
+        EffectType(id: "particles", category: "generator", summary: "Particle emitter: preset sparks, confetti, snow, dust, embers, bubbles, rain or stars (each a full emitter setup; any parameter you set overrides it), or build your own with gravity, wind, drag, turbulence, size and color over life, sprites or an image; the same seed always gives the same particles", params: [
+            ParamSpec("preset", .choice(["none"] + ParticleSystem.presetNames), .string("none"), "A ready emitter; its values stand in for every parameter you leave unset"),
             ParamSpec("emitter", .choice(["point", "line", "box", "circle"]), .string("point"), "Where particles are born: a point, a horizontal line, a box or an ellipse of emitter_width × emitter_height"),
             pos("x", 0.5, "Emitter center, horizontal; animate it and particles trail behind"),
             pos("y", 0.6, "Emitter center, vertical"),
@@ -172,6 +173,12 @@ extension GeneratorCatalog {
 
     /// Generators whose look depends on the clip's own time, not only on parameter values.
     public static func isTimed(_ type: String) -> Bool { type == "particles" || type.hasPrefix("title.") }
+
+    /// A parameter's value when the effect doesn't set it: the particle preset's, else the catalog default.
+    public static func defaultValue(type: String, name: String, params: [String: ParamValue]) -> ParamValue? {
+        if type == "particles", name != "preset", let preset = params["preset"]?.string, let v = ParticleSystem.presets[preset]?[name] { return v }
+        return spec(type: type, name: name, params: params)?.defaultValue
+    }
 
     /// The spec of a parameter of a generator effect, including shape properties named "<shape id>.<property>".
     public static func spec(type: String, name: String, params: [String: ParamValue]) -> ParamSpec? {

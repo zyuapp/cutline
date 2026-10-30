@@ -108,7 +108,8 @@ extension Toolbox {
                 var params: [String: ParamValue] = [:]
                 let given = args.raw["params"]?.object ?? [:]
                 // The shape list goes first: shape properties are looked up in it.
-                for (k, v) in given.sorted(by: { ($0.key == "shapes" ? 0 : 1, $0.key) < ($1.key == "shapes" ? 0 : 1, $1.key) }) {
+                for (given, v) in given.sorted(by: { ($0.key == "shapes" ? 0 : 1, $0.key) < ($1.key == "shapes" ? 0 : 1, $1.key) }) {
+                    let k = GeneratorCatalog.spec(type: gen, name: given, params: params) == nil ? spec.paramName(for: given) ?? given : given
                     guard let ps = GeneratorCatalog.spec(type: gen, name: k, params: params) else { throw EditError("\(gen) has no parameter \(k). Parameters: \(spec.params.map(\.name).joined(separator: ", "))") }
                     let value = try ps.validate(try Toolbox.paramValue(v), path: k)
                     try Effect.checkResource(type: gen, param: k, value: value)
@@ -465,6 +466,7 @@ extension Toolbox {
             "replacements": ["type": "object", "additionalProperties": ["type": "string"], "description": "Word fixes, e.g. {\"cut line\": \"Cutline\"}; merged into existing ones, empty string value deletes"],
             "hidden_words": Schema.strings("Words never captioned, e.g. fillers you kept in the audio"),
             "track_ids": Schema.strings("Only caption speech from these tracks"),
+            "platform": Schema.string("Keep captions inside this platform's UI-free area (y and max_width are pulled in as needed): a platform id, auto (default: on a 9:16 canvas the area clear of TikTok, Reels and Shorts UI) or none"),
         ]), label: { a, _ in a.bool("enabled", default: true) ? (a.optString("preset").map { "Captions: \($0) style" } ?? "Restyle captions") : "Turn off captions" }) { p, args in
             var c = p.captions
             c.enabled = args.bool("enabled", default: true)
@@ -492,8 +494,18 @@ extension Toolbox {
             }
             if let v = args.strings("hidden_words") { c.hiddenWords = v }
             if let v = args.strings("track_ids") { c.trackIds = v }
+            if let v = args.optString("platform") {
+                guard v == "none" || v == "auto" || Platform.named(v) != nil else { throw EditError("platform is a platform id (\(Platform.all.map(\.id).joined(separator: ", "))), auto or none") }
+                c.platform = v == "auto" ? nil : v
+            }
             p.captions = c
-            return c.enabled ? "Captions on (\(s.animation.rawValue), size \(fmt2(s.size)), y \(fmt2(s.y)))" : "Captions off"
+            guard c.enabled else { return "Captions off" }
+            let shown = p.captionStyle
+            var text = "Captions on (\(s.animation.rawValue), size \(fmt2(s.size)), y \(fmt2(shown.y)), max_width \(fmt2(shown.maxWidth))"
+            if let area = p.captionSafeArea {
+                text += shown == s ? ", inside \(area.name)" : "; kept inside \(area.name)" + (shown.y != s.y ? ": y \(fmt2(s.y))→\(fmt2(shown.y))" : ":") + (shown.maxWidth != s.maxWidth ? " max_width \(fmt2(s.maxWidth))→\(fmt2(shown.maxWidth))" : "") + (shown.x.map { " x \(fmt2($0))" } ?? "") + "; platform:\"none\" places them exactly as set"
+            }
+            return text + ")"
         })
 
         addEdit(EditTool(name: "markers", description: "Timeline markers (chapters, to-dos, notes; labels work as anchors \"marker:<label>\") and, with media_id, source tags on footage: keyword ranges plus favorite/reject ratings, like Final Cut's keywords. Tags show in analysis_read and help pick takes.", schema: Schema.object([

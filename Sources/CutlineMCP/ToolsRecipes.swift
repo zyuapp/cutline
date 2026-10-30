@@ -182,24 +182,55 @@ extension Toolbox {
         case "template":
             return try applyTemplate(a, dry: dry)
         case "kinetic_text":
-            let lo = try a.time("start"), hi = try a.time("end")
-            let words = current.timelineWords(transcripts: b.transcripts(for: current)).filter { $0.start >= lo - 0.02 && $0.start < hi }
-            guard !words.isEmpty else { throw EditError("No transcribed speech between \(fmt2(lo)) and \(fmt2(hi))") }
+            let lo = try a.time("start")
+            var words: [(text: String, start: Seconds, end: Seconds)]
+            var how: String
+            if let custom = a.value("text") {
+                let list = (custom.array?.compactMap(\.string) ?? custom.string.map { [$0] } ?? []).flatMap { $0.split(whereSeparator: \.isWhitespace).map(String.init) }
+                guard !list.isEmpty else { throw EditError("text has no words") }
+                let timing = a.optString("timing") ?? "even"
+                guard ["even", "beats", "downbeats"].contains(timing) else { throw EditError("timing is even, beats or downbeats") }
+                let hi = try a.optTime("end") ?? (lo + 0.5 * Double(list.count))
+                guard hi > lo else { throw EditError("end must be after start") }
+                var times: [Seconds]
+                if timing == "even" {
+                    times = list.indices.map { lo + (hi - lo) * Double($0) / Double(list.count) }
+                    how = "evenly over \(fmt2(lo))–\(fmt2(hi))s"
+                } else {
+                    let beats = current.timelineBeats(b.anchorIndex(for: current), downbeats: timing == "downbeats").filter { $0 >= lo - 1e-3 && $0 < hi }
+                    guard beats.count >= list.count else { throw EditError("\(beats.count) \(timing) between \(fmt2(lo)) and \(fmt2(hi))s for \(list.count) words" + (beats.isEmpty ? "; analyze the music's beats (media_analyze features:[\"beats\"])" : "; pass a later end or fewer words")) }
+                    times = Array(beats.prefix(list.count))
+                    how = "one per \(timing == "beats" ? "beat" : "downbeat")"
+                }
+                let ends = Array(times.dropFirst()) + [max(hi, times.last! + 0.4)]
+                words = list.indices.map { (list[$0], times[$0], ends[$0]) }
+            } else {
+                let hi = try a.time("end")
+                words = current.timelineWords(transcripts: b.transcripts(for: current)).filter { $0.start >= lo - 0.02 && $0.start < hi }.map { ($0.text, $0.start, $0.end) }
+                guard !words.isEmpty else { throw EditError("No transcribed speech between \(fmt2(lo)) and \(fmt2(hi)); pass text for your own words") }
+                words = words.map { ($0.text, $0.start, min($0.end, hi)) }
+                how = "as they're spoken"
+            }
             let upper = a.bool("uppercase", default: false)
             var spec = TextSpec(text: words.map { upper ? $0.text.uppercased() : $0.text }.joined(separator: " "), size: a.optDouble("size") ?? 0.09, weight: 800, color: try a.color("color") ?? .white, stroke: .black, strokeWidth: 0.06, y: a.optDouble("y") ?? 0.5, maxWidth: a.optDouble("max_width") ?? 0.8, animationIn: .none, animationOut: .fade)
             let start = words[0].start
             spec.animator = TextAnimator(unit: .word, preset: TextAnimator.Preset(rawValue: a.optString("preset") ?? "pop") ?? .pop, color: try a.color("highlight"), sync: true)
             spec.unitTimes = words.map { $0.start - start }
+            let length = max(0.5, words.last!.end + 0.6 - start)
             return try runEdit("Kinetic text", dry: dry) { p in
                 let t = p.addTrack(kind: .video, name: "Kinetic text")
-                let c = Clip(id: Project.newClipId(), kind: .text, name: "kinetic", start: start, duration: max(0.5, min(hi, words.last!.end + 0.6) - start), text: spec)
+                let c = Clip(id: Project.newClipId(), kind: .text, name: "kinetic", start: start, duration: length, text: spec)
                 try p.addClip(c, trackId: t.id, mode: .place)
-                return "Added \(c.id) on \(t.id): \(words.count) words appear as they're spoken (\(fmt2(c.start))–\(fmt2(c.end))s). Restyle with param_set text.* or text_add-style animator via clip_update."
+                return "Added \(c.id) on \(t.id): \(words.count) words appear \(how) (\(fmt2(c.start))–\(fmt2(c.end))s). Restyle with param_set text.* or text_add-style animator via clip_update."
             }
         case "match_color":
             return try await matchColorRecipe(a, dry: dry)
         case "qualify":
             return try await qualifyRecipe(a, dry: dry)
+        case "split_at_shots":
+            return try splitAtShotsRecipe(a, dry: dry)
+        case "safe_zone_fix":
+            return try safeZoneFixRecipe(a, dry: dry)
         case "grade_group":
             let group = a.optString("id") ?? "group1"
             guard group.range(of: #"^[A-Za-z][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else { throw EditError("Group ids are letters, digits and _, starting with a letter") }

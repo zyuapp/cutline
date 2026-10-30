@@ -134,7 +134,7 @@ extension Clip {
             switch parts[2] {
             case "mix": return .number(e.mix)
             case "enabled": return .bool(e.enabled)
-            default: return e.params[parts[2]] ?? EffectCatalog.type(e.type)?.spec(parts[2])?.defaultValue ?? GeneratorCatalog.spec(type: e.type, name: parts[2], params: e.params)?.defaultValue
+            default: return e.params[parts[2]] ?? GeneratorCatalog.defaultValue(type: e.type, name: parts[2], params: e.params) ?? EffectCatalog.type(e.type)?.spec(parts[2])?.defaultValue
             }
         }
         let t = transform

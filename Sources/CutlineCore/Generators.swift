@@ -161,7 +161,7 @@ extension Clip {
     /// A generator parameter's value at `local` seconds into the clip.
     public func generatorValue(_ name: String, at local: Seconds) -> ParamValue? {
         guard kind == .generator, let gen = effects.first(where: { GeneratorCatalog.type($0.type) != nil }) else { return nil }
-        return anim["fx.\(gen.id).\(name)"]?.value(at: local) ?? gen.params[name] ?? GeneratorCatalog.spec(type: gen.type, name: name, params: gen.params)?.defaultValue
+        return anim["fx.\(gen.id).\(name)"]?.value(at: local) ?? gen.params[name] ?? GeneratorCatalog.defaultValue(type: gen.type, name: name, params: gen.params)
     }
 
     /// The words a lower third, callout or counter shows at `local`; nil for graphics without text or with none showing.

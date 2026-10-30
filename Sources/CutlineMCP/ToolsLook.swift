@@ -43,7 +43,8 @@ extension Toolbox {
                         changed.append("volume automation (\(keys.count) keys)")
                     }
                     if args.strings("unset")?.contains("volume") == true { t.volumeCurve = nil; changed.append("volume automation removed") }
-                    for (path, v) in (args.raw["set"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
+                    for (raw, v) in (args.raw["set"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
+                        let path = Effect.resolvedPath(raw, in: t.effects)
                         try t.set(path, try Toolbox.paramValue(v))
                         changed.append("\(path)=\(try Toolbox.paramValue(v))")
                     }
@@ -77,6 +78,8 @@ extension Toolbox {
             "mix": Schema.number("0 original … 1 full effect"),
             "enabled": Schema.bool("Turn on or off"),
             "remove": Schema.bool("Remove the effect with this id (or every effect of this type)"),
+            "scope": Schema.string("On clips: shot limits the effect to the shot (scene cuts) playing at at, the default for a color effect given at on a clip that plays several shots; clip acts throughout", values: ["clip", "shot"]),
+            "at": Schema.time("Timeline time picking the shot for scope shot"),
         ], required: ["target"]), label: { a, p in Toolbox.describeEffectEdit(a, p) }) { [unowned self] p, args in
             let targets = try Toolbox.resolveTargets(args.raw["target"], p)
             var lines: [String] = []
@@ -99,8 +102,9 @@ extension Toolbox {
                     }
                     for (path, v) in plan.values { try c.set(path, v) }
                     if args.raw["params"]?.object?["track"] != nil { try self.fillTrackedBoxes(&c, effectId: plan.effectId, project: p) }
+                    let shot = plan.removed ? nil : try self.limitToShot(&c, effectId: plan.effectId, args, p)
                     p.tracks[loc.track].clips[loc.clip] = c
-                    lines.append(Toolbox.describePlan(plan, effects: c.effects, owner: id))
+                    lines.append(Toolbox.describePlan(plan, effects: c.effects, owner: id) + (shot.map { " Acts only in \($0)." } ?? ""))
                 case .track(let i):
                     var t = p.tracks[i]
                     if let type = args.optString("type"), t.kind == .audio, !EffectCatalog.isAudio(type) {
@@ -238,7 +242,8 @@ extension Toolbox {
     static func applyParams(_ c: inout Clip, _ args: Args, canvas: Canvas) throws -> String {
         var parts: [String] = []
         let subframe = args.bool("subframe", default: false)
-        for (path, v) in (args.raw["set"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
+        for (raw, v) in (args.raw["set"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
+            let path = c.resolvedPath(raw)
             let before = c.staticValue(path)
             let canonical = Clip.canonical(path)
             var value = try paramValue(v)
@@ -251,7 +256,8 @@ extension Toolbox {
             parts.append("\(canonical) \(before.map(\.description) ?? "–")→\(c.staticValue(canonical).map(\.description) ?? "?")" + snapped + (c.anim[canonical] != nil ? " (animated; the animation still wins)" : ""))
         }
         let relative = args.bool("relative", default: false)
-        for (path, raw) in (args.raw["animate"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
+        for (given, raw) in (args.raw["animate"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
+            let path = c.resolvedPath(given)
             guard let list = raw.array else { throw EditError("animate.\(path) must be a list of [time, value, ease?]") }
             var keys: [CurveKey] = []
             for k in list {
@@ -288,7 +294,7 @@ extension Toolbox {
             parts.append(line)
         }
         for path in args.strings("unset") ?? [] {
-            let canonical = Clip.canonical(path)
+            let canonical = c.resolvedPath(path)
             if c.anim[canonical] != nil {
                 c.anim[canonical] = nil
                 parts.append("stopped animating \(canonical)")

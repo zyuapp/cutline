@@ -158,16 +158,25 @@ public struct Effect: Codable, Equatable, Hashable, Sendable, Identifiable {
     /// 0 shows the input unchanged, 1 shows the full effect.
     public var mix: Double
     public var params: [String: ParamValue]
+    /// Source seconds of the clip's media this effect acts in (one shot of a clip that spans several); nil acts throughout.
+    public var sourceRange: TimeRange?
 
-    public init(id: String, type: String, enabled: Bool = true, mix: Double = 1, params: [String: ParamValue] = [:]) {
+    public init(id: String, type: String, enabled: Bool = true, mix: Double = 1, params: [String: ParamValue] = [:], sourceRange: TimeRange? = nil) {
         self.id = id
         self.type = type
         self.enabled = enabled
         self.mix = mix
         self.params = params
+        self.sourceRange = sourceRange
     }
 
-    enum CodingKeys: String, CodingKey { case id, type, enabled, mix, params }
+    enum CodingKeys: String, CodingKey { case id, type, enabled, mix, params, sourceRange }
+
+    /// Whether the effect acts when the clip shows source time `t`.
+    public func acts(atSource t: Seconds) -> Bool {
+        guard let r = sourceRange else { return true }
+        return t >= r.start - 1e-6 && t < r.end - 1e-6
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -176,6 +185,7 @@ public struct Effect: Codable, Equatable, Hashable, Sendable, Identifiable {
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         mix = try c.decodeIfPresent(Double.self, forKey: .mix) ?? 1
         params = try c.decodeIfPresent([String: ParamValue].self, forKey: .params) ?? [:]
+        sourceRange = try c.decodeIfPresent(TimeRange.self, forKey: .sourceRange)
     }
 }
 
@@ -278,9 +288,23 @@ public struct EffectType: Sendable {
         "amount": ["strength", "intensity", "level"],
         "strength": ["amount", "intensity"],
         "intensity": ["amount", "strength"],
-        "radius": ["size", "blur_radius"],
+        "radius": ["size", "blur_radius", "blur", "amount", "strength"],
         "color": ["colour", "tint_color"],
         "angle": ["rotation", "direction"],
+        "master": ["all", "rgb", "luma", "luminance", "overall", "composite", "main"],
+        "red": ["r"], "green": ["g"], "blue": ["b"],
+        "highpass_hz": ["low_cut", "lowcut", "low_cut_hz", "hpf", "hp", "highpass", "high_pass", "high_pass_hz", "rumble"],
+        "lowpass_hz": ["high_cut", "highcut", "high_cut_hz", "lpf", "lp", "lowpass", "low_pass", "low_pass_hz"],
+        "low_gain": ["bass", "low_shelf", "lows"], "mid_gain": ["mids", "mid"], "high_gain": ["treble", "high_shelf", "highs", "air"],
+        "saturation": ["sat", "saturate", "chroma", "colorfulness"],
+        "temperature": ["temp", "warmth", "white_balance", "wb"],
+        "exposure": ["ev", "stops"],
+        "threshold": ["thresh", "threshold_db"], "attack_ms": ["attack"], "release_ms": ["release"],
+        "ceiling": ["ceiling_db", "max_db", "limit_db", "max"],
+        "semitones": ["pitch", "shift", "semitone"],
+        "rate": ["count", "density", "emission", "emit_rate", "per_second", "amount"],
+        "lifetime": ["life", "duration"],
+        "sprite": ["shape", "particle"],
     ]
 
     /// The parameter an agent most likely meant: the name itself, a known synonym, or the one unambiguous
@@ -289,11 +313,29 @@ public struct EffectType: Sendable {
         if spec(name) != nil || ["mix", "enabled"].contains(name) { return name }
         let lower = name.lowercased().replacingOccurrences(of: "-", with: "_")
         if spec(lower) != nil { return lower }
+        if ["opacity", "blend_amount", "dry_wet", "wet_dry"].contains(lower) { return "mix" }
         let viaSynonym = params.map(\.name).filter { Self.synonyms[$0]?.contains(lower) == true }
         if viaSynonym.count == 1 { return viaSynonym[0] }
         let near = params.map(\.name).filter { editDistance($0, lower) <= 2 }
         return near.count == 1 ? near[0] : nil
     }
+}
+
+extension Effect {
+    /// `path` with a synonym of an effect parameter ("fx.eq1.low_cut", "fx.curves1.all") replaced by the parameter it means.
+    public static func resolvedPath(_ path: String, in effects: [Effect]) -> String {
+        guard path.hasPrefix("fx.") else { return path }
+        let parts = path.split(separator: ".", maxSplits: 2).map(String.init)
+        guard parts.count == 3, let e = effects.first(where: { $0.id == parts[1] }), let type = EffectCatalog.type(e.type),
+              type.spec(parts[2]) == nil, GeneratorCatalog.spec(type: e.type, name: parts[2], params: e.params) == nil,
+              let name = type.paramName(for: parts[2]) else { return path }
+        return "fx.\(parts[1]).\(name)"
+    }
+}
+
+extension Clip {
+    /// The canonical path, with effect parameter synonyms resolved (see `Effect.resolvedPath`).
+    public func resolvedPath(_ path: String) -> String { Effect.resolvedPath(Clip.canonical(path), in: effects) }
 }
 
 extension RGBA {

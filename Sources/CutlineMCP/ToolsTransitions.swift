@@ -8,6 +8,8 @@ extension Toolbox {
             "track": Schema.string("Every cut between touching clips on this track"),
             "from": Schema.string("Outgoing clip, alone for a transition out"),
             "to": Schema.string("Incoming clip, alone for a transition in"),
+            "clip": Schema.string("A clip whose edge names the cut: edge in is the cut into it, out the cut out of it; an edge no clip touches transitions over what lies beneath"),
+            "edge": Schema.string("With clip: in, out or both; default the edge another clip touches", values: ["in", "out", "both"]),
             "id": Schema.string("Existing transition id to change or remove"),
             "type": Schema.string("Transition type, default dissolve", values: TransitionCatalog.all.map(\.id)),
             "duration": Schema.number("Seconds, default 0.5; snaps to whole frames"),
@@ -33,11 +35,12 @@ extension Toolbox {
                 if pairs.isEmpty { throw EditError("\(tid) has no touching clips") }
             }
             if args.has("from") || args.has("to") { pairs.append((args.optString("from"), args.optString("to"))) }
+            if let cid = args.optString("clip") { pairs += try Toolbox.clipEdges(cid, edge: args.optString("edge"), p) }
             if let id = args.optString("id") {
                 guard let tr = p.transitions.first(where: { $0.id == id }) else { throw EditError("No transition \(id)") }
                 pairs = [(tr.from, tr.to)]
             }
-            guard !pairs.isEmpty else { throw EditError("Pass cut \"clip_a|clip_b\", track, from/to, or id") }
+            guard !pairs.isEmpty else { throw EditError("Pass cut \"clip_a|clip_b\", clip with edge, track, from/to, or id") }
 
             var lines: [String] = []
             var skipped: [String] = []
@@ -126,5 +129,24 @@ extension Toolbox {
         let example = t.params.first.map { ", \"params\": {\"\($0.name)\": \($0.defaultValue)}" } ?? ""
         lines.append("Example: transition_set {\"cut\": \"clip_a|clip_b\", \"type\": \"\(t.id)\", \"duration\": 0.5\(example)}")
         return lines.joined(separator: "\n")
+    }
+
+    /// The cuts at a clip's edges as (from, to): in is the cut into it, out the cut out of it. Without `edge`, the
+    /// edge another clip touches (both when both do).
+    static func clipEdges(_ id: String, edge: String?, _ p: Project) throws -> [(String?, String?)] {
+        guard let loc = p.locateClip(id) else { throw EditError("No clip \(id)") }
+        let clips = p.tracks[loc.track].clips, c = clips[loc.clip]
+        let half = p.canvas.frameDuration / 2
+        let before = clips.last { $0.id != id && abs($0.end - c.start) < half && $0.kind != .adjustment }
+        let after = clips.first { $0.id != id && abs($0.start - c.end) < half && $0.kind != .adjustment }
+        let edges: [String]
+        switch edge?.lowercased() {
+        case "in", "start", "head", "left", "incoming": edges = ["in"]
+        case "out", "end", "tail", "right", "outgoing": edges = ["out"]
+        case "both": edges = ["in", "out"]
+        case nil: edges = before == nil && after != nil ? ["out"] : after == nil || before == nil ? ["in"] : ["in", "out"]
+        default: throw EditError("edge is in, out or both")
+        }
+        return edges.map { e -> (String?, String?) in e == "in" ? (before?.id, id) : (id, after?.id) }
     }
 }

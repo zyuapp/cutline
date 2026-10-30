@@ -65,6 +65,32 @@ public struct Particle: Equatable, Sendable {
 /// A stateless particle simulation: every particle's birth and path come from the seed and its index,
 /// so any frame can be drawn on its own and preview matches export.
 public enum ParticleSystem {
+    public static let presetNames = ["sparks", "confetti", "snow", "dust", "embers", "bubbles", "rain", "stars"]
+
+    /// Emitter settings of each preset; parameters a preset leaves out keep the catalog default.
+    public static let presets: [String: [String: ParamValue]] = {
+        func n(_ v: Double) -> ParamValue { .number(v) }
+        func s(_ v: String) -> ParamValue { .string(v) }
+        return [
+            "sparks": ["emitter": s("point"), "y": n(0.6), "rate": n(120), "lifetime": n(0.9), "lifetime_random": n(0.4), "direction": n(0), "spread": n(40), "speed": n(0.9), "speed_random": n(0.5),
+                       "gravity": n(1.2), "drag": n(0.5), "size": n(0.006), "size_end": n(0.3), "color": s("#FFD27A"), "color_end": s("#FF5A1F"), "sprite": s("spark"), "fade_out": n(0.4)],
+            "confetti": ["emitter": s("line"), "y": n(-0.05), "emitter_width": n(1.2), "rate": n(60), "lifetime": n(5), "direction": n(180), "spread": n(25), "speed": n(0.15), "gravity": n(0.12),
+                         "wind": n(0.02), "drag": n(0.6), "turbulence": n(0.05), "size": n(0.02), "sprite": s("confetti"), "spin": n(360), "fade_out": n(0.1), "prewarm": n(2)],
+            "snow": ["emitter": s("line"), "y": n(-0.05), "emitter_width": n(1.3), "rate": n(50), "lifetime": n(9), "direction": n(180), "spread": n(20), "speed": n(0.08), "gravity": n(0.02),
+                     "wind": n(0.02), "turbulence": n(0.08), "size": n(0.012), "size_random": n(0.6), "sprite": s("snow"), "fade_out": n(0.2), "prewarm": n(8)],
+            "dust": ["emitter": s("box"), "y": n(0.5), "emitter_width": n(1.8), "emitter_height": n(1.1), "rate": n(25), "lifetime": n(6), "spread": n(180), "speed": n(0.02), "gravity": n(0),
+                     "turbulence": n(0.04), "size": n(0.004), "size_random": n(0.7), "sprite": s("soft"), "color": s("#FFF4DC"), "fade_in": n(0.3), "fade_out": n(0.4), "prewarm": n(6)],
+            "embers": ["emitter": s("line"), "y": n(1.05), "emitter_width": n(1), "rate": n(35), "lifetime": n(4), "direction": n(0), "spread": n(20), "speed": n(0.18), "gravity": n(-0.05),
+                       "turbulence": n(0.1), "size": n(0.006), "size_end": n(0.2), "color": s("#FFB347"), "color_end": s("#FF3B1F"), "sprite": s("soft"), "prewarm": n(4)],
+            "bubbles": ["emitter": s("line"), "y": n(1.05), "emitter_width": n(0.9), "rate": n(12), "lifetime": n(6), "direction": n(0), "spread": n(10), "speed": n(0.12), "gravity": n(-0.03),
+                        "turbulence": n(0.06), "size": n(0.03), "size_random": n(0.6), "sprite": s("bubble"), "color": s("#CFEFFF"), "spin": n(0), "prewarm": n(5)],
+            "rain": ["emitter": s("line"), "y": n(-0.05), "emitter_width": n(1.4), "rate": n(300), "lifetime": n(1), "direction": n(185), "spread": n(3), "speed": n(1.6), "speed_random": n(0.2),
+                     "gravity": n(1.5), "size": n(0.004), "size_random": n(0.3), "sprite": s("spark"), "color": s("#C8D8E8"), "fade_in": n(0), "fade_out": n(0.1), "spin": n(0), "prewarm": n(1)],
+            "stars": ["emitter": s("box"), "y": n(0.5), "emitter_width": n(1.8), "emitter_height": n(1.1), "rate": n(15), "lifetime": n(4), "spread": n(180), "speed": n(0.005), "gravity": n(0),
+                      "size": n(0.01), "size_random": n(0.6), "sprite": s("star"), "fade_in": n(0.4), "fade_out": n(0.4), "spin": n(20), "prewarm": n(4)],
+        ]
+    }()
+
     public static let confetti: [RGBA] = ["#FF375F", "#FFD60A", "#30D158", "#0A84FF", "#BF5AF2", "#FF9F0A", "#64D2FF"].compactMap { RGBA(hex: $0) }
 
     /// `value(name, t)` reads a parameter at `t` seconds into the clip; emitter position, direction, spread and speed

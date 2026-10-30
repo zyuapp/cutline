@@ -89,6 +89,17 @@ extension Toolbox {
                 needs.append(AnalysisNeed(mediaId: id, feature: .shots, without: "its shots are taken from evenly spaced windows (or scene cuts) instead of the analyzed shots ranked best first"))
             }
             return needs
+        case "split_at_shots", "match_color":
+            var ids = a.strings("clips") ?? []
+            if let tid = a.optString("track"), let t = p.tracks.first(where: { $0.id == tid }) { ids += t.clips.map(\.id) }
+            if ids.isEmpty, let v1 = p.tracks.first(where: { $0.kind == .video }) { ids = v1.clips.map(\.id) }
+            if name == "match_color" { ids += [a.optString("reference")].compactMap { $0 } }
+            return media(ofClips: ids).map { AnalysisNeed(mediaId: $0, feature: .scenes, without: name == "match_color" ? "each clip gets one LUT even where it plays several shots" : "there are no shot cuts to split at") }
+        case "qualify":
+            let ids = media(ofClips: [a.optString("clip")].compactMap { $0 })
+            var needs = ids.map { AnalysisNeed(mediaId: $0, feature: .scenes, without: "the grade acts on the whole clip, in every shot it plays") }
+            if a.bool("face", default: false) { needs += ids.map { AnalysisNeed(mediaId: $0, feature: .shots, without: "the face window stays where the face was at at instead of following it") } }
+            return needs
         case "remove_object":
             return media(ofClips: [a.optString("clip")].compactMap { $0 }).map { AnalysisNeed(mediaId: $0, feature: .scenes, without: "shot cuts are found only by comparing neighbouring frames while it renders, which can miss a soft cut") }
         default:

@@ -66,7 +66,8 @@ extension Toolbox {
                 return pl
             }
             if let name = args.optString("preset"), let why = ExportPreset.unavailable(name) { throw EditError(why) }
-            let p0 = try session.project()
+            let saved = try session.project()
+            let p0 = saved.placingCaptions(for: platformChoice)
             let platform = platformChoice.map { $0.resolved(for: p0) }
             let preset = try args.enumValue("preset", ExportPreset.self) ?? platform.flatMap { ExportPreset(rawValue: $0.preset) } ?? .hevc
             guard p0.duration > 0 else { throw EditError("The timeline is empty") }
@@ -98,6 +99,7 @@ extension Toolbox {
                 report.append("\(platform.name) check: " + (warnings.isEmpty ? "ready." : "\(warnings.count) issue(s)" + (checkOnly ? "" : ", exported anyway (strict:true refuses)")))
                 report += warnings.map { "  - " + $0 }
                 if !platform.notes.isEmpty { report.append("  Note: " + platform.notes) }
+                if p0.captionStyle != saved.captionStyle { report.append("  Captions kept inside \(platform.name)'s UI-free area for this export (y \(fmt2(p0.captionStyle.y)), max_width \(fmt2(p0.captionStyle.maxWidth))); captions_set platform:\"\(platform.id)\" shows that in preview too.") }
                 if let d = p0.master.drift(integrated: mix.integrated, truePeak: mix.truePeakDb) { report.append("Master loudness target: " + d) }
                 if checkOnly { return .text(report.joined(separator: "\n")) }
                 if !warnings.isEmpty { lead = report.count }
@@ -114,7 +116,7 @@ extension Toolbox {
                 let notes = try await writeInterchange(p, format, to: target, base: target.deletingPathExtension(), args: args)
                 return .text("Wrote \(target.path) (timeline \(p.currentTimelineName), \(p.tracks.flatMap(\.clips).count) clips, \(fmt2(p.duration))s); no video rendered.\n" + notes.joined(separator: "\n"))
             }
-            var built = try await session.timeline()
+            var built = try await session.timeline(for: p0)
             let p = built.scene.project
             let trim = try Toolbox.sdrTrim(args.raw["sdr_from_hdr"], p)
             if let trim {
