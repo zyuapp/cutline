@@ -32,6 +32,7 @@ extension Toolbox {
             "background": Schema.bool("Return immediately and analyze in the background, default false"),
             "log": Schema.string("Set the camera log encoding instead of analyzing (\"none\" for normal video); log clips are converted into the canvas color space with input.tone and input.exposure", values: ["none"] + LogProfile.allCases.map(\.rawValue)),
             "signal_range": Schema.string("Whether log code values are legal (video, default) or full range", values: ["video", "full"]),
+            "channel": Schema.string("Source channel(s) transcript, speakers, beats, sounds and sync listen to, kept for later analysis: \"ch3\", \"ch3+ch4\", \"mix:1,3\", left, right; \"auto\" (default) uses the first track, or for multichannel files every channel with sound. media_list shows each file's channels"),
         ], required: ["media_id"])) { [unowned self] args in
             if let log = args.optString("log") {
                 let ids = args.strings("media_id") ?? []
@@ -44,9 +45,25 @@ extension Toolbox {
                 }
                 return .text("\(ids.joined(separator: ", ")): log \(log)\n" + footer(p))
             }
-            let p = try session.project()
+            var p = try session.project()
             var ids = args.strings("media_id") ?? []
             if ids == ["all"] { ids = p.media.map(\.id) }
+            if let raw = args.optString("channel") {
+                let routing: ChannelRouting?
+                if raw == "auto" { routing = nil } else {
+                    guard let r = ChannelRouting(rawValue: raw) else { throw EditError("channel is auto or \(ChannelRouting.help)") }
+                    routing = r
+                }
+                for id in ids {
+                    guard let m = p.mediaAsset(id) else { throw EditError("No media \(id)") }
+                    if let routing, let why = routing.problem(count: m.sourceChannelCount) { throw EditError("\(id) channel \(routing.rawValue): \(why)") }
+                }
+                if ids.contains(where: { p.mediaAsset($0)?.analysisChannel != routing }) {
+                    p = try session.edit("Analyze \(ids.joined(separator: ", ")) from \(routing?.rawValue ?? "the default channels")") { p in
+                        for id in ids { if let i = p.media.firstIndex(where: { $0.id == id }) { p.media[i].analysisChannel = routing } }
+                    }
+                }
+            }
             let requested = try (args.strings("features") ?? Feature.allCases.map(\.rawValue)).map { f in
                 guard let v = Feature(rawValue: f) else { throw EditError("Unknown feature \(f). Features: \(Feature.allCases.map(\.rawValue).joined(separator: ", "))") }
                 return v

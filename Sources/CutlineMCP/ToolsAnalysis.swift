@@ -3,7 +3,7 @@ import CutlineEngine
 import Foundation
 
 extension Session {
-    func analyzePerception(_ media: MediaAsset, _ want: Set<Feature>, bundle b: ProjectBundle, progress: (@Sendable (Double) -> Void)?) async throws -> [String] {
+    func analyzePerception(_ media: MediaAsset, _ want: Set<Feature>, bundle b: ProjectBundle, heard: URL? = nil, progress: (@Sendable (Double) -> Void)?) async throws -> [String] {
         var notes: [String] = []
         if want.contains(.proxy), media.hasVideo, !media.isImage, Proxies.cached(media, quality: .half) == nil,
            Proxies.shouldProxy(media, format: await Proxies.format(of: media)) {
@@ -19,7 +19,7 @@ extension Session {
             notes.append("shots: \(shots.shots.count) described (\(media.id).s0…s\(max(0, shots.shots.count - 1))), \(people == 0 ? "no people" : "up to \(people) people"), \(shots.faces.count) face tracks")
         }
         if want.contains(.sounds), media.hasAudio {
-            let events = try await SoundEventDetector.analyze(url: media.url, mediaId: media.id)
+            let events = try await SoundEventDetector.analyze(url: heard ?? media.url, mediaId: media.id)
             try b.saveAnalysis(events, media.id, "sounds")
             let labels = Dictionary(grouping: events.events, by: \.label).map { ($0.key, $0.value.map(\.duration).reduce(0, +)) }.sorted { $0.1 > $1.1 }.prefix(5)
             notes.append("sounds: " + (labels.isEmpty ? "nothing distinct" : labels.map { "\($0.0) \(fmt1($0.1))s" }.joined(separator: ", ")))

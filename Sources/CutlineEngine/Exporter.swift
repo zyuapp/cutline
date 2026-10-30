@@ -142,8 +142,17 @@ public struct ExportOptions: Sendable {
 /// Renders a timeline with AVAssetReader → AVAssetWriter: the same compositor as preview,
 /// with codec, bitrate, Rec. 709 color tags, and optional subtitle, chapter and closed caption tracks.
 public enum Exporter {
-    public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)? = nil) async throws {
-        if options.preset.needsFFmpeg { return try await FFmpegDelivery.export(built, to: url, options: options, progress: progress) }
+    /// Writes the timeline to `url`. A failed export deletes whatever it wrote there. Returns the loudness
+    /// conform when the master has a loudness target.
+    @discardableResult
+    public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)? = nil) async throws -> LoudnessConform? {
+        try await removingOnFailure(url) {
+            if options.preset.needsFFmpeg { return try await FFmpegDelivery.export(built, to: url, options: options, progress: progress) }
+            return try await write(built, to: url, options: options, progress: progress)
+        }
+    }
+
+    static func write(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)?) async throws -> LoudnessConform? {
         let comp = built.composition
         let reader = try AVAssetReader(asset: comp)
         let range = options.range.map { CMTimeRange(start: TimelineBuilder.time($0.start), end: TimelineBuilder.time(min($0.end, built.duration))) }
@@ -187,13 +196,27 @@ public enum Exporter {
         var audioOffset = CMTime.zero
         let layout = built.layout
         let mixFile = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-mix-\(UUID().uuidString).caf")
-        defer { try? FileManager.default.removeItem(at: mixFile) }
+        let conformedFile = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-loudness-\(UUID().uuidString).caf")
+        defer {
+            try? FileManager.default.removeItem(at: mixFile)
+            try? FileManager.default.removeItem(at: conformedFile)
+        }
+        let master = built.scene.project.master
+        var conform: LoudnessConform?
         if layout != .stereo {
-            guard let source = built.surround else { throw EditError("The \(layout.title) mix isn't rendered yet; render the project's stems (AudioStems.renderMissing) before exporting") }
+            guard var source = built.surround else { throw EditError("The \(layout.title) mix isn't rendered yet; render the project's stems (AudioStems.renderMissing) before exporting") }
+            var span = CMTimeRange(start: CMTime(seconds: range.start.seconds, preferredTimescale: 48_000), end: CMTime(seconds: range.end.seconds, preferredTimescale: 48_000))
+            if let target = master.loudnessTarget {
+                let from = Int64((range.start.seconds * 48_000).rounded())
+                let count = Int64((range.duration.seconds * 48_000).rounded())
+                conform = try await LoudnessConform.run(source, layout: layout, frames: from..<(from + count), target: target, ceiling: master.ceiling, to: conformedFile)
+                source = conformedFile
+                span = CMTimeRange(start: .zero, duration: CMTime(value: count, timescale: 48_000))
+            }
             let asset = AVURLAsset(url: source)
             if let track = try await asset.loadTracks(withMediaType: .audio).first {
                 let r = try AVAssetReader(asset: asset)
-                r.timeRange = CMTimeRange(start: CMTime(seconds: range.start.seconds, preferredTimescale: 48_000), end: CMTime(seconds: range.end.seconds, preferredTimescale: 48_000))
+                r.timeRange = span
                 let out = AVAssetReaderTrackOutput(track: track, outputSettings: [
                     AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: layout.channelCount,
                     AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
@@ -202,11 +225,16 @@ public enum Exporter {
                 r.add(out)
                 audioReader = r
                 audioOut = out
-                audioOffset = r.timeRange.start
+                audioOffset = conform == nil ? r.timeRange.start : .zero
             }
         } else if !audioTracks.isEmpty {
-            _ = try await AudioIO.mixdown(built, range: TimeRange(range.start.seconds, range.end.seconds), to: mixFile)
-            let mixAsset = AVURLAsset(url: mixFile)
+            let frames = try await AudioIO.mixdown(built, range: TimeRange(range.start.seconds, range.end.seconds), to: mixFile)
+            var mixed = mixFile
+            if let target = master.loudnessTarget {
+                conform = try await LoudnessConform.run(mixFile, layout: .stereo, frames: 0..<Int64(frames), target: target, ceiling: master.ceiling, to: conformedFile)
+                mixed = conformedFile
+            }
+            let mixAsset = AVURLAsset(url: mixed)
             if let track = try await mixAsset.loadTracks(withMediaType: .audio).first {
                 let r = try AVAssetReader(asset: mixAsset)
                 let out = AVAssetReaderTrackOutput(track: track, outputSettings: [
@@ -343,6 +371,45 @@ public enum Exporter {
         }
         await writer.finishWriting()
         if writer.status != .completed { throw writer.error ?? EditError("Writing \(url.lastPathComponent) failed") }
+        return conform
+    }
+
+    /// Runs `body`; when it throws, removes what it left at `url` (a partial or empty output) and rethrows.
+    /// A file that was there before and wasn't touched stays.
+    public static func removingOnFailure<T>(_ url: URL, _ body: () async throws -> T) async throws -> T {
+        let before = fileStamp(url)
+        do {
+            return try await body()
+        } catch {
+            discard(url, unless: before)
+            throw error
+        }
+    }
+
+    public static func removingOnFailureSync<T>(_ url: URL, _ body: () throws -> T) throws -> T {
+        let before = fileStamp(url)
+        do {
+            return try body()
+        } catch {
+            discard(url, unless: before)
+            throw error
+        }
+    }
+
+    struct FileStamp: Equatable {
+        var size: Int?
+        var modified: Date?
+        var inode: Int?
+    }
+
+    static func fileStamp(_ url: URL) -> FileStamp? {
+        guard let a = try? FileManager.default.attributesOfItem(atPath: url.path) else { return nil }
+        return FileStamp(size: a[.size] as? Int, modified: a[.modificationDate] as? Date, inode: a[.systemFileNumber] as? Int)
+    }
+
+    static func discard(_ url: URL, unless before: FileStamp?) {
+        guard let now = fileStamp(url), now != before else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     /// 24-bit PCM for ProRes, AAC otherwise (at least 384 kb/s for 5.1). 7.1 is 24-bit PCM in either container:

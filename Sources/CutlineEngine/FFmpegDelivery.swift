@@ -13,9 +13,30 @@ public enum FFmpegDelivery {
     /// Frame rates XDCAM HD422 carries at 1920×1080.
     public static let xdcamRates: [Double] = [24000.0 / 1001, 24, 25, 30000.0 / 1001]
 
+    /// ffmpeg's DNxHR profiles are progressive only, so an interlaced DNx master is written as the DNxHD 1080i
+    /// tier closest to the preset (VC-3, top field first): HQ → 220/185, HQX → 220x/185x 10-bit, SQ → 145/120.
+    public static func interlacedDNxHD(_ preset: ExportPreset, fps: Double) -> (mbps: Int, tenBit: Bool, name: String)? {
+        let ntsc = abs(fps - 30000.0 / 1001) < 0.01, pal = abs(fps - 25) < 0.01
+        guard ntsc || pal else { return nil }
+        switch preset {
+        case .dnxhr_hq: return ntsc ? (220, false, "DNxHD 220") : (185, false, "DNxHD 185")
+        case .dnxhr_hqx: return ntsc ? (220, true, "DNxHD 220x") : (185, true, "DNxHD 185x")
+        case .dnxhr_sq: return ntsc ? (145, false, "DNxHD 145") : (120, false, "DNxHD 120")
+        default: return nil
+        }
+    }
+
     /// Problems that stop `preset` before anything renders.
-    public static func check(_ p: Project, preset: ExportPreset, container: String) -> String? {
+    public static func check(_ p: Project, preset: ExportPreset, container: String, fields: FieldOrder? = nil) -> String? {
         let space = p.canvas.colorSpace
+        if preset.isDNxHR, let fields, fields != .progressive {
+            let size = "\(p.canvas.width)×\(p.canvas.height) at \(String(format: "%.3f", p.canvas.fps)) fps"
+            if preset == .dnxhr_lb { return "DNxHR LB can't be interlaced: ffmpeg's DNxHR is progressive only and DNxHD 1080i has no tier that light. Use dnxhr_sq (DNxHD 145/120 1080i), prores_hq or xdcam_hd422" }
+            if fields == .bff { return "Interlaced DNx is DNxHD 1080i, which is top field first only (ffmpeg's DNxHR is progressive only). Export interlaced:\"tff\", or use prores_hq for bottom field first" }
+            if p.canvas.width != 1920 || p.canvas.height != 1080 || interlacedDNxHD(preset, fps: p.canvas.fps) == nil {
+                return "Interlaced DNx is DNxHD 1080i: 1920×1080 at 25 or 29.97 fps (ffmpeg's DNxHR is progressive only); this canvas is \(size). Use prores_hq for other interlaced formats, or canvas_set the size and rate"
+            }
+        }
         switch preset {
         case .xdcam_hd422:
             if container != "mxf" { return "XDCAM HD422 is MXF only" }
@@ -29,12 +50,13 @@ public enum FFmpegDelivery {
         return nil
     }
 
-    public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)? = nil) async throws {
+    @discardableResult
+    public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)? = nil) async throws -> LoudnessConform? {
         let preset = options.preset
         guard let tools = FFmpeg.tools() else { throw EditError(missing(preset)) }
         let p = built.scene.project
         let mxf = url.pathExtension.lowercased() == "mxf"
-        if let why = check(p, preset: preset, container: mxf ? "mxf" : url.pathExtension.lowercased()) { throw EditError(why) }
+        if let why = check(p, preset: preset, container: mxf ? "mxf" : url.pathExtension.lowercased(), fields: options.interlaced) { throw EditError(why) }
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("cutline-intermediate-\(UUID().uuidString).mov")
         defer { try? fm.removeItem(at: tmp) }
@@ -44,7 +66,7 @@ public enum FFmpegDelivery {
         inter.chapters = []
         inter.closedCaptions = []
         inter.timecode = true
-        try await Exporter.export(built, to: tmp, options: inter) { progress?(0.7 * $0) }
+        let conform = try await Exporter.export(built, to: tmp, options: inter) { progress?(0.7 * $0) }
 
         let asset = AVURLAsset(url: tmp)
         let duration = try await asset.load(.duration).seconds
@@ -60,6 +82,7 @@ public enum FFmpegDelivery {
                              space: p.canvas.colorSpace, size: (p.canvas.width, p.canvas.height), fps: p.canvas.fps, fields: options.interlaced)
         try await FFmpeg.run(tools.ffmpeg, args, duration: duration) { progress?(0.7 + 0.3 * $0) }
         progress?(1)
+        return conform
     }
 
     /// ffmpeg's names for a canvas's primaries, transfer and matrix.
@@ -100,19 +123,24 @@ public enum FFmpegDelivery {
         }
         if !filters.isEmpty { a += ["-filter_complex", filters.joined(separator: ";")] }
         a += maps
-        switch preset {
-        case .dnxhr_hq: a += ["-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p"]
-        case .dnxhr_hqx: a += ["-c:v", "dnxhd", "-profile:v", "dnxhr_hqx", "-pix_fmt", "yuv422p10le"]
-        case .dnxhr_sq: a += ["-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-pix_fmt", "yuv422p"]
-        case .dnxhr_lb: a += ["-c:v", "dnxhd", "-profile:v", "dnxhr_lb", "-pix_fmt", "yuv422p"]
-        default:
-            let gop = abs(fps - 30000.0 / 1001) < 0.01 ? "15" : "12"
-            a += ["-c:v", "mpeg2video", "-profile:v", "0", "-level:v", "2", "-pix_fmt", "yuv422p",
-                  "-b:v", "50M", "-minrate", "50M", "-maxrate", "50M", "-bufsize", "17825792", "-rc_init_occupancy", "17825792",
-                  "-g", gop, "-bf", "2", "-sc_threshold", "1000000000", "-intra_vlc", "1", "-non_linear_quant", "1", "-dc", "10",
-                  "-qmin", "1", "-qmax", "12"]
+        let interlaced = fields == .tff || fields == .bff
+        if preset.isDNxHR, interlaced, let tier = interlacedDNxHD(preset, fps: fps) {
+            a += ["-c:v", "dnxhd", "-b:v", "\(tier.mbps)M", "-pix_fmt", tier.tenBit ? "yuv422p10le" : "yuv422p"]
+        } else {
+            switch preset {
+            case .dnxhr_hq: a += ["-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p"]
+            case .dnxhr_hqx: a += ["-c:v", "dnxhd", "-profile:v", "dnxhr_hqx", "-pix_fmt", "yuv422p10le"]
+            case .dnxhr_sq: a += ["-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-pix_fmt", "yuv422p"]
+            case .dnxhr_lb: a += ["-c:v", "dnxhd", "-profile:v", "dnxhr_lb", "-pix_fmt", "yuv422p"]
+            default:
+                let gop = abs(fps - 30000.0 / 1001) < 0.01 ? "15" : "12"
+                a += ["-c:v", "mpeg2video", "-profile:v", "0", "-level:v", "2", "-pix_fmt", "yuv422p",
+                      "-b:v", "50M", "-minrate", "50M", "-maxrate", "50M", "-bufsize", "17825792", "-rc_init_occupancy", "17825792",
+                      "-g", gop, "-bf", "2", "-sc_threshold", "1000000000", "-intra_vlc", "1", "-non_linear_quant", "1", "-dc", "10",
+                      "-qmin", "1", "-qmax", "12"]
+            }
         }
-        if let fields, fields != .progressive {
+        if let fields, interlaced {
             a += ["-flags", "+ilme+ildct", "-field_order", fields == .tff ? "tt" : "bb"]
         }
         let tags = colorTags(space)

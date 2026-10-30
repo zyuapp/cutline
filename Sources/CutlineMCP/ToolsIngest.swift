@@ -136,6 +136,7 @@ extension Toolbox {
         var s = (m.isImage ? "image" : fmt2(m.duration) + "s") + " " + (m.hasVideo ? "\(m.width)×\(m.height)" + (m.isImage ? "" : " \(Describe.fmtFps(m.fps))fps") : "audio only")
         if m.isInterlaced { s += ", " + interlaceNote(m) }
         if let t = m.transcoded, !m.isTranscoding { s += ", transcoded \(t) at \(m.path); the original stays the conform source" }
+        if let ch = m.channelSummary { s += "; " + ch + " (play any with audio.channels \"ch3\", \"ch3+ch4\" or \"mix:1,3\"; clip_add channels:\"split\" lays each on its own track)" }
         return s
     }
 

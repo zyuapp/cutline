@@ -182,11 +182,19 @@ extension Session {
         var notes: [String] = []
         let want = Set(features)
         var transcript = b.transcript(media.id)
+        // Multichannel files and a chosen analysis channel are heard through a mono copy of those channels.
+        var heard = media
+        let audioWork: Set<Feature> = [.transcript, .speakers, .beats, .sounds]
+        if media.hasAudio, !media.isImage, !want.isDisjoint(with: audioWork),
+           let source = try await SourceChannels.analysisSource(media, channel: media.analysisChannel, cache: b.cacheURL.appendingPathComponent("analysis-audio", isDirectory: true)) {
+            heard.path = source.url.path
+            notes.append("audio from \(source.heard)")
+        }
         if media.hasAudio && (want.contains(.transcript) || want.contains(.speakers) && transcript == nil) {
             try FileManager.default.createDirectory(at: b.cacheURL, withIntermediateDirectories: true)
             let pcm = b.cacheURL.appendingPathComponent("\(media.id).caf")
             defer { try? FileManager.default.removeItem(at: pcm) }
-            let a = try await AudioAnalyzer.analyze(media: media, pcmURL: pcm)
+            let a = try await AudioAnalyzer.analyze(media: heard, pcmURL: pcm)
             try b.saveAudioAnalysis(a)
             let long = a.silences.filter { $0.duration >= 0.5 }
             notes.append("audio: loudness \(String(format: "%.1f", a.loudnessDb)) dB, \(long.count) pauses ≥0.5s totaling \(fmt1(long.map(\.duration).reduce(0, +)))s")
@@ -204,13 +212,13 @@ extension Session {
         let words = transcript?.words.count ?? 0
         let musicLike = media.hasAudio && Double(words) < max(4, media.duration / 6)
         if want.contains(.beats), media.hasAudio, explicit || musicLike {
-            let beats = try await BeatTracker.analyze(url: media.url, mediaId: media.id)
+            let beats = try await BeatTracker.analyze(url: heard.url, mediaId: media.id)
             try b.saveAnalysis(beats, media.id, "beats")
             notes.append(beats.beats.isEmpty ? "beats: none found" : "beats: \(Int(beats.tempo.rounded())) BPM, \(beats.beats.count) beats (\(media.id).b0…b\(beats.beats.count - 1)), \(beats.downbeats.count) downbeats")
         }
         progress?(0.45)
         if want.contains(.speakers), let transcript, words >= (explicit ? 1 : 20) {
-            let s = try await Diarizer.analyze(url: media.url, transcript: transcript)
+            let s = try await Diarizer.analyze(url: heard.url, transcript: transcript)
             try b.saveAnalysis(s, media.id, "speakers")
             notes.append("speakers: \(s.speakers.count) (\(s.speakers.joined(separator: ", ")))")
         }
@@ -221,7 +229,7 @@ extension Session {
             notes.append("scenes: \(cuts.count) cuts (shots \(media.id).s0…s\(cuts.count))")
         }
         progress?(0.65)
-        notes += try await analyzePerception(media, want, bundle: b, progress: progress)
+        notes += try await analyzePerception(media, want, bundle: b, heard: heard.url, progress: progress)
         built = nil
         return notes.joined(separator: "; ")
     }

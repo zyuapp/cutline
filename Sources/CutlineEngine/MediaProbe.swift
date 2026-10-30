@@ -57,6 +57,7 @@ public enum MediaProbe {
            let rate = CMAudioFormatDescriptionGetStreamBasicDescription(fd)?.pointee.mSampleRate, rate > 0 {
             media.sampleRate = rate
         }
+        if !audioTracks.isEmpty { media.audioChannels = await SourceChannels.describe(url) }
         return media
     }
 

@@ -75,6 +75,7 @@ final class Toolbox {
         edits[e.name] = e
         add(Tool(name: e.name, description: e.description, schema: Toolbox.withDryRun(e.schema)) { [unowned self] args in
             try await registerPlugins(args)
+            await primeChannels(args, try session.project())
             let before = try session.project()
             if args.bool("dry_run", default: false) {
                 var p = before
@@ -211,7 +212,7 @@ extension Toolbox {
 // MARK: Formatting
 
 enum Describe {
-    static func project(_ p: Project, bundle: ProjectBundle) -> String {
+    static func project(_ p: Project, bundle: ProjectBundle, mix: LoudnessReport? = nil) -> String {
         var lines: [String] = []
         let history = bundle.loadHistory()
         lines.append("Project \"\(p.name)\" at \(bundle.url.path)")
@@ -229,6 +230,7 @@ enum Describe {
             if m.isInterlaced { a.append(Toolbox.interlaceNote(m)) }
             if let t = m.transcoded { a.append(m.isTranscoding ? "transcoding from \(m.conformPath)" : "ProRes mezzanine of \(m.conformPath) (\(t))") }
             if let tc = m.timecodeStart { a.append("TC \(Project.timecodeString(tc, fps: m.fps > 0 ? m.fps : p.canvas.fps))" + (m.reel.map { " reel \($0)" } ?? "")) }
+            if let ch = m.channelSummary { a.append(ch) }
             if let tags = m.tags, !tags.isEmpty { a.append("tags " + tags.map { tag in tag.rating.map { "\(tag.label) (\($0))" } ?? tag.label }.joined(separator: ", ")) }
             let kind = m.isImage ? "image" : [m.hasVideo ? "video" : nil, m.hasAudio ? "audio" : nil].compactMap { $0 }.joined(separator: "+")
             let dims = m.hasVideo ? " \(m.width)×\(m.height)" + (m.isImage ? "" : " \(fmtFps(m.fps))fps") : ""
@@ -250,6 +252,10 @@ enum Describe {
         let cs = p.captions
         if p.master.gainDb != 0 || !p.master.effects.isEmpty || p.master.layout != .stereo {
             lines.append("Master: \(p.master.layout.title), gain \(fmt1(p.master.gainDb)) dB" + (p.master.effects.isEmpty ? "" : ", fx " + p.master.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ")))
+        }
+        if let target = p.master.targetSummary {
+            let drift = mix.flatMap { p.master.drift(integrated: $0.integrated, truePeak: $0.truePeakDb) } ?? "not measured since the last mix change (timeline_measure what:[\"sound\"] shows the drift)"
+            lines.append("Loudness target: \(target), conformed at export; \(drift)")
         }
         lines.append("Captions: " + (cs.enabled ? "on, \(cs.style.animation.rawValue), size \(fmt2(cs.style.size)), y \(fmt2(cs.style.y)), \(cs.style.maxWordsPerLine) words/line" : "off"))
         if !p.transitions.isEmpty { lines.append("Transitions: " + p.transitions.map { "\($0.id) \($0.type) \(fmt2($0.duration))s \($0.from ?? "∅")→\($0.to ?? "∅")" }.joined(separator: ", ")) }

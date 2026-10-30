@@ -274,17 +274,14 @@ public enum AudioDSP {
     /// Routes a clip's channels to stereo: one side on both, a half-level sum on both, or the sides swapped.
     /// Mono input counts as both sides.
     public static func route(_ x: [[Float]], _ routing: ChannelRouting) -> [[Float]] {
-        guard let l = x.first else { return x }
-        let r = x.count > 1 ? x[1] : l
-        switch routing {
-        case .stereo: return [l, r]
-        case .left: return [l, l]
-        case .right: return [r, r]
-        case .monoMix:
-            let m = vDSP.multiply(0.5, vDSP.add(l, r))
-            return [m, m]
-        case .swap: return [r, l]
+        guard let first = x.first else { return x }
+        let m = routing.matrix(count: x.count)
+        func side(_ g: [Double]) -> [Float] {
+            var y = [Float](repeating: 0, count: first.count)
+            for (c, gain) in g.enumerated() where gain != 0 && c < x.count { y = vDSP.add(y, vDSP.multiply(Float(gain), x[c])) }
+            return y
         }
+        return [side(m.left), side(m.right)]
     }
 
     // MARK: - Effects and files
