@@ -27,7 +27,7 @@ extension Toolbox {
             "edl_fps": "EDL frame rate, default 30",
         ], hide: ["master_peak_nits"]),
         "project_open": ToolBrief(text: "Open a .cutline project.", args: ["open_preview": "Default false", "path": ""]),
-        "project_status": ToolBrief(text: "The project: canvas, media and analysis, tracks and clips with timeline and source times, effects, captions, open comments, warnings. target=<clip> lists its parameter paths and keys; detail=json the raw project.", args: [
+        "project_status": ToolBrief(text: "The project: canvas, media, tracks and clips, effects, captions, comments, warnings. target=<clip> lists its parameters; detail=json the raw project.", args: [
             "target": "Clip id", "detail": "",
         ]),
         "canvas_set": ToolBrief(text: "Change canvas size, frame rate, color space, timecode or background; media refits, text scales.", args: [
@@ -43,15 +43,15 @@ extension Toolbox {
         "preview_seek": ToolBrief(text: "Move the human's preview playhead or play a range.", args: [
             "time": "Timeline time or anchor", "end": "Play until here", "play": "", "open": "Open the preview app",
         ]),
-        "voiceover_record": ToolBrief(text: "Record voice-over/ADR in the preview app (countdown, meter, teleprompter, program from start − preroll); imports, transcribes and places the best take at start in sync. Warns on clipping or quiet takes.", args: [
+        "voiceover_record": ToolBrief(text: "Record voice-over/ADR takes in the preview app; places the best take at start in sync.", args: [
             "start": "", "end": "", "duration": "", "track": "", "countdown": "", "preroll": "", "mute_program": "", "takes": "", "script": "Teleprompter text", "wait": "", "id": "Collect an earlier recording",
         ], hide: ["analyze", "test_input"]),
         "preview_state": ToolBrief(text: "The preview playhead and play state (\"here\", \"this part\")."),
-        "media_import": ToolBrief(text: "Import (or relink) files and folders; analyzes transcripts, pauses and scene cuts. MXF/DNx/MPEG-2 get a ProRes mezzanine; camera RAW is developed; interlaced media is deinterlaced. Returns the media ids.", args: [
+        "media_import": ToolBrief(text: "Import files and folders (MXF/DNx get mezzanines, RAW is developed); analyzes transcripts, pauses and scene cuts. Returns the media ids.", args: [
             "paths": "Files or folders", "relink": "Find missing media inside paths instead", "analyze": "Default true", "language": "Default en-US",
             "fps": "",
         ]),
-        "media_relink": ToolBrief(text: "Relink all offline media from a folder (recursive) by file name and/or reel + timecode coverage; reports matches and misses.", args: [
+        "media_relink": ToolBrief(text: "Relink offline media from a folder by file name and/or reel + timecode.", args: [
             "folder": "", "match": "name, reel_tc or both (default)",
         ]),
         "media_analyze": ToolBrief(text: "Run analysis: transcript, scenes, beats, speakers, shots (faces, saliency, shot size), sounds. Read it with analysis_read.", args: [
@@ -155,7 +155,7 @@ extension Toolbox {
             "unset": "Paths to reset", "relative": "Key times from each clip's start",
             "bind": "{path: {source, map, smooth, offset, decay, keep_centered}}; sources beats, downbeats, audio:<media>, face:<media>[:n].x|y|size, track:<id>.x|y|width|height. catalog tool=param_set explains",
         ], hide: ["subframe"]),
-        "effect_add": ToolBrief(text: "Add, update (existing id), reorder or remove a picture or audio effect on clips, tracks, adjustment layers or the master. catalog lists types and parameters.", args: [
+        "effect_add": ToolBrief(text: "Add, update, reorder or remove an effect on clips, tracks, adjustment layers or the master; see catalog.", args: [
             "target": "Clip, track, \"V1/*\", \"group:<id>\", \"master\" or a list",
             "type": "Effect type (catalog)", "params": "", "id": "Default from type, e.g. vignette1", "index": "Stack position, 0 first",
             "mix": "0…1", "enabled": "", "remove": "Remove this id (or every effect of type)", "scope": "shot: only the shot at at", "at": "",
@@ -205,7 +205,7 @@ extension Toolbox {
             "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported after the base, then undone", "base": "With variants: render this export too, default true",
             "sdr_from_hdr": "true or {method, target_nits}",
         ]),
-        "timeline_measure": ToolBrief(text: "Measure the export: sound (LUFS, peaks), picture (exposure, clipping, cast per shot, flashes; nits if HDR), text (contrast, title-safe), scopes, compare (shot color continuity).", args: [
+        "timeline_measure": ToolBrief(text: "Measure the render: sound (LUFS, peaks), picture (exposure, cast, flashes; nits if HDR), text, scopes, compare (shot continuity).", args: [
             "what": "sound, picture, text, scopes, compare; default the first three", "start": "", "end": "", "at": "For scopes",
             "tracks": "Each track's sound too", "platform": "Text against its UI-free area", "reference": "For compare: clip id or time",
         ]),
