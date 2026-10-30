@@ -104,7 +104,7 @@ private func center(_ img: CGImage) -> (Int, Int, Int) {
     #expect(abs(duration - clip.duration) < 0.1)
     let xml = dir.appendingPathComponent("out.fcpxml")
     let fcp = await box.call("export", ["path": .string(xml.path)])
-    #expect(fcp.plainText.contains("multicam clip (2 angles)"), "\(fcp.plainText)")
+    #expect(fcp.plainText.contains("multicam clip → an mc-clip per angle switch"), "\(fcp.plainText)")
 }
 
 @Test(.enabled(if: FileManager.default.fileExists(atPath: "/tmp/cl-real/work/camL.mov") && FileManager.default.fileExists(atPath: "/tmp/cl-real/work/camR.mov")))

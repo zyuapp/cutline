@@ -91,10 +91,10 @@ private func multicamProject() throws -> (Project, Clip) {
     #expect(c.multicam == nil && flat.multicamSetup(c) == nil)
     #expect(flat.sequence(c.mediaId!)?.tracks.first?.clips.map(\.mediaId) == ["camA", "camB"])
     #expect(!flat.sequences.contains { $0.multicam != nil })
-    let notes = p.interchangeLosses(.fcpxml)
+    let notes = p.interchangeLosses(.otio)
     #expect(notes.contains { $0.contains("multicam clip (3 angles) → a compound clip of its active angles") }, "\(notes)")
-    let xml = try p.interchange(.fcpxml)
-    #expect(String(decoding: xml.data, as: UTF8.self).contains("Interview (active angles)"))
+    let otio = try p.interchange(.otio)
+    #expect(String(decoding: otio.data, as: UTF8.self).contains("Interview (active angles)"))
     // Unnesting a multicam clip lays out its active angles as plain clips.
     let placed = try p.unnest("mc")
     #expect(p.tracks.flatMap(\.clips).filter { placed.contains($0.id) }.compactMap(\.mediaId).sorted() == ["camA", "camB", "rec"])

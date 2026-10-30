@@ -52,6 +52,8 @@ struct InterchangeContext {
     /// Clips as they are in the project, for those the export writes as something else (a title, baked or offline graphics).
     var originals: [String: Clip] = [:]
     var luts: [String: String] = [:]
+    /// Multicam clips written as their active angles, by clip id: the multicam, its switching and its angles' media.
+    var multicams: [String: (sequence: NestedSequence, switch: MulticamSwitch, media: [MediaAsset])] = [:]
 
     /// The Cutline clip a writer embeds for Cutline to read back, when the format can't carry it.
     func embedded(_ c: Clip) -> Clip? {
@@ -150,8 +152,15 @@ extension Project {
     /// The project as `format` is written: generators become baked graphics, titles, or offline placeholders
     /// (OTIO keeps them, with all their settings in Cutline metadata, unless baked).
     func prepared(for format: InterchangeFormat, options: InterchangeOptions) -> (Project, InterchangeContext) {
-        var p = flatteningMulticam()
+        var p = format == .fcpxml || format == .xml ? splittingMulticam() : flatteningMulticam()
         var ctx = InterchangeContext(luts: options.luts)
+        if format == .otio {
+            for c in tracks.flatMap(\.clips) {
+                guard let seq = c.mediaId.flatMap(sequence), let setup = seq.multicam else { continue }
+                let ids = Set(setup.angles.map(\.mediaId) + seq.tracks.flatMap(\.clips).compactMap(\.mediaId))
+                ctx.multicams[c.id] = (seq, c.multicam ?? MulticamSwitch(cuts: []), media.filter { ids.contains($0.id) })
+            }
+        }
         var added: [MediaAsset] = []
         func graphicAsset(_ c: Clip, path: String) -> String {
             let id = "graphic-" + Importer.slug(c.id)
@@ -336,7 +345,14 @@ extension Project {
                 return
             case .sequence:
                 if let setup = scope.multicamSetup(c) {
-                    out.append("\(name) multicam clip (\(setup.angles.count) angles) → " + (edl ? "the events of its active angles" : "a compound clip of its active angles and sound") + "; the other angles and the switching aren't carried")
+                    if fcp || format == .xml {
+                        let pieces = scope.visibleAngleRanges(c)
+                        let what = fcp ? "an mc-clip per angle switch (\(pieces.count)) of a multicam with all \(setup.angles.count) angles" : "a clipitem per angle switch (\(pieces.count)) playing a multiclip with all \(setup.angles.count) angles"
+                        let extra = !fcp && pieces.contains { $0.audio.count > 1 } ? "; FCP7 XML has one active sound angle, so the first is kept" : ""
+                        out.append("\(name) multicam clip → \(what); the multicam's sync method isn't carried\(extra)")
+                    } else {
+                        out.append("\(name) multicam clip (\(setup.angles.count) angles) → " + (edl ? "the events of its active angles; the other angles and the switching aren't carried" : "a compound clip of its active angles and sound for other apps; Cutline reads the multicam back from its metadata"))
+                    }
                 } else if edl { out.append("\(name) nested sequence → flattened into the events it plays") }
             case .media:
                 break

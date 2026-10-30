@@ -139,3 +139,62 @@ private func routings(_ p: Project) -> [String] {
     let fcp = String(decoding: try p.interchange(.fcpxml).data, as: UTF8.self)
     #expect(fcp.components(separatedBy: "<asset ").count == 2)
 }
+
+// MARK: Multicam
+
+/// Two cameras and a recorder synced at a shared moment, switched A → B → A with the recorder heard, then camera B's sound.
+private func multicamEdit() throws -> Project {
+    var p = Project(name: "Multicam")
+    p.canvas.fps = 25
+    p.media = [
+        MediaAsset(id: "camA", path: "/tmp/a.mov", name: "Cam A", duration: 60, width: 1920, height: 1080, fps: 25, hasVideo: true, hasAudio: true),
+        MediaAsset(id: "camB", path: "/tmp/b.mov", name: "Cam B", duration: 50, width: 1920, height: 1080, fps: 25, hasVideo: true, hasAudio: true),
+        MediaAsset(id: "rec", path: "/tmp/r.wav", name: "Recorder", duration: 70, width: 0, height: 0, fps: 0, hasVideo: false, hasAudio: true),
+    ]
+    let seq = try p.createMulticam(name: "Interview", angles: [("A", "camA", 10), ("B", "camB", 7.5), ("rec", "rec", 12)], audio: ["rec"], sync: "marker")
+    var c = Clip(id: "mc", kind: .sequence, mediaId: seq.id, start: 2, duration: 30, sourceIn: 6)
+    c.multicam = MulticamSwitch(cuts: [AngleCut(at: 0, angle: "A")])
+    p.tracks[0].clips = [c]
+    try p.switchMulticam("mc", from: 10, angle: "B")
+    try p.switchMulticam("mc", from: 20, to: 25, angle: "A", audio: ["B"])
+    return p
+}
+
+private func angleSummary(_ p: Project) throws -> (ranges: [String], offsets: [Seconds], angles: [String]) {
+    let clips = p.tracks.filter { $0.kind == .video }.flatMap(\.clips)
+    #expect(clips.count == 1, "\(clips.map(\.id))")
+    let c = try #require(clips.first)
+    let setup = try #require(p.multicamSetup(c), "not a multicam clip")
+    let ranges = p.visibleAngleRanges(c).map { "\(Int(($0.range.start * 25).rounded()))-\(Int(($0.range.end * 25).rounded())) \($0.angle) \($0.audio.joined(separator: "+"))" }
+    return (ranges, setup.angles.map(\.offset), setup.angles.map(\.name))
+}
+
+@Test(arguments: [InterchangeFormat.fcpxml, .xml, .otio])
+func multicamClipsRoundTripAsMulticam(format: InterchangeFormat) throws {
+    let p = try multicamEdit()
+    let want = try angleSummary(p)
+    #expect(want.ranges == ["50-250 A rec", "250-500 B rec", "500-625 A B", "625-800 B rec"])
+    let made = try p.interchange(format)
+    let text = String(decoding: made.data, as: UTF8.self)
+    let back: Project
+    switch format {
+    case .fcpxml:
+        #expect(text.contains("<multicam ") && text.components(separatedBy: "<mc-angle ").count == 4 && text.components(separatedBy: "<mc-clip ").count == 5, "\(text)")
+        #expect(text.contains("srcEnable=\"audio\"") && text.contains("<mc-source angleID=\"") && !text.contains("active angles"))
+        back = try Importer.fcpxml(made.data, relativeTo: nil).project
+    case .xml:
+        #expect(text.contains("<multiclip id=") && text.contains("<collapsed>FALSE</collapsed>") && text.contains("<activevideoangle>TRUE</activevideoangle>"), "\(text)")
+        back = try Importer.xmeml(made.data, relativeTo: nil).project
+    default:
+        #expect(text.contains("Interview (active angles)"))
+        back = try Importer.otio(made.data, relativeTo: nil).project
+    }
+    let got = try angleSummary(back)
+    #expect(got.ranges == want.ranges)
+    #expect(got.angles == want.angles)
+    for (a, b) in zip(got.offsets, want.offsets) { #expect(abs(a - b) < 0.021) }
+    var host = Project(name: "Host")
+    host.media = p.media
+    _ = try host.adoptTimeline(back, name: "Back")
+    try host.validate()
+}

@@ -427,7 +427,9 @@ extension Importer {
     /// The primary storyline becomes V1; connected clips and secondary storylines at positive lanes become
     /// video tracks above it, audio at negative lanes audio tracks. Compound clips (`ref-clip`) become nested
     /// sequences. Times honour `tcStart` (kept as the canvas's start timecode), asset start timecode and
-    /// constant-speed `timeMap`s. Expanded audio (`audioStart`/`audioDuration`) becomes split edits, volume
+    /// constant-speed `timeMap`s. Multicam media become multicam sequences (an angle per `mc-angle`), and butting
+    /// `mc-clip`s of one multicam one multicam clip cut at each `mc-source` change; `audio-channel-source` `srcCh`
+    /// becomes `audio.channels`. Expanded audio (`audioStart`/`audioDuration`) becomes split edits, volume
     /// keyframes audio.volume animation, an `ASC_SOP` in a clip's note a `color.cdl` effect and a `LUT <path>`
     /// there a disabled `color.lut`. Assets keep their `audioRate` as the media's sample rate.
     /// Media ids come from asset names, lowercase with dashes; relative `src` paths resolve against `base`.
@@ -460,6 +462,8 @@ final class FCPReader {
     var media: [MediaAsset] = []
     var sequences: [NestedSequence] = []
     var compounds: [String: (id: String, tcStart: Seconds)] = [:]
+    /// Multicam media resource id → its sequence, `tcStart` and angle names by `angleID`.
+    var multicams: [String: (id: String, tcStart: Seconds, angles: [String: String])] = [:]
     /// Drop frame of each media's timecode, from the `tcFormat` of its first clip.
     var dropFrame: [String: Bool] = [:]
     var usedSequenceIds = Set<String>()
@@ -551,6 +555,7 @@ final class FCPReader {
         p.transitions = main.transitions
         p.markers = main.markers.sorted { $0.time < $1.time }
         p.sequences = sequences
+        p.joinMulticamPieces()
         Importer.dropUnused(&p, replaced, missing: &missing)
         Importer.finish(&p, &warnings, offline: offline)
         return ImportResult(project: p, warnings: warnings, missingMedia: missing)
@@ -803,9 +808,7 @@ final class FCPReader {
         case "ref-clip": return refClip(e, start: start)
         case "title": return (titleClip(e), .video)
         case "gap": return nil
-        case "mc-clip":
-            warnings.append("Multicam clip \(label(e)) imported as a gap")
-            return nil
+        case "mc-clip": return mcClip(e, start: start)
         default:
             warnings.append("\(e.name ?? "Element") \(label(e)) isn't supported; left as a gap")
             return nil
@@ -964,6 +967,61 @@ final class FCPReader {
         var clip = Clip(id: "", kind: .sequence, name: e.attr("name") ?? res.attr("name"), mediaId: seq.id, start: 0, duration: 0, sourceIn: map(start) - seq.tcStart)
         if e.attr("srcEnable") == "video" { clip.volume = 0 }
         adjust(e, &clip)
+        return (clip, e.attr("srcEnable") == "audio" ? .audio : .video)
+    }
+
+    /// A multicam clip: its `multicam` media becomes a multicam sequence with an angle per `mc-angle`, shared by every
+    /// use; the clip plays the `mc-source` angles it enables (picture adjustments from the picture's source).
+    func mcClip(_ e: XMLElement, start: Seconds) -> (Clip, TrackKind)? {
+        guard let ref = e.attr("ref"), let res = resources[ref], let mc = res.first("multicam") else {
+            warnings.append("Multicam clip \(label(e)) refers to missing media \(e.attr("ref") ?? "nil"); left as a gap")
+            return nil
+        }
+        let known: (id: String, tcStart: Seconds, angles: [String: String])
+        if let k = multicams[ref] {
+            known = k
+        } else {
+            let tc = time(mc.attr("tcStart")) ?? 0
+            var tracks: [Track] = [], angles: [MulticamAngle] = [], names: [String: String] = [:]
+            for (n, a) in mc.elems.filter({ $0.name == "mc-angle" }).enumerated() {
+                var name = a.attr("name").flatMap { $0.isEmpty ? nil : $0 } ?? "Angle \(n + 1)"
+                while angles.contains(where: { $0.name == name }) { name += " \(n + 1)" }
+                let c = nestedContext { readSpine(a, place: { $0 - tc }, lane: 0, disabled: false, storyline: false) }
+                let clips = c.lanes.tracks().flatMap(\.clips).filter { $0.kind == .media }.sorted { $0.start < $1.start }
+                guard let first = clips.first, let m = media.first(where: { $0.id == first.mediaId }) else {
+                    warnings.append("Angle \(name) of multicam \(res.attr("name") ?? "") has no media; left out")
+                    continue
+                }
+                let trackId = "angle\(angles.count + 1)"
+                tracks.append(Track(id: trackId, kind: m.hasVideo ? .video : .audio, name: name, clips: clips))
+                angles.append(MulticamAngle(name: name, track: trackId, mediaId: m.id, offset: first.sourceIn - first.start, video: m.hasVideo, audio: m.hasAudio))
+                names[a.attr("angleID") ?? name] = name
+            }
+            guard angles.contains(where: \.video) else {
+                warnings.append("Multicam clip \(label(e)) has no video angle; left as a gap")
+                return nil
+            }
+            let name = res.attr("name") ?? e.attr("name") ?? "Multicam"
+            let id = Importer.unique(Importer.slug(name), &usedSequenceIds)
+            var seq = NestedSequence(id: id, name: name, tracks: tracks)
+            seq.multicam = MulticamSetup(angles: angles, audio: angles.first(where: \.audio).map { [$0.name] } ?? [], sync: "timecode")
+            sequences.append(seq)
+            known = (id, tc, names)
+            multicams[ref] = known
+        }
+        let sources = e.elems.filter { $0.name == "mc-source" }
+        func enabled(_ kinds: Set<String>) -> [XMLElement] { sources.filter { kinds.contains($0.attr("srcEnable") ?? "all") && known.angles[$0.attr("angleID") ?? ""] != nil } }
+        let setup = sequences.first { $0.id == known.id }?.multicam
+        let pictureSource = enabled(["all", "video"]).first
+        let picture = pictureSource.flatMap { known.angles[$0.attr("angleID")!] } ?? setup?.videoAngles.first?.name ?? ""
+        let sound = enabled(["all", "audio"]).compactMap { known.angles[$0.attr("angleID")!] }
+        let (map, speed) = timeMap(e)
+        if abs(speed - 1) > 1e-6 { warnings.append("Speed of multicam clip \(label(e)) not kept") }
+        var clip = Clip(id: "", kind: .sequence, name: e.attr("name") ?? res.attr("name"), mediaId: known.id, start: 0, duration: 0, sourceIn: map(start) - known.tcStart)
+        clip.multicam = MulticamSwitch(cuts: [AngleCut(at: 0, angle: picture)], audio: sources.isEmpty ? nil : sound)
+        if clip.name == res.attr("name") { clip.name = nil }
+        adjust(e, &clip)
+        if let pictureSource { adjust(pictureSource, &clip) }
         return (clip, e.attr("srcEnable") == "audio" ? .audio : .video)
     }
 
@@ -1426,7 +1484,9 @@ final class OTIOReader {
                 let md = Self.cutline(item)
                 let named = (md["sequenceName"] as? String) ?? seqName
                 let id: String
-                if let key = md["sequenceId"] as? String, let known = sequenceIds[key] {
+                if let mc = md["multicam"] as? [String: Any], let restored = multicam(mc) {
+                    id = restored
+                } else if let key = md["sequenceId"] as? String, let known = sequenceIds[key] {
                     id = known
                 } else {
                     id = Importer.unique((md["sequenceId"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? Importer.slug(named), &usedSequenceIds)
@@ -1438,6 +1498,10 @@ final class OTIOReader {
                 if let v = Self.number(md["volume"]) { c.volume = v }
                 restore(md, &c)
                 if let b = (md["blend"] as? String).flatMap({ BlendMode(rawValue: $0) }) { c.blend = b }
+                if let mc = md["multicam"] as? [String: Any], sequences.first(where: { $0.id == id })?.multicam != nil {
+                    c.multicam = Self.decode(MulticamSwitch.self, mc["switch"])
+                    if c.name == named { c.name = nil }
+                }
                 made = c
                 if !(item["effects"] as? [[String: Any]] ?? []).isEmpty { drop("Effects", on: seqName) }
             default:
@@ -1572,6 +1636,40 @@ final class OTIOReader {
     }
 
     static func decode<T: Decodable>(_ type: T.Type, _ v: Any?) -> T? { Project.decode(type, v) }
+
+    /// The multicam a stack of active angles stands for, from Cutline's metadata: the sequence (once per id) with its
+    /// angles' media matched by file or added. Returns its id.
+    func multicam(_ md: [String: Any]) -> String? {
+        guard var seq = Self.decode(NestedSequence.self, md["sequence"]), seq.multicam != nil, let assets = Self.decode([MediaAsset].self, md["media"]) else { return nil }
+        if let known = sequenceIds["multicam:" + seq.id] { return known }
+        var rename: [String: String] = [:]
+        for a in assets {
+            if let same = media.first(where: { m in [a.path, a.conformPath].contains { Importer.samePath(m, $0) } }) {
+                rename[a.id] = same.id
+                continue
+            }
+            var m = a
+            m.id = Importer.unique(a.id, &usedMediaIds)
+            media.append(m)
+            mediaByKey["multicam:" + a.id] = media.count - 1
+            if !Importer.exists(m.path) { offline.insert(m.id) }
+            rename[a.id] = m.id
+        }
+        for t in seq.tracks.indices {
+            for c in seq.tracks[t].clips.indices {
+                if let id = seq.tracks[t].clips[c].mediaId { seq.tracks[t].clips[c].mediaId = rename[id] ?? id }
+            }
+        }
+        if var setup = seq.multicam {
+            for k in setup.angles.indices { setup.angles[k].mediaId = rename[setup.angles[k].mediaId] ?? setup.angles[k].mediaId }
+            seq.multicam = setup
+        }
+        let key = seq.id
+        seq.id = Importer.unique(seq.id, &usedSequenceIds)
+        sequences.append(seq)
+        sequenceIds["multicam:" + key] = seq.id
+        return seq.id
+    }
 
     /// Clip settings Cutline keeps in its metadata.
     func restore(_ md: [String: Any], _ c: inout Clip) {
@@ -2611,6 +2709,9 @@ extension Importer {
     /// from or to black become clip fades; video clips whose sound isn't on an audio track are silent. A video
     /// transition between clips whose sound came from audio clipitems is picture only, and a crossfade between
     /// those sounds is audio only, unless the two match, which makes one transition of both. Files that don't exist, or that have no path, stay as offline media.
+    /// A sound clipitem's `sourcetrack` in a file of more than two channels is its `audio.channels` (other channels
+    /// of the same picture stay clips of their own). Multiclips become multicam sequences (an angle per `angle`
+    /// clip), and butting clipitems of one multiclip one multicam clip cut at each `activevideoangle` change.
     public static func xmeml(_ data: Data, relativeTo base: URL?) throws -> ImportResult {
         let doc: XMLDocument
         do { doc = try XMLDocument(data: data, options: []) } catch { throw EditError("Not valid XML: \(error.localizedDescription)") }
@@ -2630,6 +2731,9 @@ final class XMEMLReader {
     var offline = Set<String>()
     var fileDefs: [String: XMLElement] = [:]
     var sequenceDefs: [String: XMLElement] = [:]
+    var clipDefs: [String: XMLElement] = [:]
+    /// Multiclip id → its multicam sequence and the angle names in order.
+    var multiclips: [String: (id: String, angles: [String?])] = [:]
     var mediaByKey: [String: String] = [:]
     var usedMediaIds = Set<String>(), usedSequenceIds = Set<String>()
     var sequences: [NestedSequence] = []
@@ -2670,6 +2774,7 @@ final class XMEMLReader {
             guard let id = e.attr("id") else { continue }
             if e.name == "file", fileDefs[id] == nil { fileDefs[id] = e }
             if e.name == "sequence", sequenceDefs[id] == nil { sequenceDefs[id] = e }
+            if e.name == "clip", clipDefs[id] == nil { clipDefs[id] = e }
         }
         // The sequence at the top, or the first one in a project's bins.
         var tops = root.elems.filter { $0.name == "sequence" }
@@ -2707,6 +2812,7 @@ final class XMEMLReader {
         p.transitions = transitions
         p.markers = markers.sorted { $0.time < $1.time }
         p.sequences = sequences
+        p.joinMulticamPieces()
         if nestedMarkers > 0 { warnings.append("\(nestedMarkers) marker(s) inside nested sequences not kept") }
         for d in dropped { warnings.append(Importer.summarize(d.name, clips: d.clips)) }
         Importer.dropUnused(&p, replaced, missing: &missing)
@@ -3016,7 +3122,11 @@ final class XMEMLReader {
         let cr = rate(e) ?? fps
         let inF = number(e, "in") ?? 0, outF = number(e, "out") ?? inF
         var c: Clip
-        if let s = e.first("sequence") {
+        if let mc = e.first("multiclip") {
+            guard let made = multiclip(mc, name: name) else { return nil }
+            c = Clip(id: "", kind: .sequence, name: name == made.name ? nil : name, mediaId: made.id, start: 0, duration: duration, sourceIn: inF / cr)
+            c.multicam = MulticamSwitch(cuts: [AngleCut(at: 0, angle: made.picture)], audio: made.sound)
+        } else if let s = e.first("sequence") {
             guard let id = nested(s) else { return nil }
             c = Clip(id: "", kind: .sequence, name: name, mediaId: id, start: 0, duration: duration, sourceIn: inF / cr)
         } else {
@@ -3276,6 +3386,45 @@ final class XMEMLReader {
         return id
     }
 
+    /// A multiclip as a multicam sequence, read once per id, with an angle per `angle` clip; returns it with the
+    /// angles this use marks active (the first angle when none is).
+    func multiclip(_ mc: XMLElement, name clipName: String) -> (id: String, name: String, picture: String, sound: [String])? {
+        let key = mc.attr("id") ?? text(mc, "name") ?? clipName
+        let elems = mc.elems.filter { $0.name == "angle" }
+        let name = text(mc, "name").flatMap { $0.isEmpty ? nil : $0 } ?? clipName
+        if multiclips[key] == nil {
+            var tracks: [Track] = [], angles: [MulticamAngle] = [], names: [String?] = []
+            for (n, a) in elems.enumerated() {
+                guard let ref = a.first("clip"), let clip = ref.attr("id").flatMap({ clipDefs[$0] }) ?? (ref.elems.isEmpty ? nil : ref) else { names.append(nil); continue }
+                var angleName = text(clip, "name").flatMap { $0.isEmpty ? nil : $0 } ?? "Angle \(n + 1)"
+                while angles.contains(where: { $0.name == angleName }) { angleName += " \(n + 1)" }
+                let content = readBody(clip, top: false).0.filter { !$0.clips.isEmpty }
+                guard let t = content.first(where: { $0.kind == .video }) ?? content.first, let first = t.clips.first(where: { $0.kind == .media }),
+                      let m = media.first(where: { $0.id == first.mediaId }) else { names.append(nil); continue }
+                let trackId = "angle\(angles.count + 1)"
+                tracks.append(Track(id: trackId, kind: t.kind, name: angleName, clips: t.clips))
+                angles.append(MulticamAngle(name: angleName, track: trackId, mediaId: m.id, offset: first.sourceIn - first.start, video: t.kind == .video, audio: m.hasAudio))
+                names.append(angleName)
+            }
+            guard angles.contains(where: \.video) else {
+                warnings.append("Multiclip \(name) has no video angle; left as a gap")
+                return nil
+            }
+            let id = Importer.unique(Importer.slug(name), &usedSequenceIds)
+            var seq = NestedSequence(id: id, name: name, tracks: tracks)
+            seq.multicam = MulticamSetup(angles: angles, audio: angles.first(where: \.audio).map { [$0.name] } ?? [], sync: text(mc, "synctype") == "3" ? "timecode" : "in_points")
+            sequences.append(seq)
+            multiclips[key] = (id, names)
+        }
+        let known = multiclips[key]!
+        func active(_ flag: String) -> String? {
+            elems.indices.first { text(elems[$0], flag)?.uppercased() == "TRUE" }.flatMap { known.angles.indices.contains($0) ? known.angles[$0] : nil }
+        }
+        let first = known.angles.compactMap { $0 }
+        let seqName = sequences.first { $0.id == known.id }?.name ?? name
+        return (known.id, seqName, active("activevideoangle") ?? first.first ?? "", [active("activeaudioangle") ?? first.first].compactMap { $0 })
+    }
+
     /// A nested sequence, read once per id.
     func nested(_ s: XMLElement) -> String? {
         let xmlId = s.attr("id")
@@ -3315,10 +3464,12 @@ extension Project {
     /// 0 dB crossfade over the overlap, and no sound plays past the program; where the clipitem can't say where a
     /// clip's sound sits, `mastercomment4` holds a `SoundHint`. Text clips become Text (or Outline Text) generators
     /// with string, font, size, color, alignment and origin, solids Color mattes, each with the whole Cutline clip
-    /// in `mastercomment3`; nested sequences are nested sequences; adjustment and generator clips are left out. The
+    /// in `mastercomment3`; nested sequences are nested sequences, multicam clips a clipitem per angle switch playing
+    /// a `multiclip` of every angle with the active ones marked; a file has an `audio` per source track, and a sound
+    /// clipitem's `sourcetrack` is its first routed channel (the routing in `mastercomment2`); adjustment and generator clips are left out. The
     /// sequence's timecode is the canvas's start timecode; each file declares its own audio sample rate and its
     /// source timecode (at its own rate and drop frame) with its reel. Clip in and out points stay zero-based.
-    public func xmeml() -> String { scopedToTimeline().xmeml(InterchangeContext()) }
+    public func xmeml() -> String { scopedToTimeline().splittingMulticam().xmeml(InterchangeContext()) }
 
     func xmeml(_ ctx: InterchangeContext) -> String {
         let grid = FrameGrid(fps: canvas.fps)
@@ -3383,6 +3534,24 @@ extension Project {
         }
 
         var sequenceDescribed = Set<String>()
+        var multiclipUses = 0
+        /// A multiclip with every angle as a clip of its own, written whole at each use (as Premiere reads them), the
+        /// piece's picture and first sound angle marked active.
+        func multiclip(_ seq: NestedSequence, _ setup: MulticamSetup, picture: String, sound: [String], scope: Project) -> XMLElem {
+            multiclipUses += 1
+            var kids = [leaf("name", seq.name), leaf("collapsed", "FALSE"), leaf("synctype", setup.sync == "timecode" ? "3" : "1")]
+            for (n, a) in setup.angles.enumerated() {
+                guard let t = seq.tracks.first(where: { $0.id == a.track }) else { continue }
+                let id = "multiclip-\(seq.id)/\(multiclipUses)/angle\(n + 1)"
+                var angle: [XMLElem] = []
+                if a.name == picture { angle.append(leaf("activevideoangle", "TRUE")) }
+                if a.name == sound.first { angle.append(leaf("activeaudioangle", "TRUE")) }
+                let body = sequenceElem(scope.inside(NestedSequence(id: seq.id, name: a.name, tracks: [t])), id: id, name: a.name, markers: [])
+                angle.append(XMLElem("clip", [("id", id)], children: body.children.filter { $0.name != "timecode" }))
+                kids.append(XMLElem("angle", children: angle))
+            }
+            return XMLElem("multiclip", [("id", "multiclip-\(seq.id)")], children: kids)
+        }
         func sequenceElem(_ scope: Project, id: String, name: String, markers: [Marker]) -> XMLElem {
             let windows = scope.transitionWindows
             let top = id == "sequence-1"
@@ -3554,7 +3723,10 @@ extension Project {
                         let inner = f(c.sourceIn)
                         kids += [leaf("in", "\(inner + r0 - s - head)"), leaf("out", "\(inner + r1 - s + tail)")]
                         let ref = "sequence-\(seq.id)"
-                        if sequenceDescribed.contains(ref) {
+                        if let setup = seq.multicam {
+                            let shown = scope.visibleAngleRanges(c).first
+                            kids.append(multiclip(seq, setup, picture: shown?.angle ?? setup.videoAngles.first?.name ?? "", sound: shown?.audio ?? setup.audio, scope: scope))
+                        } else if sequenceDescribed.contains(ref) {
                             kids.append(XMLElem("sequence", [("id", ref)]))
                         } else {
                             sequenceDescribed.insert(ref)

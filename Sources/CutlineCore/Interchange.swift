@@ -338,6 +338,9 @@ extension Project {
             var md = summary(clip)
             md["sequenceId"] = seq.id
             md["sequenceName"] = seq.name
+            if let mc = ctx.multicams[clip.id] {
+                md["multicam"] = ["sequence": Self.jsonValue(mc.sequence), "switch": Self.jsonValue(mc.switch), "media": Self.jsonValue(mc.media)]
+            }
             var metadata: [String: Any] = ["cutline": md]
             if let cdl = clip.cdl { metadata["cdl"] = cdlMetadata(cdl) }
             return ["OTIO_SCHEMA": "Stack.1", "name": clip.name ?? seq.name, "source_range": range(grid.frames(clip.sourceIn), frames),
@@ -522,14 +525,16 @@ extension Project {
     /// out above it. Butting audio-track clips whose sound overlaps share a secondary storyline.
     /// Transitions sit between the items they join, with a `filter-video` for the picture and a `filter-audio`
     /// (Audio Crossfade) for the sound; connected clips joined by transitions go in a secondary storyline.
-    /// Sequence clips are compound clips: a `media` resource holding the sequence, played by a `ref-clip`.
+    /// Sequence clips are compound clips: a `media` resource holding the sequence, played by a `ref-clip`; multicam
+    /// clips are an `mc-clip` per angle switch of a `multicam` media with an `mc-angle` per angle, `mc-source`s naming
+    /// the picture and sound angles. Routed sound is an `audio-channel-source` (`srcCh`) with the routing as metadata.
     /// Split edits are expanded audio (`audioStart`/`audioDuration`); levels, fades and volume keys are
     /// `adjust-volume` with track faders and master gain folded in; transform, crop, fill and opacity are
     /// `adjust-*`; the clip's CDL goes in its note as `ASC_SOP … ASC_SAT …`, followed by `; LUT <path>` for each LUT.
     /// The project's `tcStart` is the canvas's start timecode; assets declare their own audio sample rate. An asset
     /// with source timecode starts at it (with its reel as metadata), and clips of it start at that timecode plus
     /// their in point, as Final Cut writes them.
-    public func fcpxml() -> String { scopedToTimeline().fcpxml(InterchangeContext()) }
+    public func fcpxml() -> String { scopedToTimeline().splittingMulticam().fcpxml(InterchangeContext()) }
 
     func fcpxml(_ ctx: InterchangeContext) -> String {
         let grid = FrameGrid(fps: canvas.fps)
@@ -740,6 +745,7 @@ extension Project {
         /// A sequence clip: a `ref-clip` playing the compound clip of its sequence from the clip's offset into it.
         var compounds: [String: String] = [:]
         func refElement(_ clip: Clip, _ seq: NestedSequence, track: Track, lane: Int?, offset: RationalTime, frames: Int, scope: Project) -> XMLElem {
+            if let setup = seq.multicam { return mcElement(clip, seq, setup, track: track, lane: lane, offset: offset, frames: frames, scope: scope) }
             let ref: String
             if let known = compounds[seq.id] {
                 ref = known
@@ -762,6 +768,52 @@ extension Project {
             }
             children += volumeChildren(clip, track: track, start: RationalTime(frames: grid.frames(clip.sourceIn), grid), scope: scope)
             return XMLElem("ref-clip", attrs, children: children)
+        }
+        /// A multicam clip (one piece of `splittingMulticam`): an `mc-clip` of the `multicam` media holding every angle
+        /// as an `mc-angle` storyline in multicam time, with `mc-source`s for its picture and sound angles.
+        var multicams: [String: (ref: String, ids: [String: String])] = [:]
+        func mcElement(_ clip: Clip, _ seq: NestedSequence, _ setup: MulticamSetup, track: Track, lane: Int?, offset: RationalTime, frames: Int, scope: Project) -> XMLElem {
+            let known: (ref: String, ids: [String: String])
+            if let k = multicams[seq.id] {
+                known = k
+            } else {
+                var ids: [String: String] = [:]
+                var angles: [XMLElem] = []
+                for (n, a) in setup.angles.enumerated() {
+                    guard var t = seq.tracks.first(where: { $0.id == a.track }) else { continue }
+                    let angleID = "\(seq.id)-\(n + 1)"
+                    ids[a.name] = angleID
+                    t.kind = .video
+                    let body = sequenceElement(scope.inside(NestedSequence(id: seq.id, name: a.name, tracks: [t])), tcStart: 0, top: false)
+                    angles.append(XMLElem("mc-angle", [("name", a.name), ("angleID", angleID)], children: body.children.first?.children ?? []))
+                }
+                let ref = makeId()
+                resources.append(XMLElem("media", [("id", ref), ("name", seq.name)], children: [
+                    XMLElem("multicam", [("format", sequenceFormat), ("tcStart", "0s"), ("tcFormat", canvas.isDropFrame ? "DF" : "NDF")], children: angles),
+                ]))
+                known = (ref, ids)
+                multicams[seq.id] = known
+            }
+            let audioOnly = track.kind == .audio
+            let shown = scope.visibleAngleRanges(clip).first
+            let picture = shown?.angle ?? setup.videoAngles.first?.name ?? ""
+            let sound = shown?.audio ?? setup.audio
+            var attrs: [(String, String)] = [("ref", known.ref)]
+            if let lane { attrs.append(("lane", "\(lane)")) }
+            attrs += [("offset", offset.fcp), ("name", clip.name ?? seq.name), ("start", grid.fcp(grid.frames(clip.sourceIn))), ("duration", grid.fcp(frames))]
+            if audioOnly { attrs.append(("srcEnable", "audio")) }
+            if audioOnly ? track.muted : track.hidden { attrs.append(("enabled", "0")) }
+            var children: [XMLElem] = []
+            if !audioOnly, let n = note(clip) { children.append(n) }
+            children += volumeChildren(clip, track: track, start: RationalTime(frames: grid.frames(clip.sourceIn), grid), scope: scope)
+            var sources: [XMLElem] = []
+            if !audioOnly, let id = known.ids[picture] {
+                sources.append(XMLElem("mc-source", [("angleID", id), ("srcEnable", sound.contains(picture) ? "all" : "video")], children: pictureChildren(clip)))
+            }
+            for name in sound where audioOnly || name != picture {
+                if let id = known.ids[name] { sources.append(XMLElem("mc-source", [("angleID", id), ("srcEnable", "audio")])) }
+            }
+            return XMLElem("mc-clip", attrs, children: children + sources)
         }
 
         struct SpineItem {
@@ -888,7 +940,8 @@ extension Project {
                 var e = item.elem
                 e.children += item.anchored.sorted { ($0.offset, $0.lane) < ($1.offset, $1.lane) }.map(\.elem)
                 e.children += item.markers
-                e.children = e.children.filter { $0.name != "metadata" } + e.children.filter { $0.name == "metadata" }
+                let last = ["audio-channel-source", "metadata"]
+                e.children = e.children.filter { !last.contains($0.name) } + last.flatMap { n in e.children.filter { $0.name == n } }
                 // A transition sits between the two spine items it joins, overlapping both; from or to nothing, beside a gap.
                 let before = k > 0 ? spine[k - 1].clipId : nil, after = k + 1 < spine.count ? spine[k + 1].clipId : nil
                 if let id = item.clipId, before == nil { spineElems += transitions(from: nil, to: id) }

@@ -330,4 +330,89 @@ extension Project {
         p.sequences.removeAll { $0.multicam != nil && !used.contains($0.id) }
         return p
     }
+
+    /// The project with every multicam clip cut into one clip per angle switch, each playing one picture angle and
+    /// its sound from the start, as FCPXML (`mc-clip`) and FCP7 XML (`multiclip`) write them. The first piece keeps
+    /// the clip's id and fades in, the last its fade out and the transitions from it.
+    public func splittingMulticam() -> Project {
+        guard sequences.contains(where: { $0.multicam != nil }) else { return self }
+        var p = self
+        func split(_ tracks: inout [Track], _ transitions: inout [Transition]) {
+            for t in tracks.indices {
+                var out: [Clip] = []
+                for c in tracks[t].clips {
+                    guard multicamSetup(c) != nil else { out.append(c); continue }
+                    let ranges = visibleAngleRanges(c)
+                    for (k, r) in ranges.enumerated() {
+                        var piece = c
+                        if r.range.start > piece.start + eps { piece = Project.trimmedLeft(piece, to: r.range.start) }
+                        if r.range.end < piece.end - eps { piece = Project.trimmedRight(piece, to: r.range.end) }
+                        if k > 0 {
+                            piece.id = "\(c.id)~\(k)"
+                            piece.fadeIn = 0
+                            piece.audioFadeIn = 0
+                        }
+                        if k < ranges.count - 1 {
+                            piece.fadeOut = 0
+                            piece.audioFadeOut = 0
+                        }
+                        piece.multicam = MulticamSwitch(cuts: [AngleCut(at: 0, angle: r.angle)], audio: r.audio)
+                        out.append(piece)
+                    }
+                    if ranges.count > 1 {
+                        for i in transitions.indices where transitions[i].from == c.id { transitions[i].from = "\(c.id)~\(ranges.count - 1)" }
+                    }
+                    if ranges.isEmpty { out.append(c) }
+                }
+                tracks[t].clips = out
+            }
+        }
+        split(&p.tracks, &p.transitions)
+        for s in p.sequences.indices where p.sequences[s].multicam == nil {
+            var seq = p.sequences[s]
+            split(&seq.tracks, &seq.transitions)
+            p.sequences[s] = seq
+        }
+        return p
+    }
+
+    /// Joins butting pieces of one multicam clip, read from formats that write a clip per angle switch, back into
+    /// one clip whose switch list has a cut where each piece starts. Each piece carries its picture angle as its
+    /// first cut and its sound as its switch's `audio`.
+    mutating func joinMulticamPieces() {
+        let half = canvas.frameDuration / 2
+        let all = sequences
+        func join(_ tracks: inout [Track], _ transitions: inout [Transition]) {
+            for t in tracks.indices {
+                var out: [Clip] = []
+                for c in tracks[t].clips.sorted(by: { $0.start < $1.start }) {
+                    if var a = out.last, a.kind == .sequence, c.kind == .sequence, a.mediaId == c.mediaId,
+                       let id = c.mediaId, all.first(where: { $0.id == id })?.multicam != nil, let sw = a.multicam, let next = c.multicam,
+                       abs(a.end - c.start) < half, abs(a.sourceIn + a.duration - c.sourceIn) < half, a.speed == 1, c.speed == 1,
+                       !transitions.contains(where: { $0.from == a.id && $0.to == c.id }) {
+                        var cuts = sw.cuts
+                        if let n = next.cuts.first {
+                            let sound = n.audio ?? next.audio
+                            cuts.append(AngleCut(at: c.sourceIn, angle: n.angle, audio: sound == sw.audio ? nil : sound ?? []))
+                        }
+                        a.duration = c.end - a.start
+                        a.fadeOut = c.fadeOut
+                        a.audioFadeOut = c.audioFadeOut
+                        a.multicam = Project.simplified(MulticamSwitch(cuts: cuts, audio: sw.audio, audioFollowsVideo: sw.audioFollowsVideo))
+                        out[out.count - 1] = a
+                        for i in transitions.indices where transitions[i].from == c.id { transitions[i].from = a.id }
+                        continue
+                    }
+                    out.append(c)
+                }
+                tracks[t].clips = out
+            }
+        }
+        join(&tracks, &transitions)
+        for s in sequences.indices {
+            var seq = sequences[s]
+            join(&seq.tracks, &seq.transitions)
+            sequences[s] = seq
+        }
+    }
 }
