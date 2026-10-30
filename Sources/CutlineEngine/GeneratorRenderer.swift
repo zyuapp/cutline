@@ -87,6 +87,8 @@ public enum GeneratorRenderer {
         case "counter": d.counter()
         case "gradient": d.gradient()
         case "grid_overlay": d.grid()
+        case "text.path": PathText.drawPath(v, ctx: ctx, W: CGFloat(w), H: CGFloat(h))
+        case "text.extruded": PathText.drawExtruded(v, ctx: ctx, W: CGFloat(w), H: CGFloat(h))
         case "shape":
             guard let items = try? ShapeLayers.parse(v.text("shapes")) else { return nil }
             ShapeRenderer.draw(items, ctx: ctx, W: CGFloat(w), H: CGFloat(h)) { v.map[$0] }

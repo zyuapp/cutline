@@ -45,7 +45,7 @@ public enum EffectCatalog {
         ParamSpec("node_opacity", .number, .number(1), min: 0, max: 1, "Strength of the whole node: fades its result into its input (for layers, the layer's opacity)"),
     ]
 
-    static let limited: [String: EffectType] = Dictionary(uniqueKeysWithValues: all.filter { ["blur", "color", "stylize", "distort"].contains($0.category) && $0.id != "distort.stabilize" && $0.id != "distort.corner_pin" }.map { t in
+    static let limited: [String: EffectType] = Dictionary(uniqueKeysWithValues: all.filter { ["blur", "color", "stylize", "distort"].contains($0.category) && !["distort.stabilize", "distort.corner_pin", "distort.lens", "distort.chromatic_aberration"].contains($0.id) }.map { t in
         let nodal = !["stylize.drop_shadow", "stylize.border"].contains(t.id)
         return (t.id, EffectType(id: t.id, category: t.category, summary: t.summary, params: t.params + limitSpecs + (nodal ? nodeSpecs : [])))
     })
@@ -375,13 +375,13 @@ public enum EffectCatalog {
         EffectType(id: "audio.pitch", category: "audio", summary: "Shifts pitch without changing speed", params: [
             num("semitones", 0, -24, 24, "semitones", "Pitch change"),
         ]),
-    ]
+    ] + lensEffects + [rollingShutterEffect]
 
     static let byId: [String: EffectType] = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
 
     /// The base for effect ids: "blur.gaussian" → "blur", "stylize.drop_shadow" → "shadow".
     public static func shortName(_ type: String) -> String {
-        let overrides = ["blur.gaussian": "blur", "color.adjust": "grade", "color.monochrome": "mono", "color.grade": "wheels", "video.remove_object": "removal"]
+        let overrides = ["blur.gaussian": "blur", "color.adjust": "grade", "color.monochrome": "mono", "color.grade": "wheels", "video.remove_object": "removal", "color.vignette_correct": "devignette", "distort.chromatic_aberration": "fringe", "video.rolling_shutter": "shutter"]
         if let o = overrides[type] { return o }
         if ProAudioCatalog.isPlugin(type) {
             let parts = type.split(separator: ".")
@@ -399,6 +399,7 @@ public enum EffectCatalog {
             "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask", "mask.person": "person mask", "mask.subject": "subject mask", "key.chroma": "chroma key",
             "distort.bulge": "bulge", "distort.twirl": "twirl",
             "mask.object": "object mask", "video.denoise": "noise reduction", "video.remove_object": "object removal",
+            "distort.lens": "lens correction", "distort.chromatic_aberration": "chromatic aberration", "color.vignette_correct": "vignette correction", "video.rolling_shutter": "rolling shutter repair",
         ]
         return titles[type] ?? shortName(type)
     }

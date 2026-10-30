@@ -310,6 +310,17 @@ extension Toolbox {
             .init("clean_plate", .string, "Image of the background without the object"),
             .init("clean_plate_at", .time, "Or a timeline time where the background shows"),
         ]),
+        RecipeSpec(name: "track_mask", group: "Finishing", summary: "Tracked roto: makes a mask.shape follow the footage by keyframing its points (fx.<id>.points) from the clip's source in and out. planar: the homography of the flat surface the shape lies on (a screen, sign, card; perspective included), from the shape's bounding box or corners; points: each control point tracked on its own; translate: the shape moves with its tracked bounding box. refine snaps every point to the nearest edge of Apple's subject or person matte (magnetic roto). Check with timeline_frames view:\"matte\".", args: [
+            .init("clip", .string, "Video clip with the mask.shape"),
+            .init("effect", .string, "The mask.shape effect id; default the clip's first"),
+            .init("mode", .string, "planar (default), points or translate"),
+            .init("at", .time, "Timeline time where the shape's points are right, default the clip's start"),
+            .init("track", .string, "Use an existing media_track track (\"track:<id>\"; surface tracks drive planar, box tracks translate) instead of tracking now"),
+            .init("corners", .any, "planar: the surface's [[x,y]×4] TL, TR, BR, BL in the clip's frame at at, when the shape isn't its outline"),
+            .init("refine", .string, "Snap points to matte edges: subject, person or none (default)"),
+            .init("snap", .number, "Reach of refine, frame heights, default 0.02"),
+            .init("size", .number, "points: tracked patch side, frame heights, default 0.08"),
+        ]),
     ]
 
     static var recipeNames: [String] { recipes.map(\.name) }
