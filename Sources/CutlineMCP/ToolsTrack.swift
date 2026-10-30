@@ -9,6 +9,7 @@ extension Toolbox {
             "at": Schema.time("Source time where the box is given"),
             "box": ["type": "object", "description": "{x, y, width, height} as fractions of the frame, top-left origin"],
             "face": Schema.integer("Use this face track's box at the given time instead of box"),
+            "corners": ["type": "array", "items": ["type": "array", "items": ["type": "number"]], "description": "Track a flat surface (screen, sign, wall) instead of a box: its four corners [[x,y] top-left, top-right, bottom-right, bottom-left] at `at`, as frame fractions. recipe follow then corner-pins a clip onto it, perspective included"],
             "end": Schema.time("Track until this source time (earlier than at tracks backwards)"),
             "label": Schema.string("What is being tracked, e.g. \"red car\""),
             "list": Schema.bool("List the media's tracks"),
@@ -22,6 +23,22 @@ extension Toolbox {
                 return .text(tracks.isEmpty ? "No tracks in \(id)." : tracks.map { Toolbox.describeTrack($0) }.joined(separator: "\n"))
             }
             let at = try args.sourceTime("at")
+            if let list = args.raw["corners"]?.array {
+                let pts = list.compactMap { $0.array.flatMap { xy in xy.count == 2 ? xy.compactMap(\.double) : nil } }.filter { $0.count == 2 }
+                guard pts.count == 4 else { throw EditError("corners is four [x, y] pairs: top-left, top-right, bottom-right, bottom-left") }
+                var end = try args.optSourceTime("end")
+                if end == nil {
+                    let shotEnd = b.analysis(ShotAnalysis.self, id, "shots")?.shot(at: at)?.end ?? b.visualAnalysis(id).flatMap { v in ([m.duration] + v.sceneCuts).filter { $0 > at }.min() }
+                    end = min(m.duration, shotEnd ?? at + 10)
+                }
+                let samples = try await PlanarTracker.track(media: m.url, from: at, to: end!, corners: pts.map { SIMD2($0[0], $0[1]) }, fps: min(30, m.fps))
+                var n = tracks.count + 1
+                while tracks.contains(where: { $0.id == "trk\(n)" }) { n += 1 }
+                let track = ObjectTrack(id: "trk\(n)", mediaId: id, label: args.optString("label") ?? "surface", samples: samples)
+                tracks.append(track)
+                try b.saveAnalysis(tracks, id, "tracks")
+                return .text(Toolbox.describeTrack(track) + "\nSurface track: corner-pin a clip onto it with recipe follow {clip, target: \"track:\(track.id)\"}; its box also works as bind source track:\(track.id).x|y|width|height.")
+            }
             var box: NormRect
             if let f = args.optInt("face") {
                 guard let shots = b.analysis(ShotAnalysis.self, id, "shots"), let face = shots.faces.first(where: { $0.id == f }),

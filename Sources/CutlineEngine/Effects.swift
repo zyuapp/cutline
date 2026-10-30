@@ -158,10 +158,11 @@ enum EffectRenderer {
             return ChromaKey.key(img, color: color, tolerance: Double(n("tolerance")), softness: Double(n("softness")), spill: Double(n("spill")), edgeFeather: n("feather") * ctx.unit).cropped(to: e)
         case "distort.corner_pin":
             func pt(_ x: String, _ y: String) -> CIVector { CIVector(x: e.minX + n(x) * e.width, y: e.maxY - n(y) * e.height) }
+            // Keep the frame's extent so placing the layer doesn't recenter the pinned quad.
             return img.applyingFilter("CIPerspectiveTransform", parameters: [
                 "inputTopLeft": pt("tl_x", "tl_y"), "inputTopRight": pt("tr_x", "tr_y"),
                 "inputBottomRight": pt("br_x", "br_y"), "inputBottomLeft": pt("bl_x", "bl_y"),
-            ])
+            ]).composited(over: CIImage(color: .clear).cropped(to: e)).cropped(to: e)
         case "stylize.glitch":
             return TransitionRenderer.glitch(img, amount: Double(n("amount")), frame: Int((ctx.time * 30).rounded()), e)
         case "color.grade", "color.wheels", "color.curves", "color.hsl", "color.look", "color.lut", "color.cdl":

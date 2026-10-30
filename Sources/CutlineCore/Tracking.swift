@@ -7,6 +7,8 @@ public struct TrackSample: Codable, Equatable, Sendable {
     public var box: NormRect
     /// Tracker confidence, 0…1.
     public var confidence: Double
+    /// For surface tracks: tl, tr, br, bl corners as x, y pairs (frame fractions, top-left origin).
+    public var corners: [Double]?
 
     public init(t: Seconds, box: NormRect, confidence: Double) {
         self.t = t

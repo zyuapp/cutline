@@ -312,6 +312,12 @@ extension Toolbox {
             let id = try a.string("clip")
             let target = try a.string("target")
             guard let c = current.clip(id) else { throw EditError("No clip \(id)") }
+            if target.hasPrefix("track:"), let found = current.media.lazy.compactMap({ m in (b.analysis([ObjectTrack].self, m.id, "tracks") ?? []).first { $0.id == String(target.dropFirst(6)) } }).first,
+               found.samples.contains(where: { $0.corners != nil }) {
+                return try runEdit("Pin \(Toolbox.clipName(id, current)) to \(found.label)", dry: dry) { p in
+                    try Toolbox.pin(&p, clipId: id, corners: found.samples, mediaId: found.mediaId)
+                }
+            }
             let text = c.kind == .text
             let dx = a.optDouble("offset_x") ?? 0, dy = a.optDouble("offset_y") ?? 0
             let smooth = JSON.number(a.optDouble("smooth") ?? 0.2)
