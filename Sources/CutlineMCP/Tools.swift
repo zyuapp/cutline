@@ -62,6 +62,7 @@ final class Toolbox {
         registerBatchTool()
         registerReviewTools()
         registerCaptionTools()
+        registerBinTools()
     }
 
     func add(_ tool: Tool) {

@@ -146,6 +146,10 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     public var log: LogProfile?
     /// Whether log code values were recorded in legal (video) or full range.
     public var signalRange: SignalRange?
+    /// Folder in the media browser, "/"-separated, e.g. "Interviews/Day 1".
+    public var bin: String?
+    /// Free-form columns such as scene, take, camera, angle, notes.
+    public var metadata: [String: String]?
 
     public init(id: String, path: String, name: String, duration: Seconds, width: Int, height: Int, fps: Double, hasVideo: Bool, hasAudio: Bool, isImage: Bool = false) {
         self.id = id
