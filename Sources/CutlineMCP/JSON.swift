@@ -123,10 +123,20 @@ public struct Args {
         return try Args.parseTime(v, name: k)
     }
 
+    /// The anchor resolvers of the toolbox whose call is running, so concurrent toolboxes don't see each other's projects.
+    @TaskLocal static var resolvers: AnchorResolvers?
+    static let fallbackResolvers = AnchorResolvers()
+
     /// Resolves anchors such as "talk.w12" or "clip_x.end" in timeline time; set per tool call.
-    nonisolated(unsafe) static var timelineResolver: ((String) throws -> Seconds)?
+    static var timelineResolver: ((String) throws -> Seconds)? {
+        get { (resolvers ?? fallbackResolvers).timeline }
+        set { (resolvers ?? fallbackResolvers).timeline = newValue }
+    }
     /// Resolves word anchors to source time, for arguments that are positions in a media file.
-    nonisolated(unsafe) static var sourceResolver: ((String) throws -> Seconds)?
+    static var sourceResolver: ((String) throws -> Seconds)? {
+        get { (resolvers ?? fallbackResolvers).source }
+        set { (resolvers ?? fallbackResolvers).source = newValue }
+    }
 
     static func parseTime(_ v: JSON, name: String) throws -> Seconds {
         if case .number(let n) = v { return n }
@@ -234,4 +244,18 @@ enum Schema {
     static func array(_ items: JSON, _ d: String) -> JSON { ["type": "array", "items": items, "description": .string(d)] }
     static func strings(_ d: String) -> JSON { array(["type": "string"], d) }
     static func numbers(_ d: String) -> JSON { array(["type": "number"], d) }
+}
+
+public final class AnchorResolvers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _timeline: ((String) throws -> Seconds)?
+    private var _source: ((String) throws -> Seconds)?
+    var timeline: ((String) throws -> Seconds)? {
+        get { lock.withLock { _timeline } }
+        set { lock.withLock { _timeline = newValue } }
+    }
+    var source: ((String) throws -> Seconds)? {
+        get { lock.withLock { _source } }
+        set { lock.withLock { _source = newValue } }
+    }
 }

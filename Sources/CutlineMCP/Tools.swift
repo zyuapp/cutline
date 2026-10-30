@@ -37,6 +37,7 @@ struct EditTool {
 
 final class Toolbox {
     let session = Session()
+    let resolverBox = AnchorResolvers()
     private(set) var tools: [String: Tool] = [:]
     private(set) var order: [String] = []
     private(set) var edits: [String: EditTool] = [:]
@@ -124,6 +125,10 @@ final class Toolbox {
     var definitions: [JSON] { order.compactMap { tools[$0].map(Toolbox.listing) } }
 
     func call(_ name: String, _ args: JSON?) async -> ToolResult {
+        await Args.$resolvers.withValue(Args.resolvers ?? resolverBox) { await callResolved(name, args) }
+    }
+
+    private func callResolved(_ name: String, _ args: JSON?) async -> ToolResult {
         guard let tool = tools[name] else {
             var r = ToolResult.text("Unknown tool \(name)")
             r.isError = true
