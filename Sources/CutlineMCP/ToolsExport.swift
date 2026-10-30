@@ -133,6 +133,10 @@ extension Toolbox {
             let base = url.deletingPathExtension()
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let transcripts = b.transcripts(for: p)
+            if args.bool("subtitle_speakers", default: false) {
+                let spoken = Set(p.timelineWords(transcripts: transcripts).compactMap { p.clip($0.clipId)?.mediaId })
+                report += try await analysisWarnings(spoken.sorted().map { AnalysisNeed(mediaId: $0, feature: .speakers, without: "its subtitle lines aren't colored or named by speaker") }, wait: 0)
+            }
 
             let subs = args.optString("subtitles") ?? "none"
             var cues: [TimedText] = []

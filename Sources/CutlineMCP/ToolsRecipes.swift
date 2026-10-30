@@ -7,16 +7,6 @@ extension Toolbox {
     func moreRecipes(_ name: String, _ a: Args, dry: Bool) async throws -> ToolResult {
         let b = try session.requireBundle()
         let current = try session.project()
-        // Face-driven recipes are only as good as the shot analysis; wait briefly for it, then say if it's still missing.
-        if ["reframe", "punch_in", "follow"].contains(name) {
-            let used = Set(current.tracks.flatMap(\.clips).compactMap(\.mediaId))
-            if session.jobs.active.contains(where: { used.contains($0.mediaId) && $0.features.contains("shots") }) {
-                await session.jobs.wait(timeout: 240)
-            }
-            if let job = session.jobs.active.first(where: { used.contains($0.mediaId) && $0.features.contains("shots") }) {
-                throw EditError("Shot and face analysis of \(job.mediaId) is still running (\(Int(job.progress * 100))%); call analysis_read wait: 300, then run \(name) again")
-            }
-        }
         switch name {
         case "room_tone", "fill_gaps":
             let mid = try a.string("media")

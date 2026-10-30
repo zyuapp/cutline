@@ -162,8 +162,8 @@ extension Toolbox {
         ], hide: ["subframe"]),
         "trim": ToolBrief(text: "Trim an edit: plain, ripple, roll, slip or slide; part audio moves only the sound edge (J/L cut). Give to or by.", args: [
             "clip_id": "", "mode": "Default plain", "edge": "Default end", "to": "Timeline time or anchor for the edge",
-            "by": "Seconds, + later (source seconds for slip)", "part": "", "all_tracks": "Ripple every track", "subframe": "Off the frame grid",
-        ]),
+            "by": "Seconds, + later (source seconds for slip)", "part": "", "all_tracks": "Ripple every track",
+        ], hide: ["subframe"]),
         "project_patch": ToolBrief(text: "Last resort: RFC 6902 JSON Patch on project.json (project_status detail=json), validated, one undo step.", args: [
             "ops": "[{op, path, value?, from?}]",
         ]),
@@ -198,7 +198,7 @@ extension Toolbox {
             "what": "sound, picture, text, scopes, compare; default the first three", "start": "", "end": "", "at": "For scopes",
             "tracks": "Each track's sound too", "platform": "Text against its UI-free area", "reference": "For compare: clip id or time",
         ]),
-        "recipe": ToolBrief(text: recipeDescription, args: ["name": "", "args": ""]),
+        "recipe": ToolBrief(text: recipeDescription, args: ["name": "", "args": "", "wait": "Seconds for needed analysis"]),
         "batch": ToolBrief(text: "Run edit tools in order as ONE undo step; all or nothing. as:\"x\" names a result for \"$x\" later.", args: [
             "operations": "[{tool, args, as}]", "operations[].tool": "Edit tool", "operations[].args": "", "operations[].as": "",
             "label": "History label", "if_history": "Only if the current entry is this id", "verify": "Timeline times to render after",
