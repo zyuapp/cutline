@@ -50,6 +50,10 @@ public enum MediaProbe {
             media.timecodeStart = tc.seconds
             media.reel = tc.reel
         }
+        if let a = audioTracks.first, let fd = try? await a.load(.formatDescriptions).first,
+           let rate = CMAudioFormatDescriptionGetStreamBasicDescription(fd)?.pointee.mSampleRate, rate > 0 {
+            media.sampleRate = rate
+        }
         return media
     }
 

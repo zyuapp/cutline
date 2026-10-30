@@ -33,7 +33,20 @@ struct FrameGrid: Equatable {
 
 // MARK: Shared
 
+extension Canvas {
+    /// Frames from midnight to the first timeline frame, from `startTimecode`.
+    var startFrame: Int { timecodeFormat.frames(startTimecode) ?? 0 }
+
+    /// The `timecodeStart` an importer keeps for a program starting `frames` from midnight: nil for the default.
+    func timecodeStart(frames: Int) -> String? {
+        let label = timecodeFormat.string(frames)
+        return timecodeFormat.frames(TimecodeFormat.defaultStart) == frames ? nil : label
+    }
+}
+
 extension Project {
+    var startFrame: Int { canvas.startFrame }
+
     /// Gain a clip's sound is heard at, `local` seconds from its start: its level or volume animation, the
     /// track's fader and, with `master`, the master gain.
     func heardGain(_ clip: Clip, track: Track, at local: Seconds, master: Bool = true) -> Double {
@@ -89,7 +102,9 @@ extension Project {
     /// speed is a LinearTimeWarp with `source_range` duration in timeline frames. Sound (embedded and audio
     /// tracks) spans each clip's audio range, so split edits read as offset audio, with an `AudioLevel` effect
     /// holding the heard level (`gain_db`, `keyframes`, fades; faders and master folded in). Clips carry a `cdl`
-    /// like the CMX adapter's and Cutline metadata with the transform, effects, animation and audio settings.
+    /// like the CMX adapter's, a LUT's .cube path as `lut.file`, and Cutline metadata with the transform, effects,
+    /// animation and audio settings. Sequence clips are Stacks in their track holding the sequence's tracks, with
+    /// `source_range` the part played. `global_start_time` is the canvas's start timecode.
     public func otio() throws -> Data {
         let grid = FrameGrid(fps: canvas.fps)
         let rate = canvas.fps > 0 ? canvas.fps : 30
@@ -126,8 +141,8 @@ extension Project {
         }
         /// The level a clip is heard at, track fader and master gain folded in, for readers that don't know Cutline's metadata.
         /// Times are seconds from the item's start, which is `itemStart` seconds from the clip's.
-        func audioLevel(_ clip: Clip, track: Track, itemStart: Seconds) -> [String: Any] {
-            let level = bakedLevel(clip, track: track, grid: grid)
+        func audioLevel(_ clip: Clip, track: Track, itemStart: Seconds, scope: Project) -> [String: Any] {
+            let level = scope.bakedLevel(clip, track: track, grid: grid)
             func db(_ g: Double) -> Double { g <= 1e-5 ? -96 : (2000 * log10(g)).rounded() / 100 }
             var md: [String: Any] = ["gain_db": track.muted ? -96 : db(level.gain)]
             if !level.keys.isEmpty, !track.muted { md["keyframes"] = level.keys.map { ["time": $0.t - itemStart, "gain_db": db($0.gain)] } }
@@ -144,7 +159,7 @@ extension Project {
                     "available_range": available, "available_image_bounds": NSNull(), "metadata": [String: Any]()]
         }
         /// `sound` is the clip as heard: from its audio source range over its audio range, with its level.
-        func clipItem(_ clip: Clip, track: Track, frames: Int, sound: Bool) -> [String: Any] {
+        func clipItem(_ clip: Clip, track: Track, frames: Int, sound: Bool, scope: Project) -> [String: Any] {
             let asset = clip.mediaId.flatMap(mediaAsset)
             var effects: [Any] = []
             if abs(clip.speed - 1) > 1e-9 {
@@ -152,16 +167,27 @@ extension Project {
                                 "time_scalar": clip.speed, "metadata": [String: Any]()] as [String: Any])
             }
             let audible = asset.map { $0.hasAudio && !$0.isImage } ?? false
-            if sound, audible { effects.append(audioLevel(clip, track: track, itemStart: -clip.audioLead)) }
+            if sound, audible { effects.append(audioLevel(clip, track: track, itemStart: -clip.audioLead, scope: scope)) }
             var metadata: [String: Any] = ["cutline": summary(clip)]
             if !sound, let cdl = clip.cdl { metadata["cdl"] = cdlMetadata(cdl) }
+            if !sound, let lut = clip.lutFiles.first { metadata["lut"] = ["file": lut] }
             let sourceIn = sound ? clip.audioSourceRange.start : clip.sourceIn
             return ["OTIO_SCHEMA": "Clip.2", "name": clip.name ?? asset?.name ?? clip.id,
                     "source_range": range(grid.frames(sourceIn), frames),
                     "media_references": ["DEFAULT_MEDIA": reference(asset)], "active_media_reference_key": "DEFAULT_MEDIA",
                     "effects": effects, "markers": [Any](), "metadata": metadata, "enabled": true]
         }
-        func otioTrack(_ track: Track, name: String, kind: String, embeddedAudio: Bool) -> [String: Any] {
+        /// A sequence clip: a Stack holding the sequence's tracks, over the clip's part of it.
+        func stackItem(_ clip: Clip, _ seq: NestedSequence, frames: Int, scope: Project) -> [String: Any] {
+            var md = summary(clip)
+            md["sequenceId"] = seq.id
+            md["sequenceName"] = seq.name
+            var metadata: [String: Any] = ["cutline": md]
+            if let cdl = clip.cdl { metadata["cdl"] = cdlMetadata(cdl) }
+            return ["OTIO_SCHEMA": "Stack.1", "name": clip.name ?? seq.name, "source_range": range(grid.frames(clip.sourceIn), frames),
+                    "children": otioTracks(scope.inside(seq)), "effects": [Any](), "markers": [Any](), "metadata": metadata, "enabled": true]
+        }
+        func otioTrack(_ track: Track, name: String, kind: String, embeddedAudio: Bool, scope: Project) -> [String: Any] {
             var children: [[String: Any]] = []
             var cursor = 0
             let sound = embeddedAudio || track.kind == .audio
@@ -171,9 +197,11 @@ extension Project {
                 guard e > s else { continue }
                 if s > cursor { children.append(gap(s - cursor)) }
                 let audible = clip.mediaId.flatMap(mediaAsset).map { $0.hasAudio && !$0.isImage } ?? false
-                if clip.kind == .media && (!embeddedAudio || audible) {
-                    children.append(clipItem(clip, track: track, frames: e - s, sound: sound))
-                    if !embeddedAudio, let w = transitionWindows.first(where: { $0.transition.from == clip.id && $0.transition.to != nil && $0.transition.hasVideo }) {
+                if clip.kind == .sequence, !embeddedAudio, let seq = clip.mediaId.flatMap(scope.sequence) {
+                    children.append(stackItem(clip, seq, frames: e - s, scope: scope))
+                } else if clip.kind == .media && (!embeddedAudio || audible) {
+                    children.append(clipItem(clip, track: track, frames: e - s, sound: sound, scope: scope))
+                    if !embeddedAudio, let w = scope.transitionWindows.first(where: { $0.transition.from == clip.id && $0.transition.to != nil && $0.transition.hasVideo }) {
                         children.append(["OTIO_SCHEMA": "Transition.1", "name": w.transition.type, "transition_type": w.transition.type == "dissolve" ? "SMPTE_Dissolve" : "Custom_Transition",
                                          "in_offset": rt(grid.frames(w.head)), "out_offset": rt(grid.frames(w.tail)), "metadata": ["cutline": ["type": w.transition.type]]])
                     }
@@ -196,13 +224,17 @@ extension Project {
                     "markers": [Any](), "metadata": ["cutline": md], "source_range": NSNull(), "enabled": enabled]
         }
 
-        let video = tracks.filter { $0.kind == .video }
-        let embedded = video.filter { t in
-            t.clips.contains { $0.kind == .media && ($0.mediaId.flatMap(mediaAsset).map { $0.hasAudio && !$0.isImage } ?? false) }
+        func otioTracks(_ scope: Project) -> [[String: Any]] {
+            let video = scope.tracks.filter { $0.kind == .video }
+            let embedded = video.filter { t in
+                t.clips.contains { $0.kind == .media && ($0.mediaId.flatMap(mediaAsset).map { $0.hasAudio && !$0.isImage } ?? false) }
+            }
+            var children = video.map { otioTrack($0, name: $0.name, kind: "Video", embeddedAudio: false, scope: scope) }
+            children += embedded.map { otioTrack($0, name: "\($0.name) Audio", kind: "Audio", embeddedAudio: true, scope: scope) }
+            children += scope.tracks.filter { $0.kind == .audio }.map { otioTrack($0, name: $0.name, kind: "Audio", embeddedAudio: false, scope: scope) }
+            return children
         }
-        var children = video.map { otioTrack($0, name: $0.name, kind: "Video", embeddedAudio: false) }
-        children += embedded.map { otioTrack($0, name: "\($0.name) Audio", kind: "Audio", embeddedAudio: true) }
-        children += tracks.filter { $0.kind == .audio }.map { otioTrack($0, name: $0.name, kind: "Audio", embeddedAudio: false) }
+        let children = otioTracks(self)
 
         let markerItems: [[String: Any]] = markers.sorted { $0.time < $1.time }.map {
             ["OTIO_SCHEMA": "Marker.2", "name": $0.label, "color": "RED", "comment": "",
@@ -214,7 +246,7 @@ extension Project {
         if let df = canvas.dropFrame { md["dropFrame"] = df }
         if master.gainDb != 0 { md["masterGainDb"] = master.gainDb }
         let timeline: [String: Any] = [
-            "OTIO_SCHEMA": "Timeline.1", "name": name, "global_start_time": rt(0), "tracks": stack, "metadata": ["cutline": md],
+            "OTIO_SCHEMA": "Timeline.1", "name": name, "global_start_time": rt(startFrame), "tracks": stack, "metadata": ["cutline": md],
         ]
         return try JSONSerialization.data(withJSONObject: timeline, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
     }
@@ -298,9 +330,11 @@ extension Project {
     /// higher video tracks connect at lanes 1, 2, … and audio tracks at lanes -1, -2, …, each attached to
     /// the storyline item under its start. Text clips become Basic Titles; speed becomes a `timeMap`.
     /// Solid and adjustment clips have no FCP equivalent and become gaps on the storyline or are left out above it.
+    /// Sequence clips are compound clips: a `media` resource holding the sequence, played by a `ref-clip`.
     /// Split edits are expanded audio (`audioStart`/`audioDuration`); levels, fades and volume keys are
     /// `adjust-volume` with track faders and master gain folded in; transform, crop, fill and opacity are
-    /// `adjust-*`; the clip's CDL goes in its note as `ASC_SOP … ASC_SAT …`.
+    /// `adjust-*`; the clip's CDL goes in its note as `ASC_SOP … ASC_SAT …`, followed by `; LUT <path>` for each LUT.
+    /// The project's `tcStart` is the canvas's start timecode; assets declare their own audio sample rate.
     public func fcpxml() -> String {
         let grid = FrameGrid(fps: canvas.fps)
         var nextId = 1
@@ -341,15 +375,19 @@ extension Project {
                 attrs.append(("videoSources", "1"))
             }
             attrs.append(("hasAudio", m.hasAudio ? "1" : "0"))
-            if m.hasAudio { attrs += [("audioSources", "1"), ("audioChannels", "2"), ("audioRate", "48000")] }
+            if m.hasAudio {
+                let rate = m.sampleRate.map { Int($0.rounded()) }.flatMap { $0 > 0 ? $0 : nil } ?? 48000
+                attrs += [("audioSources", "1"), ("audioChannels", "2"), ("audioRate", "\(rate)")]
+            }
             resources.append(XMLElem("asset", attrs, children: [XMLElem("media-rep", [("kind", "original-media"), ("src", m.url.absoluteString)])]))
         }
         let titleRef = "r_title"
         let dissolveRef = "r_dissolve"
-        if !transitions.isEmpty {
+        let allTracks = tracks + sequences.flatMap(\.tracks)
+        if !transitions.isEmpty || sequences.contains(where: { !$0.transitions.isEmpty }) {
             resources.append(XMLElem("effect", [("id", dissolveRef), ("name", "Cross Dissolve"), ("uid", "FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265")]))
         }
-        if tracks.contains(where: { $0.kind == .video && $0.clips.contains { $0.kind == .text } }) {
+        if allTracks.contains(where: { $0.kind == .video && $0.clips.contains { $0.kind == .text } }) {
             resources.append(XMLElem("effect", [("id", titleRef), ("name", "Basic Title"),
                                                 ("uid", ".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti")]))
         }
@@ -359,9 +397,9 @@ extension Project {
         let w = Double(canvas.width), h = Double(canvas.height)
         func num(_ v: Double) -> String { CDL.number((v * 10000).rounded() / 10000) }
         /// Level, fades and volume keys; track faders and the master gain are folded in, since Final Cut has neither.
-        func volumeChildren(_ clip: Clip, track: Track, start: Int) -> [XMLElem] {
+        func volumeChildren(_ clip: Clip, track: Track, start: Int, scope: Project) -> [XMLElem] {
             if track.muted && track.kind == .video { return [XMLElem("adjust-volume", [("amount", "-96dB")])] }
-            let level = bakedLevel(clip, track: track, grid: grid)
+            let level = scope.bakedLevel(clip, track: track, grid: grid)
             var kids: [XMLElem] = []
             if clip.audioFadeIn > 0 { kids.append(XMLElem("fadeIn", [("type", "easeIn"), ("duration", grid.fcp(grid.frames(clip.audioFadeIn)))])) }
             if clip.audioFadeOut > 0 { kids.append(XMLElem("fadeOut", [("type", "easeOut"), ("duration", grid.fcp(grid.frames(clip.audioFadeOut)))])) }
@@ -393,11 +431,16 @@ extension Project {
             if t.opacity < 1 - 1e-6 { kids.append(XMLElem("adjust-blend", [("amount", num(t.opacity))])) }
             return kids
         }
+        /// The clip's CDL and LUT files, which Final Cut has no place for.
+        func note(_ clip: Clip) -> XMLElem? {
+            let parts = (clip.cdl.map { [$0.text] } ?? []) + clip.lutFiles.map { "LUT \($0)" }
+            return parts.isEmpty ? nil : XMLElem("note", text: parts.joined(separator: "; "))
+        }
         /// The clip's local start, which is in retimed time when the speed is not 1.
         func localStart(_ clip: Clip) -> Int {
             abs(clip.speed - 1) > 1e-9 && clip.speed > 0 ? grid.frames(clip.sourceIn / clip.speed) : grid.frames(clip.sourceIn)
         }
-        func mediaElement(_ clip: Clip, asset: MediaAsset, track: Track, lane: Int?, offset: Int, frames: Int) -> XMLElem {
+        func mediaElement(_ clip: Clip, asset: MediaAsset, track: Track, lane: Int?, offset: Int, frames: Int, scope: Project) -> XMLElem {
             let audioOnly = track.kind == .audio
             let start = localStart(clip)
             var attrs: [(String, String)] = [("ref", assetIds[asset.id]!)]
@@ -411,7 +454,7 @@ extension Project {
                 attrs += [("audioStart", grid.fcp(start - lead)), ("audioDuration", grid.fcp(frames + lead + lag))]
             }
             var children: [XMLElem] = []
-            if !audioOnly, asset.hasVideo, let cdl = clip.cdl { children.append(XMLElem("note", text: cdl.text)) }
+            if !audioOnly, asset.hasVideo, let n = note(clip) { children.append(n) }
             if abs(clip.speed - 1) > 1e-9, clip.speed > 0, !asset.isImage {
                 let end = start + frames
                 let p = Int((clip.speed * 1000).rounded())
@@ -421,7 +464,7 @@ extension Project {
                 ]))
             }
             if !audioOnly && asset.hasVideo { children += pictureChildren(clip) }
-            if sound { children += volumeChildren(clip, track: track, start: start) }
+            if sound { children += volumeChildren(clip, track: track, start: start, scope: scope) }
             return XMLElem(asset.isImage ? "video" : "asset-clip", attrs, children: children)
         }
         func titleElement(_ clip: Clip, track: Track, lane: Int?, offset: Int, frames: Int) -> XMLElem {
@@ -445,8 +488,33 @@ extension Project {
                 XMLElem("text-style-def", [("id", styleId)], children: [style]),
             ])
         }
+        /// A sequence clip: a `ref-clip` playing the compound clip of its sequence from the clip's offset into it.
+        var compounds: [String: String] = [:]
+        func refElement(_ clip: Clip, _ seq: NestedSequence, track: Track, lane: Int?, offset: Int, frames: Int, scope: Project) -> XMLElem {
+            let ref: String
+            if let known = compounds[seq.id] {
+                ref = known
+            } else {
+                let body = sequenceElement(scope.inside(seq), tcStart: 0, top: false)
+                ref = makeId()
+                resources.append(XMLElem("media", [("id", ref), ("name", seq.name)], children: [body]))
+                compounds[seq.id] = ref
+            }
+            let audioOnly = track.kind == .audio
+            var attrs: [(String, String)] = [("ref", ref)]
+            if let lane { attrs.append(("lane", "\(lane)")) }
+            attrs += [("offset", grid.fcp(offset)), ("name", clip.name ?? seq.name), ("start", grid.fcp(grid.frames(clip.sourceIn))), ("duration", grid.fcp(frames))]
+            if audioOnly { attrs.append(("srcEnable", "audio")) }
+            if audioOnly ? track.muted : track.hidden { attrs.append(("enabled", "0")) }
+            var children: [XMLElem] = []
+            if !audioOnly {
+                if let n = note(clip) { children.append(n) }
+                children += pictureChildren(clip)
+            }
+            children += volumeChildren(clip, track: track, start: grid.frames(clip.sourceIn), scope: scope)
+            return XMLElem("ref-clip", attrs, children: children)
+        }
 
-        // Primary storyline
         struct SpineItem {
             var elem: XMLElem
             var offset: Int
@@ -456,82 +524,96 @@ extension Project {
             var markers: [XMLElem] = []
             var clipId: String?
         }
-        func gapItem(_ offset: Int, _ frames: Int, name: String = "Gap") -> SpineItem {
-            SpineItem(elem: XMLElem("gap", [("name", name), ("offset", grid.fcp(offset)), ("duration", grid.fcp(frames))]), offset: offset, localStart: 0, frames: frames)
-        }
-        let videoTracks = tracks.filter { $0.kind == .video }
-        var spine: [SpineItem] = []
-        var cursor = 0
-        if let primary = videoTracks.first {
-            for clip in primary.clips.sorted(by: { $0.start < $1.start }) {
-                let s = max(grid.frames(clip.start), cursor), e = grid.frames(clip.end)
-                guard e > s else { continue }
-                if s > cursor { spine.append(gapItem(cursor, s - cursor)) }
-                if clip.kind == .media, let asset = clip.mediaId.flatMap(mediaAsset) {
-                    spine.append(SpineItem(elem: mediaElement(clip, asset: asset, track: primary, lane: nil, offset: s, frames: e - s), offset: s, localStart: localStart(clip), frames: e - s, clipId: clip.id))
-                } else if clip.kind == .text {
-                    spine.append(SpineItem(elem: titleElement(clip, track: primary, lane: nil, offset: s, frames: e - s), offset: s, localStart: 0, frames: e - s))
-                } else {
-                    spine.append(gapItem(s, e - s, name: clip.name ?? clip.kind.rawValue.capitalized))
+        /// A sequence whose timeline starts at frame `tcStart`: its lowest video track is the spine, the rest connect to it.
+        func sequenceElement(_ scope: Project, tcStart tc: Int, top: Bool) -> XMLElem {
+            func gapItem(_ offset: Int, _ frames: Int, name: String = "Gap") -> SpineItem {
+                SpineItem(elem: XMLElem("gap", [("name", name), ("offset", grid.fcp(tc + offset)), ("duration", grid.fcp(frames))]), offset: offset, localStart: 0, frames: frames)
+            }
+            func sequenceClip(_ clip: Clip) -> NestedSequence? { clip.kind == .sequence ? clip.mediaId.flatMap(scope.sequence) : nil }
+            let videoTracks = scope.tracks.filter { $0.kind == .video }
+            var spine: [SpineItem] = []
+            var cursor = 0
+            if let primary = videoTracks.first {
+                for clip in primary.clips.sorted(by: { $0.start < $1.start }) {
+                    let s = max(grid.frames(clip.start), cursor), e = grid.frames(clip.end)
+                    guard e > s else { continue }
+                    if s > cursor { spine.append(gapItem(cursor, s - cursor)) }
+                    if clip.kind == .media, let asset = clip.mediaId.flatMap(mediaAsset) {
+                        spine.append(SpineItem(elem: mediaElement(clip, asset: asset, track: primary, lane: nil, offset: tc + s, frames: e - s, scope: scope),
+                                               offset: s, localStart: localStart(clip), frames: e - s, clipId: clip.id))
+                    } else if let seq = sequenceClip(clip) {
+                        spine.append(SpineItem(elem: refElement(clip, seq, track: primary, lane: nil, offset: tc + s, frames: e - s, scope: scope),
+                                               offset: s, localStart: grid.frames(clip.sourceIn), frames: e - s, clipId: clip.id))
+                    } else if clip.kind == .text {
+                        spine.append(SpineItem(elem: titleElement(clip, track: primary, lane: nil, offset: tc + s, frames: e - s), offset: s, localStart: 0, frames: e - s))
+                    } else {
+                        spine.append(gapItem(s, e - s, name: clip.name ?? clip.kind.rawValue.capitalized))
+                    }
+                    cursor = e
                 }
-                cursor = e
             }
-        }
-        let markerEnd = markers.filter { $0.time >= 0 }.map { grid.frames($0.time) + 1 }.max() ?? 0
-        let end = max(grid.frames(duration), markerEnd, cursor, 1)
-        if end > cursor { spine.append(gapItem(cursor, end - cursor)) }
+            let markers = top ? scope.markers.filter { $0.time >= 0 } : []
+            let markerEnd = markers.map { grid.frames($0.time) + 1 }.max() ?? 0
+            let end = max(grid.frames(scope.duration), markerEnd, cursor, 1)
+            if end > cursor { spine.append(gapItem(cursor, end - cursor)) }
 
-        func parent(of frame: Int) -> Int {
-            spine.firstIndex { frame >= $0.offset && frame < $0.offset + $0.frames } ?? (spine.count - 1)
-        }
+            func parent(of frame: Int) -> Int {
+                spine.firstIndex { frame >= $0.offset && frame < $0.offset + $0.frames } ?? (spine.count - 1)
+            }
 
-        // Connected clips
-        let connected: [(track: Track, lane: Int)] =
-            videoTracks.dropFirst().enumerated().map { (track: $0.element, lane: $0.offset + 1) }
-            + tracks.filter { $0.kind == .audio }.enumerated().map { (track: $0.element, lane: -($0.offset + 1)) }
-        for (track, lane) in connected {
-            for clip in track.clips {
-                let s = grid.frames(clip.start), e = grid.frames(clip.end)
-                guard e > s, s >= 0 else { continue }
-                let p = parent(of: s)
-                let offset = spine[p].localStart + (s - spine[p].offset)
-                let elem: XMLElem
-                if clip.kind == .media, let asset = clip.mediaId.flatMap(mediaAsset) {
-                    if track.kind == .audio && !asset.hasAudio { continue }
-                    elem = mediaElement(clip, asset: asset, track: track, lane: lane, offset: offset, frames: e - s)
-                } else if clip.kind == .text, track.kind == .video {
-                    elem = titleElement(clip, track: track, lane: lane, offset: offset, frames: e - s)
-                } else {
-                    continue
+            // Connected clips
+            let connected: [(track: Track, lane: Int)] =
+                videoTracks.dropFirst().enumerated().map { (track: $0.element, lane: $0.offset + 1) }
+                + scope.tracks.filter { $0.kind == .audio }.enumerated().map { (track: $0.element, lane: -($0.offset + 1)) }
+            for (track, lane) in connected {
+                for clip in track.clips {
+                    let s = grid.frames(clip.start), e = grid.frames(clip.end)
+                    guard e > s, s >= 0 else { continue }
+                    let p = parent(of: s)
+                    let offset = spine[p].localStart + (s - spine[p].offset)
+                    let elem: XMLElem
+                    if clip.kind == .media, let asset = clip.mediaId.flatMap(mediaAsset) {
+                        if track.kind == .audio && !asset.hasAudio { continue }
+                        elem = mediaElement(clip, asset: asset, track: track, lane: lane, offset: offset, frames: e - s, scope: scope)
+                    } else if let seq = sequenceClip(clip) {
+                        elem = refElement(clip, seq, track: track, lane: lane, offset: offset, frames: e - s, scope: scope)
+                    } else if clip.kind == .text, track.kind == .video {
+                        elem = titleElement(clip, track: track, lane: lane, offset: offset, frames: e - s)
+                    } else {
+                        continue
+                    }
+                    spine[p].anchored.append((offset, lane, elem))
                 }
-                spine[p].anchored.append((offset, lane, elem))
             }
+
+            // Markers
+            for m in markers.sorted(by: { $0.time < $1.time }) {
+                let f = grid.frames(m.time)
+                let p = parent(of: f)
+                spine[p].markers.append(XMLElem("marker", [("start", grid.fcp(spine[p].localStart + f - spine[p].offset)), ("duration", grid.fcp(1)), ("value", m.label)]))
+            }
+
+            let windows = scope.transitionWindows
+            var spineElems: [XMLElem] = []
+            for item in spine {
+                var e = item.elem
+                e.children += item.anchored.sorted { ($0.offset, $0.lane) < ($1.offset, $1.lane) }.map(\.elem)
+                e.children += item.markers
+                spineElems.append(e)
+                // A transition sits between the two spine clips it joins, overlapping both.
+                if let id = item.clipId, let w = windows.first(where: { $0.transition.from == id && $0.transition.to != nil && $0.transition.hasVideo }) {
+                    let name = w.transition.type == "dip" ? "Fade To Color" : "Cross Dissolve"
+                    spineElems.append(XMLElem("transition", [("name", name), ("offset", grid.fcp(tc + grid.frames(w.start))), ("duration", grid.fcp(grid.frames(w.end - w.start)))],
+                                              children: [XMLElem("filter-video", [("ref", dissolveRef), ("name", name)])]))
+                }
+            }
+            return XMLElem("sequence", [
+                ("format", sequenceFormat), ("duration", grid.fcp(end)), ("tcStart", grid.fcp(tc)), ("tcFormat", canvas.isDropFrame ? "DF" : "NDF"),
+                ("audioLayout", "stereo"), ("audioRate", "48k"),
+            ], children: [XMLElem("spine", children: spineElems)])
         }
 
-        // Markers
-        for m in markers.filter({ $0.time >= 0 }).sorted(by: { $0.time < $1.time }) {
-            let f = grid.frames(m.time)
-            let p = parent(of: f)
-            spine[p].markers.append(XMLElem("marker", [("start", grid.fcp(spine[p].localStart + f - spine[p].offset)), ("duration", grid.fcp(1)), ("value", m.label)]))
-        }
-
-        var spineElems: [XMLElem] = []
-        for item in spine {
-            var e = item.elem
-            e.children += item.anchored.sorted { ($0.offset, $0.lane) < ($1.offset, $1.lane) }.map(\.elem)
-            e.children += item.markers
-            spineElems.append(e)
-            // A transition sits between the two spine clips it joins, overlapping both.
-            if let id = item.clipId, let w = transitionWindows.first(where: { $0.transition.from == id && $0.transition.to != nil && $0.transition.hasVideo }) {
-                let name = w.transition.type == "dip" ? "Fade To Color" : "Cross Dissolve"
-                spineElems.append(XMLElem("transition", [("name", name), ("offset", grid.fcp(grid.frames(w.start))), ("duration", grid.fcp(grid.frames(w.end - w.start)))],
-                                          children: [XMLElem("filter-video", [("ref", dissolveRef), ("name", name)])]))
-            }
-        }
-        let sequence = XMLElem("sequence", [
-            ("format", sequenceFormat), ("duration", grid.fcp(end)), ("tcStart", "0s"), ("tcFormat", canvas.isDropFrame ? "DF" : "NDF"),
-            ("audioLayout", "stereo"), ("audioRate", "48k"),
-        ], children: [XMLElem("spine", children: spineElems)])
+        let sequence = sequenceElement(self, tcStart: startFrame, top: true)
         let root = XMLElem("fcpxml", [("version", "1.11")], children: [
             XMLElem("resources", children: resources),
             XMLElem("library", children: [

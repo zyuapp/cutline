@@ -183,7 +183,7 @@ private func value(_ item: [String: Any], _ field: String) -> Double? {
     let (p, _) = editProject()
     let root = try #require(try JSONSerialization.jsonObject(with: p.otio()) as? [String: Any])
     #expect(root["OTIO_SCHEMA"] as? String == "Timeline.1")
-    #expect(dict(root["global_start_time"])["value"] as? Double == 0)
+    #expect(dict(root["global_start_time"])["value"] as? Double == 108_000)
     let stack = dict(root["tracks"])
     #expect(stack["OTIO_SCHEMA"] as? String == "Stack.1")
     let tracks = try #require(stack["children"] as? [[String: Any]])
@@ -264,13 +264,13 @@ private func elements(_ e: XMLElement?) -> [XMLElement] { e?.children?.compactMa
     let project = try #require(try doc.nodes(forXPath: "/fcpxml/library/event/project").first as? XMLElement)
     #expect(attr(project, "name") == "Edit & <Cut>")
     let sequence = try #require(try doc.nodes(forXPath: "/fcpxml/library/event/project/sequence").first as? XMLElement)
-    #expect(attr(sequence, "duration") == "8s")
+    #expect(attr(sequence, "duration") == "8s" && attr(sequence, "tcStart") == "3600s")
     let spine = try #require(elements(sequence).first)
     let items = elements(spine)
     #expect(items.map(\.name) == ["asset-clip", "gap", "asset-clip"])
 
     let c1 = items[0]
-    #expect([attr(c1, "offset"), attr(c1, "start"), attr(c1, "duration")] == ["0s", "2s", "4s"])
+    #expect([attr(c1, "offset"), attr(c1, "start"), attr(c1, "duration")] == ["3600s", "2s", "4s"])
     #expect(attr(c1, "ref") == attr(assets[0], "id"))
     let c1Kids = elements(c1)
     let overlay = try #require(c1Kids.first { attr($0, "lane") == "1" })
@@ -285,7 +285,7 @@ private func elements(_ e: XMLElement?) -> [XMLElement] { e?.children?.compactMa
     #expect(c1Kids.map(\.name) == ["asset-clip", "asset-clip", "marker"])
 
     let gap = items[1]
-    #expect(attr(gap, "offset") == "4s" && attr(gap, "duration") == "1s")
+    #expect(attr(gap, "offset") == "3604s" && attr(gap, "duration") == "1s")
     let t1 = try #require(elements(gap).first { $0.name == "title" })
     #expect(attr(t1, "lane") == "1" && attr(t1, "ref") == "r_title")
     #expect(attr(t1, "offset") == "1/5s" && attr(t1, "duration") == "3/5s")
@@ -299,7 +299,7 @@ private func elements(_ e: XMLElement?) -> [XMLElement] { e?.children?.compactMa
     #expect(attr(elements(gap).first { $0.name == "marker" }, "start") == "1/2s")
 
     let c2 = items[2]
-    #expect([attr(c2, "offset"), attr(c2, "start"), attr(c2, "duration")] == ["5s", "1/2s", "3s"])
+    #expect([attr(c2, "offset"), attr(c2, "start"), attr(c2, "duration")] == ["3605s", "1/2s", "3s"])
     let timepts = try c2.nodes(forXPath: "timeMap/timept").compactMap { $0 as? XMLElement }
     #expect(timepts.map { attr($0, "time") } == ["0s", "7/2s"])
     #expect(timepts.map { attr($0, "value") } == ["0s", "7s"])
@@ -329,5 +329,5 @@ private func elements(_ e: XMLElement?) -> [XMLElement] { e?.children?.compactMa
     let xml = p.fcpxml()
     #expect(xml.contains("frameDuration=\"1001/30000s\""))
     #expect(xml.contains("name=\"FFVideoFormat1080p2997\""))
-    #expect(xml.contains("<gap name=\"Solid\" offset=\"0s\" duration=\"1001/500s\"/>"))
+    #expect(xml.contains("<gap name=\"Solid\" offset=\"8999991/2500s\" duration=\"1001/500s\"/>") && xml.contains("tcStart=\"8999991/2500s\""))
 }

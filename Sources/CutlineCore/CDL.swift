@@ -136,7 +136,46 @@ public struct CDL: Codable, Equatable, Sendable {
         return CDL(slope: SIMD3(repeating: gain - lift), offset: SIMD3(repeating: lift), power: SIMD3(repeating: 1 / max(n("gamma"), 0.01)))
     }
 
-    static let types: Set<String> = ["color.cdl", "color.adjust", "color.grade", "color.look", "color.curves"]
+    /// The CDL of `color.wheels` when it is one: without white balance or shadows/highlights, and with contrast only
+    /// at a neutral gamma. Offset, lift and gain fold into slope `(1 − lift)(1 + gain)` and offset
+    /// `(offset (1 − lift) + lift)(1 + gain)`, gamma is power `2^−gamma`, contrast scales slope and offset around the pivot.
+    static func wheels(_ e: Effect) -> CDL? {
+        let w = ColorMath.Wheels { param(e, $0) }
+        guard w.temperature == 0, w.tint == 0, w.shadows == 0, w.highlights == 0 else { return nil }
+        func d(_ v: SIMD3<Float>) -> SIMD3<Double> { SIMD3(Double(v.x), Double(v.y), Double(v.z)) }
+        let lift = d(w.lift), gain = 1 + d(w.gain), offset = d(w.offset), gamma = d(w.gamma)
+        var c = CDL(slope: (1 - lift) * gain, offset: (offset * (1 - lift) + lift) * gain,
+                    power: SIMD3(pow(2, -gamma.x), pow(2, -gamma.y), pow(2, -gamma.z)), saturation: max(0, 1 + Double(w.saturation)))
+        if w.contrast != 0 {
+            guard c.power == .one else { return nil }
+            let k = 1 + Double(w.contrast), pivot = Double(w.pivot)
+            c.slope *= k
+            c.offset = c.offset * k + pivot * (1 - k)
+        }
+        return c
+    }
+
+    /// A `.cube` file's 3D LUT, sampled trilinearly over its input domain; nil when the file can't be read.
+    static func lut(path: String) -> ColorMath.Transform? {
+        guard !path.isEmpty, let text = try? String(contentsOfFile: path, encoding: .utf8), let cube = try? ColorMath.parseCube(text) else { return nil }
+        let n = cube.size, data = cube.rgba, lo = cube.domainMin, span = cube.domainMax - cube.domainMin
+        func at(_ r: Int, _ g: Int, _ b: Int) -> SIMD3<Float> {
+            let o = ((b * n + g) * n + r) * 4
+            return SIMD3(data[o], data[o + 1], data[o + 2])
+        }
+        func mix(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ t: Float) -> SIMD3<Float> { a + (b - a) * t }
+        return { c in
+            let x = ((c - lo) / span).clamped(lowerBound: .zero, upperBound: .one) * Float(n - 1)
+            let i = SIMD3<Int>(Int(x.x), Int(x.y), Int(x.z))
+            let j = SIMD3<Int>(min(i.x + 1, n - 1), min(i.y + 1, n - 1), min(i.z + 1, n - 1))
+            let f = x - SIMD3(Float(i.x), Float(i.y), Float(i.z))
+            let c00 = mix(at(i.x, i.y, i.z), at(j.x, i.y, i.z), f.x), c10 = mix(at(i.x, j.y, i.z), at(j.x, j.y, i.z), f.x)
+            let c01 = mix(at(i.x, i.y, j.z), at(j.x, i.y, j.z), f.x), c11 = mix(at(i.x, j.y, j.z), at(j.x, j.y, j.z), f.x)
+            return mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z).clamped(lowerBound: .zero, upperBound: .one)
+        }
+    }
+
+    static let types: Set<String> = ["color.cdl", "color.adjust", "color.grade", "color.wheels", "color.look", "color.curves", "color.lut"]
 
     /// The picture transform of one effect `types` holds, or nil when its parameters don't parse.
     static func transform(_ e: Effect) -> ColorMath.Transform? {
@@ -145,6 +184,8 @@ public struct CDL: Codable, Equatable, Sendable {
         switch e.type {
         case "color.cdl": f = CDL(effect: e).transform
         case "color.adjust": f = adjust(e).transform
+        case "color.wheels": f = ColorMath.wheels(ColorMath.Wheels { param(e, $0) })
+        case "color.lut": f = lut(path: e.params["file"]?.string ?? "")
         case "color.grade":
             func tint(_ name: String) -> RGBA? { (e.params[name] ?? EffectCatalog.type(e.type)?.spec(name)?.defaultValue)?.color }
             f = ColorMath.grade(lift: n("lift"), gamma: n("gamma"), gain: n("gain"), shadowsTint: tint("shadows"), shadowsAmount: n("shadows_amount"),
@@ -239,14 +280,14 @@ public struct CDL: Codable, Equatable, Sendable {
 extension Clip {
     /// The clip's primary color correction as an ASC CDL, for interchange; nil when it has none.
     ///
-    /// Enabled, unlimited `color.cdl`, `color.adjust`, `color.grade`, `color.look` and `color.curves` effects count,
-    /// at their static values. A single `color.cdl` or untinted `color.grade` is exact and a single `color.adjust`
-    /// uses `CDL.adjust`'s approximation; anything else (tints, looks, curves, several effects, partial mix) is
-    /// sampled and fitted. HSL, LUT, monochrome and secondary (windowed or qualified) corrections have no CDL.
+    /// Enabled, unlimited `color.cdl`, `color.adjust`, `color.grade`, `color.wheels`, `color.look`, `color.curves` and
+    /// `color.lut` effects count, at their static values. A single `color.cdl`, untinted `color.grade` or `color.wheels`
+    /// without white balance or shadows/highlights is exact, and a single `color.adjust` uses `CDL.adjust`'s
+    /// approximation; anything else (tints, looks, curves, LUTs sampled through their .cube file, several effects,
+    /// partial mix) is sampled and fitted. LUTs whose file can't be read are skipped. HSL, monochrome and secondary
+    /// (windowed or qualified) corrections have no CDL.
     public var cdl: CDL? {
-        let color = effects.filter { e in
-            e.enabled && e.mix > 0 && CDL.types.contains(e.type) && (e.params["limit"]?.string ?? "none") == "none"
-        }
+        let color = primaryColor
         guard !color.isEmpty else { return nil }
         var result: CDL?
         if color.count == 1, color[0].mix >= 1 {
@@ -254,6 +295,7 @@ extension Clip {
             case "color.cdl": result = CDL(effect: color[0])
             case "color.adjust": result = CDL.adjust(color[0])
             case "color.grade": result = CDL.grade(color[0])
+            case "color.wheels": result = CDL.wheels(color[0])
             default: break
             }
         }
@@ -263,5 +305,16 @@ extension Clip {
             result = CDL.fit { c in fs.reduce(c) { $1($0) } }
         }
         return result!.isIdentity ? nil : result
+    }
+
+    var primaryColor: [Effect] {
+        effects.filter { e in
+            e.enabled && e.mix > 0 && CDL.types.contains(e.type) && (e.params["limit"]?.string ?? "none") == "none"
+        }
+    }
+
+    /// The .cube files of the LUTs in the clip's primary correction, in order, for interchange notes.
+    public var lutFiles: [String] {
+        primaryColor.filter { $0.type == "color.lut" }.compactMap { $0.params["file"]?.string }.filter { !$0.isEmpty }
     }
 }

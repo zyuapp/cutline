@@ -167,6 +167,8 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     /// Source timecode of the first frame, in seconds (e.g. 3600 for 01:00:00:00).
     public var timecodeStart: Seconds?
     public var reel: String?
+    /// Audio sample rate in Hz, when known.
+    public var sampleRate: Double?
     /// Keyword ranges, favorites and rejects, in source time.
     public var tags: [MediaTag]?
     /// Camera log encoding, detected at import or set by hand; nil is display-referred video.
