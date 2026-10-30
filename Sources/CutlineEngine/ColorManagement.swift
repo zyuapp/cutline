@@ -131,6 +131,61 @@ public enum ColorManagement {
         return (cube.size, cube.data)
     }
 
+    /// The display encoding a decoded frame's color attachments describe; untagged frames count as Rec. 709.
+    /// Nil for encodings no working space matches (linear, SDR BT.2020, other gammas).
+    public static func sourceSpace(_ pb: CVPixelBuffer) -> WorkingSpace? {
+        let attachment = { (k: CFString) in CVBufferCopyAttachment(pb, k, nil) as? String }
+        let transfer = attachment(kCVImageBufferTransferFunctionKey), primaries = attachment(kCVImageBufferColorPrimariesKey)
+        let s = { (v: CFString) in v as String }
+        if transfer == s(kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ) { return .rec2020_pq }
+        if transfer == s(kCVImageBufferTransferFunction_ITU_R_2100_HLG) { return .rec2020_hlg }
+        let sdr = [kCVImageBufferTransferFunction_ITU_R_709_2, kCVImageBufferTransferFunction_sRGB, kCVImageBufferTransferFunction_SMPTE_240M_1995].map(s)
+        guard transfer == nil || sdr.contains(transfer!) else { return nil }
+        if primaries == nil || [kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferColorPrimaries_SMPTE_C, kCVImageBufferColorPrimaries_EBU_3213].map(s).contains(primaries!) { return .rec709 }
+        return primaries == s(kCVImageBufferColorPrimaries_P3_D65) ? .p3 : nil
+    }
+
+    /// A decoded frame (not camera log) in the working space of a `canvas` timeline; `prepare` sees the decoded
+    /// pixels first (deinterlacing). Frames already in the canvas encoding pass through unchanged; SDR frames on HDR
+    /// and P3 timelines follow `ColorPipeline.displayTransform` (BT.1886, BT.2408 203 cd/m² white in HDR).
+    public static func sourceImage(_ pb: CVPixelBuffer, canvas: WorkingSpace, prepare: (CIImage) -> CIImage = { $0 }) -> CIImage {
+        let from = sourceSpace(pb)
+        if from == canvas { return prepare(CIImage(cvPixelBuffer: pb, options: [.colorSpace: colorSpace(canvas)])) }
+        guard canvas != .rec709, let from else { return prepare(CIImage(cvPixelBuffer: pb)) }
+        if from == .rec709, canvas == .rec2020_pq || canvas == .p3 { return prepare(CIImage(cvPixelBuffer: pb, options: [.colorSpace: bt1886])) }
+        return applyDisplay(prepare(rawImage(pb)), from: from, to: canvas)
+    }
+
+    /// Rec. 709 primaries with the BT.1886 (pure 2.4 gamma) display EOTF. Core Image puts linear 1 at 203 cd/m² in
+    /// PQ output, so SDR frames read in this space land on the BT.2408 display-light mapping. (Its HLG output
+    /// follows a scene-light mapping instead; HLG timelines convert SDR frames with `applyDisplay`.)
+    public static let bt1886: CGColorSpace = {
+        let m = Primaries.rec709.toXYZ
+        let white = m * SIMD3(1, 1, 1)
+        let cols = [m.columns.0, m.columns.1, m.columns.2]
+        let matrix = cols.flatMap { [CGFloat($0.x), CGFloat($0.y), CGFloat($0.z)] }
+        return CGColorSpace(calibratedRGBWhitePoint: [CGFloat(white.x), CGFloat(white.y), CGFloat(white.z)], blackPoint: [0, 0, 0], gamma: [2.4, 2.4, 2.4], matrix: matrix)!
+    }()
+
+    /// A 65³ cube from one display encoding to another (`ColorPipeline.displayTransform` without tone mapping):
+    /// SDR white lands on 203 cd/m² in HDR (BT.2408).
+    public static func sourceCube(from source: WorkingSpace, to target: WorkingSpace) -> (size: Int, data: Data) {
+        let key = "src|\(source.rawValue)|\(target.rawValue)" as NSString
+        if let hit = cubes.object(forKey: key) { return (hit.size, hit.data) }
+        let cube = bake(size: 65, ColorPipeline.displayTransform(from: source, to: target, tone: .none, exposure: 0))
+        cubes.setObject(cube, forKey: key)
+        return (cube.size, cube.data)
+    }
+
+    /// Converts a raw frame (`rawImage(_:)`) encoded for `source` to `target`, returning an image in the working space.
+    public static func applyDisplay(_ raw: CIImage, from source: WorkingSpace, to target: WorkingSpace) -> CIImage {
+        let cube = sourceCube(from: source, to: target)
+        let mapped = raw.applyingFilter("CIColorCubeWithColorSpace", parameters: [
+            "inputCubeDimension": cube.size, "inputCubeData": cube.data, "inputColorSpace": passthroughSpace,
+        ])
+        return mapped.matchedToWorkingSpace(from: colorSpace(target)) ?? mapped
+    }
+
     /// Converts a raw log frame to `target`, returning an image in the working space.
     public static func applyInput(_ raw: CIImage, log: LogProfile, target: WorkingSpace, tone: ToneMap, exposure: Float, recordedIn: SignalRange = .video) -> CIImage {
         let cube = inputCube(log: log, target: target, tone: tone, exposure: exposure, recordedIn: recordedIn)

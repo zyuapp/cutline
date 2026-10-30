@@ -19,22 +19,85 @@ public struct LabeledFrame {
 }
 
 public enum Frames {
-    /// Renders timeline frames through the compositor, exactly as export will.
+    /// Renders timeline frames through the compositor, exactly as export will. HDR timelines come back tone-mapped
+    /// to Rec. 709 (`ColorPipeline.sdrPreview`), so SDR material looks as it does on an SDR timeline.
     public static func timeline(_ built: BuiltTimeline, times: [Seconds], maxSize: CGSize) async throws -> [LabeledFrame] {
+        let frame = built.scene.project.canvas.frameDuration
+        let clampedTimes = times.map { min(max(0, $0), max(0, built.duration - frame)) }
+        let space = built.scene.project.canvas.colorSpace
+        if space.isHDR {
+            var out: [LabeledFrame] = []
+            for t in clampedTimes { out.append(LabeledFrame(time: t, label: timecode(t), image: try await hdrPreview(built, at: t, maxSize: maxSize, space: space))) }
+            return out
+        }
         let gen = AVAssetImageGenerator(asset: built.composition)
         gen.videoComposition = built.videoComposition
         gen.requestedTimeToleranceBefore = .zero
         gen.requestedTimeToleranceAfter = .zero
         gen.maximumSize = maxSize
-        let frame = built.scene.project.canvas.frameDuration
         var out: [LabeledFrame] = []
-        for t in times {
-            let clamped = min(max(0, t), max(0, built.duration - frame))
-            let (img, _) = try await gen.image(at: TimelineBuilder.time(clamped))
-            out.append(LabeledFrame(time: clamped, label: timecode(clamped), image: img))
+        for t in clampedTimes {
+            let (img, _) = try await gen.image(at: TimelineBuilder.time(t))
+            out.append(LabeledFrame(time: t, label: timecode(t), image: img))
         }
         return out
     }
+
+    /// One HDR frame read at half float (8-bit PQ is too coarse for saturated colors) and tone-mapped to Rec. 709.
+    static func hdrPreview(_ built: BuiltTimeline, at t: Seconds, maxSize: CGSize, space: WorkingSpace) async throws -> CGImage {
+        let comp = built.videoComposition.mutableCopy() as! AVMutableVideoComposition
+        let full = comp.renderSize
+        let s = min(1, maxSize.width > 0 ? maxSize.width / full.width : 1, maxSize.height > 0 ? maxSize.height / full.height : 1)
+        comp.renderSize = CGSize(width: max(2, (full.width * s / 2).rounded() * 2), height: max(2, (full.height * s / 2).rounded() * 2))
+        let reader = try AVAssetReader(asset: built.composition)
+        reader.timeRange = CMTimeRange(start: TimelineBuilder.time(t), duration: TimelineBuilder.time(built.scene.project.canvas.frameDuration))
+        let output = AVAssetReaderVideoCompositionOutput(videoTracks: try await built.composition.loadTracks(withMediaType: .video), videoSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf,
+        ])
+        output.videoComposition = comp
+        reader.add(output)
+        guard reader.startReading() else { throw reader.error ?? EditError("Cannot render the frame at \(String(format: "%.2f", t))s") }
+        defer { reader.cancelReading() }
+        guard let sample = output.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sample) else { throw reader.error ?? EditError("No frame at \(String(format: "%.2f", t))s") }
+        guard let img = sdrPreview(pb, from: space) else { throw EditError("Cannot convert the frame at \(String(format: "%.2f", t))s") }
+        return img
+    }
+
+    /// A half-float RGBA frame of code values in `space` as an 8-bit Rec. 709 picture through `ColorPipeline.sdrPreview`.
+    static func sdrPreview(_ pb: CVPixelBuffer, from space: WorkingSpace) -> CGImage? {
+        guard CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_64RGBAHalf else { return nil }
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+        guard let target = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: videoSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
+              let dst = target.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
+        let row = CVPixelBufferGetBytesPerRow(pb)
+        let f = ColorPipeline.sdrPreview(from: space)
+        nonisolated(unsafe) let src = base, d = dst
+        DispatchQueue.concurrentPerform(iterations: min(h, 32)) { k in
+            let chunks = min(h, 32)
+            for y in h * k / chunks..<h * (k + 1) / chunks {
+                let line = (src + y * row).assumingMemoryBound(to: Float16.self)
+                for x in 0..<w {
+                    let v = f(SIMD3(Float(line[x * 4]), Float(line[x * 4 + 1]), Float(line[x * 4 + 2]))) * 255
+                    let o = (y * w + x) * 4
+                    d[o] = UInt8(v.x.rounded())
+                    d[o + 1] = UInt8(v.y.rounded())
+                    d[o + 2] = UInt8(v.z.rounded())
+                    d[o + 3] = 255
+                }
+            }
+        }
+        return target.makeImage()
+    }
+
+    /// The color space AVFoundation gives Rec. 709 frames of SDR timelines, so HDR previews draw the same way.
+    static let videoSpace: CGColorSpace = {
+        let tags = ColorManagement.videoCompositionTags(.rec709)
+        let attachments = [kCVImageBufferColorPrimariesKey: tags.primaries, kCVImageBufferTransferFunctionKey: tags.transfer, kCVImageBufferYCbCrMatrixKey: tags.matrix] as CFDictionary
+        return CVImageBufferCreateColorSpaceFromAttachments(attachments)?.takeRetainedValue() ?? ColorManagement.colorSpace(.rec709)
+    }()
 
     /// Source frames of one media file with its orientation applied.
     public static func media(_ media: MediaAsset, times: [Seconds], maxSize: CGSize) async throws -> [LabeledFrame] {
