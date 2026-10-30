@@ -295,8 +295,10 @@ extension Toolbox {
             let trackId = a.optString("track") ?? "V1"
             guard let ti = p.trackIndex(trackId), p.tracks[ti].kind == .video else { throw EditError("No video track \(trackId)") }
             p.deleteRange(TimeRange(at, at + (hi - lo)), trackIds: [trackId], ripple: false)
-            for t in finalTurns where t.e - t.s > p.canvas.frameDuration {
-                var c = Clip(id: Project.newClipId(), kind: .media, mediaId: t.angle, start: at + t.s - lo, duration: t.e - t.s, sourceIn: t.s + (offsets[t.angle] ?? 0))
+            // Cut points snap to frames and each shot ends where the next begins, so no slivers of background show.
+            let cutsAt = finalTurns.map { p.canvas.snap(at + $0.s - lo) } + [p.canvas.snap(at + hi - lo)]
+            for (i, t) in finalTurns.enumerated() where cutsAt[i + 1] - cutsAt[i] >= p.canvas.frameDuration {
+                var c = Clip(id: Project.newClipId(), kind: .media, mediaId: t.angle, start: cutsAt[i], duration: cutsAt[i + 1] - cutsAt[i], sourceIn: cutsAt[i] - at + lo + (offsets[t.angle] ?? 0))
                 c.transform.fit = .fill
                 c.volume = 0
                 try p.addClip(c, trackId: trackId, mode: .overwrite)
