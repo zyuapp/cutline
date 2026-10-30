@@ -30,7 +30,7 @@ extension Clip {
     static let timeSpecs: [ParamSpec] = [
         ParamSpec("time.speed", .number, .number(1), min: 0, max: 100, unit: "×", "Playback speed; animate it for speed ramps (0 holds a frame). The clip keeps its timeline length, so the source range it uses grows or shrinks"),
         ParamSpec("time.reverse", .bool, .bool(false), "Play the clip backwards"),
-        ParamSpec("input.tone", .choice(ToneMap.allCases.map(\.rawValue)), .string("aces"), "For log footage: how scene light is mapped to the display (aces filmic, hable, reinhard, none)"),
+        ParamSpec("input.tone", .choice(ToneMap.allCases.map(\.rawValue)), .string("aces"), "For log footage: how scene light is mapped to the display (aces: ACES 1.3 output transform as in Resolve; aces_fit: lighter ACES approximation; hable; reinhard; none)"),
         ParamSpec("input.exposure", .number, .number(0), min: -6, max: 6, unit: "stops", animatable: false, "For log footage: exposure before the tone map"),
         ParamSpec("time.interpolate", .choice(["none", "blend", "flow"]), .string("none"), "Smooth slow motion: blend mixes neighbouring frames, flow synthesizes new ones with optical flow (rendered once, cached)"),
     ]

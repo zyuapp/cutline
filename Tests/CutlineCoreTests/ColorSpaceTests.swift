@@ -152,10 +152,13 @@ private let midGrey: [LogProfile: Float] = [
     #expect(abs(sdr.x - sdr.z) < 0.005)
     let pq = ColorPipeline.inputTransform(log: .slog3, target: .rec2020_pq, tone: .none, exposure: 0, recordedIn: .full)(SIMD3(repeating: grey))
     #expect(near(pq.y, Transfer.pqEncode(nits: 0.18 * 203), 0.002))
-    for tone in ToneMap.allCases where tone != .none {
+    for tone in ToneMap.allCases where tone != .none && tone != .aces {
         let mapped = ColorPipeline.inputTransform(log: .slog3, target: .rec2020_pq, tone: tone, exposure: 0, recordedIn: .full)(SIMD3(repeating: grey))
         #expect(near(mapped.y, pq.y, 0.003), "\(tone) moves HDR mid grey to \(mapped)")
     }
+    // The ACES 1000-nit output transform puts mid grey at 15 cd/m².
+    let aces = ColorPipeline.inputTransform(log: .slog3, target: .rec2020_pq, tone: .aces, exposure: 0, recordedIn: .full)(SIMD3(repeating: grey))
+    #expect(near(aces.y, Transfer.pqEncode(nits: 15), 0.002), "ACES HDR mid grey \(aces)")
     let up = ColorPipeline.inputTransform(log: .vlog, target: .rec709, tone: .aces, exposure: 1, recordedIn: .full)(SIMD3(repeating: LogProfile.vlog.fromLinear(0.18)))
     #expect(up.y > sdr.y + 0.05)
 }

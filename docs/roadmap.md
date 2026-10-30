@@ -88,7 +88,7 @@ Goal: an editor coming from Final Cut Pro, Premiere or Resolve can bring their t
 
 - **Done:**
   - **Interchange:** import of FCPXML, OTIO and CMX 3600 EDL timelines; FCPXML, OTIO and EDL export, with transitions in all three; SRT and VTT import as titles.
-  - **Color:** working spaces Rec.709, Display P3, HLG and PQ, with HDR export as 10-bit HEVC; 14 camera log curves with ACES-style tone mapping; waveform, parade, vectorscope and histogram, with numbers.
+  - **Color:** working spaces Rec.709, Display P3, HLG and PQ, with HDR export as 10-bit HEVC; 14 camera log curves rendered through the ACES 1.3 output transforms; waveform, parade, vectorscope and histogram, with numbers.
   - **Secondaries:** any effect can be limited to a window or an HSL qualifier; roto shape masks; track mattes.
   - **Motion:** bezier keyframes, anchor points, 3D tilt with perspective, corner pin, motion blur.
   - **Audio:**

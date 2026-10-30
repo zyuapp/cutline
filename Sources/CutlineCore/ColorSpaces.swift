@@ -411,10 +411,12 @@ public enum ToneMap: String, CaseIterable, Codable, Sendable {
     case none
     /// `x / (1 + x)`.
     case reinhard
-    /// ACES 1.x RRT + sRGB ODT approximation (Stephen Hill's fit, with the RRT/ODT saturation in AP1).
+    /// ACES 1.3 RRT and output transform: the Rec.709 100-nit dim ODT for SDR, the 1000-nit SSTS transforms for HDR.
     case aces
     /// John Hable's Uncharted 2 filmic curve, white point 11.2, exposure bias 2.
     case hable
+    /// Approximation of the ACES SDR rendering (Stephen Hill's fit, with the RRT/ODT saturation in AP1).
+    case aces_fit
 
     /// `c` is scene linear with Rec.709 primaries; `exposure` is in stops.
     public static func apply(_ c: SIMD3<Float>, _ m: ToneMap, exposure: Float) -> SIMD3<Float> {
@@ -430,6 +432,8 @@ public enum ToneMap: String, CaseIterable, Codable, Sendable {
         case .reinhard: out = x / (1 + x)
         case .hable: out = SIMD3(hable(x.x), hable(x.y), hable(x.z))
         case .aces:
+            out = ACES.sdrDisplayLinear(acesInput(gamut) * x, gamut: gamut)
+        case .aces_fit:
             let (input, output) = acesMatrices(gamut)
             let v = input * x
             out = output * SIMD3(acesFit(v.x), acesFit(v.y), acesFit(v.z))
@@ -444,7 +448,8 @@ public enum ToneMap: String, CaseIterable, Codable, Sendable {
         case .none: return min(x, 1)
         case .reinhard: return x / (1 + x)
         case .hable: return hable(x)
-        case .aces: return min(max(acesFit(x), 0), 1)
+        case .aces: return ACES.sdrDisplayLinear(SIMD3(repeating: x), gamut: .rec709).y
+        case .aces_fit: return min(max(acesFit(x), 0), 1)
         }
     }
 
@@ -470,6 +475,15 @@ public enum ToneMap: String, CaseIterable, Codable, Sendable {
     }
 
     static let acesCache = Locked<[Primaries: (simd_float3x3, simd_float3x3)]>([:])
+    static let ap0Cache = Locked<[Primaries: simd_float3x3]>([:])
+
+    /// `gamut` to ACES2065-1.
+    static func acesInput(_ gamut: Primaries) -> simd_float3x3 {
+        if let hit = ap0Cache.withLock({ $0[gamut] }) { return hit }
+        let m = Primaries.matrix(from: gamut, to: .acesAP0).float
+        ap0Cache.withLock { $0[gamut] = m }
+        return m
+    }
 
     /// (gamut → AP1 with RRT saturation, ODT saturation then AP1 → gamut). For Rec.709 this is Hill's ACESInputMat/ACESOutputMat.
     static func acesMatrices(_ gamut: Primaries) -> (simd_float3x3, simd_float3x3) {
@@ -535,21 +549,29 @@ public enum WorkingSpace: String, CaseIterable, Codable, Sendable {
 ///
 /// Scene linear is relative: 0.18 is mid grey, 1 is diffuse white. SDR outputs tone-map that to display linear 0…1.
 /// HDR outputs put diffuse white at 203 cd/m² (BT.2408) with `.none`; tone curves keep mid grey where `.none` puts it
-/// and roll highlights off to the 1000 cd/m² peak.
+/// and roll highlights off to the 1000 cd/m² peak, except `.aces`, which follows the ACES 1000-nit output transforms
+/// (mid grey at 15 cd/m²).
 public enum ColorPipeline {
     /// BT.2408 HDR reference white.
     public static let referenceWhiteNits: Float = 203
 
     /// Encoded log RGB (0…1, as decoded from a file recorded in `recordedIn`) to the encoded `target` signal.
     /// `exposure` is in stops, applied in scene linear before tone mapping.
+    /// With `.aces` the camera gamut goes to ACEScg, is gamut-compressed there and rendered by the ACES output transform.
     public static func inputTransform(log: LogProfile, target: WorkingSpace, tone: ToneMap, exposure: Float, recordedIn: SignalRange = .video) -> ColorMath.Transform {
+        let range = recordedIn
+        let decode: ColorMath.Transform = { c in
+            SIMD3(log.toLinear(c.x, recordedIn: range), log.toLinear(c.y, recordedIn: range), log.toLinear(c.z, recordedIn: range))
+        }
+        if tone == .aces {
+            let m = Primaries.matrix(from: log.primaries, to: .acesAP1).float
+            let toAP0 = ACES.ap1ToAP0 * pow(2, exposure)
+            let render = ACES.outputTransform(target)
+            return { c in simd_clamp(render(toAP0 * compressGamut(m * decode(c))), .zero, SIMD3(repeating: 1)) }
+        }
         let m = Primaries.matrix(from: log.primaries, to: target.primaries).float
         let encode = output(target: target, tone: tone, exposure: exposure)
-        let range = recordedIn
-        return { c in
-            let lin = SIMD3(log.toLinear(c.x, recordedIn: range), log.toLinear(c.y, recordedIn: range), log.toLinear(c.z, recordedIn: range))
-            return encode(compressGamut(m * lin))
-        }
+        return { c in encode(compressGamut(m * decode(c))) }
     }
 
     /// ACES Reference Gamut Compression: pulls colors outside the target gamut (negative components after the
@@ -596,9 +618,15 @@ public enum ColorPipeline {
     }
 
     /// Relative scene linear in the target's primaries to the encoded target signal, clamped to 0…1.
+    /// `.aces` renders through the target's ACES output transform, which puts HDR mid grey at 15 cd/m².
     public static func output(target: WorkingSpace, tone: ToneMap, exposure: Float) -> ColorMath.Transform {
         let gamut = target.primaries
         let gain = pow(2, exposure)
+        if tone == .aces {
+            let toAP0 = Primaries.matrix(from: gamut, to: .acesAP0).float * gain
+            let render = ACES.outputTransform(target)
+            return { c in simd_clamp(render(toAP0 * c), .zero, SIMD3(repeating: 1)) }
+        }
         if !target.isHDR {
             let t = target.transfer
             return { c in
