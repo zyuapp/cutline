@@ -102,53 +102,88 @@ extension Toolbox {
             return "Caption edit on \(media).w\(first)–w\(last) (\"\(old)\")"
         })
 
-        add(Tool(name: "captions_translate", description: "Translate the caption cues into other languages for subtitles. With only language, Apple's on-device Translation framework translates every cue (the language must be installed in System Settings › General › Language & Region › Translation Languages; a server can't download one). cues [{id, text}] stores your own translation per cue (ids from captions_list), and file imports an .srt or .vtt, matching its cues to these by time. Translations are keyed by each cue's source words, so they follow later edits; timing stays the spoken cues' and the text is rewrapped to each output's line limits. Export them with export subtitle_languages; captions_set language burns one in; captions_list language shows them. clear:true removes the language.", schema: Schema.object([
+        add(Tool(name: "captions_translate", description: "Translate the caption cues into other languages for subtitles. With only language (or languages: [..] for several at once), Apple's on-device Translation framework translates every cue (each language must be installed in System Settings › General › Language & Region › Translation Languages; a server can't download one); with several languages, one that can't be translated is reported and the rest are stored. cues [{id, text}] stores your own translation per cue (ids from captions_list), and file imports an .srt or .vtt, matching its cues to these by time; both take one language. Translations are keyed by each cue's source words, so they follow later edits; timing stays the spoken cues' and the text is rewrapped to each output's line limits. Export them with export subtitle_languages; captions_set language burns one in; captions_list language shows them. clear:true removes the language(s).", schema: Schema.object([
             "language": Schema.string("Target language tag, e.g. fr, de, pt-BR"),
+            "languages": Schema.strings("Several target languages translated in one call, e.g. [\"fr\", \"de\", \"ja\"]"),
             "cues": Schema.array(Schema.object(["id": Schema.integer("Cue number from captions_list"), "text": Schema.string("Translated text; \"\" removes")], required: ["id", "text"]), "Your translation of these cues"),
             "file": Schema.string("An .srt or .vtt in that language to import"),
-            "clear": Schema.bool("Remove this language's translations"),
-        ], required: ["language"])) { [unowned self] args in
+            "clear": Schema.bool("Remove these languages' translations"),
+        ])) { [unowned self] args in
             let b = try session.requireBundle()
-            let lang = Project.languageTag(try args.string("language"))
+            var langs: [String] = []
+            for raw in (args.strings("languages") ?? []) + [args.optString("language")].compactMap({ $0 }) {
+                let tag = Project.languageTag(raw)
+                if !tag.isEmpty, !langs.contains(tag) { langs.append(tag) }
+            }
+            guard !langs.isEmpty else { throw EditError("Pass language (e.g. \"fr\") or languages: [\"fr\", \"de\"]") }
             let p0 = try session.project()
             let transcripts = b.transcripts(for: p0)
             let cues = p0.captionCues(transcripts: transcripts)
+            let list = langs.joined(separator: ", ")
             if args.bool("clear", default: false) {
-                _ = try session.edit("Remove \(lang) captions") { p in
-                    p.captions.translations[lang] = nil
-                    if p.captions.language == lang { p.captions.language = nil }
+                _ = try session.edit("Remove \(list) captions") { p in
+                    for lang in langs {
+                        p.captions.translations[lang] = nil
+                        if p.captions.language == lang { p.captions.language = nil }
+                    }
                 }
-                return .text("Removed the \(lang) translation.")
+                return .text("Removed the \(list) translation\(langs.count > 1 ? "s" : "").")
             }
             guard !cues.isEmpty else { throw EditError("No caption cues to translate: the timeline has no transcribed speech on its caption tracks") }
-            var texts: [Int: String] = [:]
-            let how: String
-            if let list = args.raw["cues"]?.array {
-                for item in list {
+            var texts: [String: [Int: String]] = [:]
+            var how: [String: String] = [:]
+            var failed: [(String, String)] = []
+            if let items = args.raw["cues"]?.array {
+                guard langs.count == 1 else { throw EditError("cues hold one language's text; pass a single language") }
+                var t: [Int: String] = [:]
+                for item in items {
                     guard let id = item["id"]?.double.map({ Int($0) }) else { throw EditError("Each cue needs id and text") }
-                    texts[id] = item["text"]?.string ?? ""
+                    t[id] = item["text"]?.string ?? ""
                 }
-                how = "from your text"
+                texts[langs[0]] = t
+                how[langs[0]] = "from your text"
             } else if let path = args.optString("file") {
+                guard langs.count == 1 else { throw EditError("A subtitle file holds one language; pass a single language") }
                 let url = session.resolve(path)
                 guard let raw = try? String(contentsOf: url, encoding: .utf8) else { throw EditError("Cannot read \(url.path)") }
                 let parsed = Project.parseSubtitles(raw)
                 guard !parsed.isEmpty else { throw EditError("\(url.lastPathComponent) has no SRT or VTT cues") }
-                texts = p0.translationTexts(from: parsed, transcripts: transcripts)
-                how = "from \(url.lastPathComponent) (\(parsed.count) cues matched by time)"
+                texts[langs[0]] = p0.translationTexts(from: parsed, transcripts: transcripts)
+                how[langs[0]] = "from \(url.lastPathComponent) (\(parsed.count) cues matched by time)"
             } else {
                 let source = p0.spokenLanguage(transcripts: transcripts)
-                let out = try await Translator.translate(cues.map(\.text), from: source, to: lang)
-                texts = Dictionary(uniqueKeysWithValues: out.enumerated().map { ($0.offset, $0.element) })
-                how = "on-device (\(source)→\(lang))"
+                for lang in langs {
+                    do {
+                        let out = try await Translator.translate(cues.map(\.text), from: source, to: lang)
+                        texts[lang] = Dictionary(uniqueKeysWithValues: out.enumerated().map { ($0.offset, $0.element) })
+                        how[lang] = "on-device (\(source)→\(lang))"
+                    } catch {
+                        // A single language keeps its full error; with several, the others still translate.
+                        if langs.count == 1 { throw error }
+                        failed.append((lang, (error as? EditError)?.message ?? error.localizedDescription))
+                    }
+                }
             }
-            var stored = 0
-            let p = try session.edit("Translate captions to \(lang)") { p in stored = try p.setCaptionTranslations(lang, texts: texts, transcripts: transcripts) }
-            let now = p.cueTranslations(lang, cues: cues).texts
-            let missing = now.indices.filter { now[$0] == nil }
-            var lines = ["\(lang): \(stored) cue(s) translated \(how); \(cues.count - missing.count)/\(cues.count) cues have \(lang) text" + (missing.isEmpty ? "." : " (untranslated #" + missing.prefix(10).map(String.init).joined(separator: ", #") + ").")]
-            for i in now.indices.prefix(3) { lines.append("#\(i) \(cues[i].text) → \(now[i] ?? "—")") }
-            lines.append("Export with subtitle_languages:[\"\(lang)\"]; review with captions_list language:\"\(lang)\".")
+            let done = langs.filter { texts[$0] != nil }
+            guard !done.isEmpty else { throw EditError(failed.map { "\($0.0): \($0.1)" }.joined(separator: "\n")) }
+            var stored: [String: Int] = [:]
+            let p = try session.edit("Translate captions to \(done.joined(separator: ", "))") { p in
+                for lang in done { stored[lang] = try p.setCaptionTranslations(lang, texts: texts[lang]!, transcripts: transcripts) }
+            }
+            var lines: [String] = []
+            for lang in done {
+                let now = p.cueTranslations(lang, cues: cues).texts
+                let missing = now.indices.filter { now[$0] == nil }
+                lines.append("\(lang): \(stored[lang] ?? 0) cue(s) translated \(how[lang] ?? ""); \(cues.count - missing.count)/\(cues.count) cues have \(lang) text" + (missing.isEmpty ? "." : " (untranslated #" + missing.prefix(10).map(String.init).joined(separator: ", #") + ")."))
+                if done.count == 1 {
+                    for i in now.indices.prefix(3) { lines.append("#\(i) \(cues[i].text) → \(now[i] ?? "—")") }
+                } else if let first = now.first {
+                    lines.append("  #0 → \(first ?? "—")")
+                }
+            }
+            for (lang, why) in failed { lines.append("\(lang): not translated: \(why)") }
+            let tags = done.map { "\"\($0)\"" }.joined(separator: ", ")
+            lines.append("Export with subtitle_languages:[\(tags)]; review with captions_list language:\(done.count == 1 ? tags : "<one of them>").")
             try? session.sendPreview(["action": "rebuild"])
             return .text(lines.joined(separator: "\n"))
         })

@@ -100,3 +100,29 @@ private func openProject() async throws -> (Toolbox, ProjectBundle, URL) {
         #expect(r.isError)
     }
 }
+
+@Test func severalLanguagesTranslateInOneCall() async throws {
+    let (box, b, dir) = try await openProject()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let mixed = await box.call("captions_translate", ["languages": ["fr", "de"], "cues": [["id": 0, "text": "Bonjour."]]])
+    #expect(mixed.isError && mixed.plainText.contains("single language"), "\(mixed.plainText)")
+    let r = await box.call("captions_translate", ["languages": ["fr", "de", "ja"]])
+    let status = [await Translator.availability(from: "en", to: "fr"), await Translator.availability(from: "en", to: "de"), await Translator.availability(from: "en", to: "ja")]
+    let stored = try b.loadProject().captions.translations
+    if status.contains(.installed) {
+        #expect(!r.isError, "\(r.plainText)")
+        for (lang, s) in zip(["fr", "de", "ja"], status) {
+            #expect((stored[lang]?.count == 2) == (s == .installed), "\(lang): \(r.plainText)")
+            #expect(r.plainText.contains(s == .installed ? "\(lang): 2 cue(s) translated" : "\(lang): not translated"), "\(r.plainText)")
+        }
+        print("several languages:\n\(r.plainText)")
+    } else {
+        #expect(r.isError && r.plainText.contains("fr:") && r.plainText.contains("ja:"), "\(r.plainText)")
+        #expect(stored.isEmpty)
+    }
+    _ = await box.call("captions_translate", ["language": "fr", "cues": [["id": 0, "text": "Bonjour."]]])
+    _ = await box.call("captions_translate", ["language": "de", "cues": [["id": 0, "text": "Hallo."]]])
+    let cleared = await box.call("captions_translate", ["languages": ["fr", "de"], "clear": true])
+    let after = try b.loadProject().captions.translations
+    #expect(cleared.plainText.contains("fr, de") && after["fr"] == nil && after["de"] == nil, "\(cleared.plainText)")
+}

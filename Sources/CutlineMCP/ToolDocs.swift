@@ -224,7 +224,7 @@ extension Toolbox {
             "start": "", "end": "", "language": "Show this translation",
         ]),
         "captions_translate": ToolBrief(text: "Translate caption cues (on-device, or your cues/.srt) for subtitles in other languages; follows edits.", args: [
-            "language": "e.g. fr", "cues": "[{id, text}] your own", "cues[].id": "", "cues[].text": "", "file": ".srt/.vtt to import", "clear": "",
+            "language": "e.g. fr", "languages": "Several at once", "cues": "[{id, text}] your own", "cues[].id": "", "cues[].text": "", "file": ".srt/.vtt to import", "clear": "",
         ]),
         "caption_edit": ToolBrief(text: "Fix one caption cue (by at or from/to words): text, timing, hide, break_before, merge with the next, or clear edits.", args: [
             "at": "Time inside the cue", "from": "\"<media>.wN\"", "to": "Default from", "text": "", "start_offset": "", "end_offset": "",
