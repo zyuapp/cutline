@@ -88,6 +88,11 @@ enum EffectRenderer {
             return img.applyingFilter("CIColorMonochrome", parameters: [kCIInputColorKey: CIColor(red: color.r, green: color.g, blue: color.b), kCIInputIntensityKey: n("amount")])
         case "color.invert":
             return img.applyingFilter("CIColorInvert")
+        case "mask.shape":
+            guard let pts = v("points").string.flatMap(Curve.points), pts.count >= 3,
+                  let mask = shapeMask(pts, smooth: v("smooth").bool ?? false, extent: e, feather: n("feather") * ctx.unit, invert: v("invert").bool ?? false)
+            else { return img }
+            return img.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(), kCIInputMaskImageKey: mask])
         case "mask.person", "mask.subject":
             let kind: Segmentation.Kind = type == "mask.subject" ? .subject : .person(Segmentation.Quality(rawValue: v("quality").string ?? "balanced") ?? .balanced)
             let mask = ctx.source.flatMap { masks.mask(kind: kind, key: $0, image: img, smoothing: Double(n("smoothing"))) } ?? Segmentation.mask(kind, img)
@@ -174,6 +179,33 @@ enum EffectRenderer {
         default:
             return nil
         }
+    }
+
+    /// A white shape on black from points in frame fractions (top-left origin), optionally smoothed with Catmull-Rom curves.
+    static func shapeMask(_ pts: [(Double, Double)], smooth: Bool, extent e: CGRect, feather: CGFloat, invert: Bool) -> CIImage? {
+        let w = max(1, Int(e.width / 2)), h = max(1, Int(e.height / 2))
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        ctx.setFillColor(gray: invert ? 1 : 0, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        let p = pts.map { CGPoint(x: $0.0 * Double(w), y: (1 - $0.1) * Double(h)) }
+        let path = CGMutablePath()
+        path.move(to: p[0])
+        if smooth {
+            for i in 0..<p.count {
+                let p0 = p[(i - 1 + p.count) % p.count], p1 = p[i], p2 = p[(i + 1) % p.count], p3 = p[(i + 2) % p.count]
+                path.addCurve(to: p2, control1: CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6), control2: CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6))
+            }
+        } else {
+            for q in p.dropFirst() { path.addLine(to: q) }
+        }
+        path.closeSubpath()
+        ctx.addPath(path)
+        ctx.setFillColor(gray: invert ? 0 : 1, alpha: 1)
+        ctx.fillPath()
+        guard let cg = ctx.makeImage() else { return nil }
+        var mask = CIImage(cgImage: cg).transformed(by: CGAffineTransform(scaleX: e.width / CGFloat(w), y: e.height / CGFloat(h)).concatenating(CGAffineTransform(translationX: e.minX, y: e.minY)))
+        if feather > 0.5 { mask = mask.clampedToExtent().applyingGaussianBlur(sigma: Double(feather) / 2).cropped(to: e) }
+        return mask
     }
 
     static func maskImage(_ type: String, extent e: CGRect, unit: CGFloat, n: (String) -> CGFloat, invert: Bool) -> CIImage {

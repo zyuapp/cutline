@@ -184,6 +184,12 @@ public enum EffectCatalog {
             ParamSpec("roundness", .number, .number(0), min: 0, max: 0.5, "Corner radius as a fraction of the shorter side"),
         ]),
         EffectType(id: "mask.ellipse", category: "mask", summary: "Keeps an ellipse; e.g. a spotlight or a circular face cam", params: shape),
+        EffectType(id: "mask.shape", category: "mask", summary: "Keeps a freeform shape drawn as points (a roto or pen mask); animate points to follow movement, with the same number of points in every key", params: [
+            ParamSpec("points", .text, .string("0.3,0.3 0.7,0.3 0.7,0.7 0.3,0.7"), animatable: true, "Corners as \"x,y\" pairs, fractions of the clip's frame from the top left"),
+            ParamSpec("smooth", .bool, .bool(false), "Curve through the points instead of straight edges"),
+            ParamSpec("feather", .number, .number(0.005), min: 0, max: 0.3, unit: "of frame height", "Soft edge"),
+            ParamSpec("invert", .bool, .bool(false), "Keep everything outside the shape"),
+        ]),
         EffectType(id: "mask.person", category: "mask", summary: "Keeps the people (Apple person segmentation); invert to keep the background, e.g. text behind a person or a background swap", params: [
             ParamSpec("quality", .choice(["fast", "balanced", "accurate"]), .string("balanced"), "Edge quality against speed"),
             ParamSpec("feather", .number, .number(0.003), min: 0, max: 0.05, unit: "of frame height", "Soft edge"),

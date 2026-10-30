@@ -105,7 +105,10 @@ public struct Curve: Codable, Equatable, Hashable, Sendable {
         switch (a, b) {
         case (.number(let x), .number(let y)):
             return .number(x + (y - x) * p)
-        case (.string, .string):
+        case (.string(let sa), .string(let sb)):
+            if let pa = Curve.points(sa), let pb = Curve.points(sb), pa.count == pb.count {
+                return .string(zip(pa, pb).map { String(format: "%.4f,%.4f", $0.0.0 + ($0.1.0 - $0.0.0) * p, $0.0.1 + ($0.1.1 - $0.0.1) * p) }.joined(separator: " "))
+            }
             if let ca = a.color, let cb = b.color {
                 let c = RGBA(r: ca.r + (cb.r - ca.r) * p, g: ca.g + (cb.g - ca.g) * p, b: ca.b + (cb.b - ca.b) * p, a: ca.a + (cb.a - ca.a) * p)
                 return .string(c.hex)
@@ -114,6 +117,19 @@ public struct Curve: Codable, Equatable, Hashable, Sendable {
         default:
             return p < 1 ? a : b
         }
+    }
+
+    /// "x,y x,y …" point lists, used by shape masks; nil for any other text.
+    public static func points(_ s: String) -> [(Double, Double)]? {
+        let pairs = s.split(whereSeparator: \.isWhitespace)
+        guard pairs.count >= 2 else { return nil }
+        var out: [(Double, Double)] = []
+        for p in pairs {
+            let xy = p.split(separator: ",")
+            guard xy.count == 2, let x = Double(xy[0]), let y = Double(xy[1]) else { return nil }
+            out.append((x, y))
+        }
+        return out
     }
 
     public func shifted(by dt: Seconds) -> Curve {
