@@ -56,22 +56,25 @@ public struct ExportOptions: Sendable {
     public var subtitles: [TimedText]
     public var subtitleLanguage: String
     public var chapters: [TimedText]
+    /// CEA-608 pop-on closed captions on CC1, written as a QuickTime 'c608' track; empty for none.
+    public var closedCaptions: [TimedText]
     /// AAC bitrate in kbps for HEVC and H.264.
     public var audioKbps: Int
 
-    public init(preset: ExportPreset = .hevc, bitrateMbps: Double? = nil, range: TimeRange? = nil, subtitles: [TimedText] = [], subtitleLanguage: String = "en", chapters: [TimedText] = [], audioKbps: Int = 256) {
+    public init(preset: ExportPreset = .hevc, bitrateMbps: Double? = nil, range: TimeRange? = nil, subtitles: [TimedText] = [], subtitleLanguage: String = "en", chapters: [TimedText] = [], closedCaptions: [TimedText] = [], audioKbps: Int = 256) {
         self.preset = preset
         self.bitrateMbps = bitrateMbps
         self.range = range
         self.subtitles = subtitles
         self.subtitleLanguage = subtitleLanguage
         self.chapters = chapters
+        self.closedCaptions = closedCaptions
         self.audioKbps = audioKbps
     }
 }
 
 /// Renders a timeline with AVAssetReader → AVAssetWriter: the same compositor as preview,
-/// with codec, bitrate, Rec. 709 color tags, and optional subtitle and chapter tracks.
+/// with codec, bitrate, Rec. 709 color tags, and optional subtitle, chapter and closed caption tracks.
 public enum Exporter {
     public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)? = nil) async throws {
         let comp = built.composition
@@ -150,11 +153,14 @@ public enum Exporter {
         }
 
         let offset = range.start
-        let textInputs = try [(options.subtitles, AVMediaType.subtitle), (options.chapters, AVMediaType.text)].compactMap { cues, type -> (AVAssetWriterInput, [TimedText])? in
-            let shifted = cues.compactMap { c -> TimedText? in
+        func inRange(_ cues: [TimedText]) -> [TimedText] {
+            cues.compactMap { c in
                 let s = max(c.start, offset.seconds), e = min(c.end, range.end.seconds)
                 return e > s ? TimedText(start: s - offset.seconds, end: e - offset.seconds, text: c.text) : nil
             }
+        }
+        let textInputs = try [(options.subtitles, AVMediaType.subtitle), (options.chapters, AVMediaType.text)].compactMap { cues, type -> (AVAssetWriterInput, [TimedText])? in
+            let shifted = inRange(cues)
             guard !shifted.isEmpty else { return nil }
             let input = AVAssetWriterInput(mediaType: type, outputSettings: nil, sourceFormatHint: try TextTrack.formatDescription(type))
             input.expectsMediaDataInRealTime = false
@@ -171,6 +177,16 @@ public enum Exporter {
         if let chapters = textInputs.first(where: { $0.0.mediaType == .text })?.0, videoIn.canAddTrackAssociation(withTrackOf: chapters, type: AVAssetTrack.AssociationType.chapterList.rawValue) {
             videoIn.addTrackAssociation(withTrackOf: chapters, type: AVAssetTrack.AssociationType.chapterList.rawValue)
         }
+        var captionInput: (AVAssetWriterInput, [TimedText])?
+        let captions = inRange(options.closedCaptions)
+        if !captions.isEmpty {
+            let input = AVAssetWriterInput(mediaType: .closedCaption, outputSettings: nil, sourceFormatHint: try CEA608.formatDescription())
+            input.expectsMediaDataInRealTime = false
+            input.languageCode = options.subtitleLanguage
+            guard writer.canAdd(input) else { throw EditError("\(options.preset.fileExtension) files cannot carry closed captions") }
+            writer.add(input)
+            captionInput = (input, captions)
+        }
 
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline") }
         if let audioReader, !audioReader.startReading() { throw audioReader.error ?? EditError("Cannot read the mixed sound") }
@@ -182,8 +198,15 @@ public enum Exporter {
         async let audio: Void = {
             if let audioOut, let audioIn { try await pump(audioOut, into: audioIn, offset: .zero, report: nil) }
         }()
-        for (input, cues) in textInputs {
-            try await TextTrack.write(cues, to: input, duration: total)
+        // Fed together so the writer can interleave every track while the video is being rendered.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for (input, cues) in textInputs {
+                group.addTask { try await TextTrack.write(cues, to: input, duration: total) }
+            }
+            if let (input, cues) = captionInput {
+                group.addTask { try await CEA608.write(cues, to: input, fps: fps, duration: total) }
+            }
+            try await group.waitForAll()
         }
         _ = try await (video, audio)
 
@@ -279,7 +302,10 @@ enum TextTrack {
             t = c.end
         }
         if duration > t + 0.001 { spans.append((t, duration, "")) }
-        let samples = try spans.map { try sample($0.0, $0.1, $0.2, fd) }
+        try await append(spans.map { try sample($0.0, $0.1, $0.2, fd) }, to: input)
+    }
+
+    static func append(_ samples: [CMSampleBuffer], to input: AVAssetWriterInput) async throws {
         let queue = DispatchQueue(label: "cutline.export.text")
         let state = Exporter.PumpState()
         var next = 0
@@ -295,7 +321,7 @@ enum TextTrack {
                     }
                     if !input.append(samples[next]) {
                         state.finished = true
-                        done.resume(throwing: EditError("Cannot write a text sample"))
+                        done.resume(throwing: EditError("The writer rejected a text or caption sample"))
                         return
                     }
                     next += 1
