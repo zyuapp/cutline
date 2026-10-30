@@ -105,7 +105,6 @@ Goal: an editor coming from Final Cut Pro, Premiere or Resolve can bring their t
 - **Still open:**
   - **Audio formats:** surround (5.1/7.1) and multichannel audio.
   - **Captions:** CEA-708 and 608 inside the video bitstream (SEI); 608 tracks and SCC files are done.
-  - **Color:** full ACES output transforms (gamut compression is done).
   - **Interchange:** AAF (needs an outside reader such as pyaaf2 to verify; not yet allowed here).
   - **Validation in the real apps:** opening Cutline's exports in Final Cut Pro, Premiere and Resolve themselves (none are installed here).
 
