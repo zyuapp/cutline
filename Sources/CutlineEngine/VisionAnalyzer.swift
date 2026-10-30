@@ -102,7 +102,8 @@ public enum VisionAnalyzer {
                     out.append(r)
                     inflight -= 1
                 }
-                group.addTask { (requested, work(img, actual)) }
+                // Vision blocks its calling thread; run it off the cooperative pool so other tasks keep moving.
+                group.addTask { (requested, try await runBlocking { _ in work(img, actual) }) }
                 inflight += 1
             }
             for try await r in group { out.append(r) }
