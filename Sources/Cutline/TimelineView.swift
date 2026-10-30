@@ -318,9 +318,16 @@ final class TimelineCanvas: NSView {
             let s = Typeface.attributed(m.label, [.font: Typeface.ns(10.5, .medium), .foregroundColor: Theme.NS.ink])
             let size = s.size()
             let flag = CGRect(x: x, y: 15, width: size.width + 11, height: 13)
-            Theme.NS.ink3.withAlphaComponent(0.32).setFill()
+            // Kind shows as the flag's tint: chapters in wax, open to-dos in Claude's periwinkle, done ones faded.
+            let tint: NSColor = m.color.map { NSColor(srgbRed: $0.r, green: $0.g, blue: $0.b, alpha: 1) }
+                ?? (m.kind == "chapter" ? Theme.NS.wax : m.kind == "todo" ? Theme.NS.claude : Theme.NS.ink3)
+            if let d = m.duration, d > 0 {
+                tint.withAlphaComponent(0.18).setFill()
+                CGRect(x: x, y: 15, width: max(2, xFor(m.time + d) - x), height: 13).fill()
+            }
+            tint.withAlphaComponent(m.kind == "done" ? 0.15 : 0.32).setFill()
             NSBezierPath(roundedRect: flag, xRadius: 3, yRadius: 3).fill()
-            Theme.NS.ink2.setFill()
+            (m.kind == nil ? Theme.NS.ink2 : tint).setFill()
             CGRect(x: x, y: 15, width: 1.5, height: rulerH - 15).fill()
             s.draw(at: CGPoint(x: x + 5.5, y: flag.midY - size.height / 2))
         }
