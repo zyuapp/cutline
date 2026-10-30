@@ -264,7 +264,8 @@ private func lumaFrame(code: UInt16, width: Int = 64, height: Int = 64) -> CVPix
     #expect(s.clipped > 0.99 && s.crushed == 0)
 }
 
-@Test func scopesAreFast() throws {
+/// A speed guard for release-like conditions; set CUTLINE_PERF=1 to run it (a loaded debug test run says nothing).
+@Test(.enabled(if: ProcessInfo.processInfo.environment["CUTLINE_PERF"] != nil)) func scopesAreFast() throws {
     let hd = image(width: 1920, height: 1080) { x, y in (UInt8(x % 256), UInt8(y % 256), UInt8((x + y) % 256)) }
     let size = CGSize(width: 512, height: 256)
     for kind in Scopes.Kind.allCases {

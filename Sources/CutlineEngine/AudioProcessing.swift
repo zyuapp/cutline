@@ -75,6 +75,7 @@ public final class AudioStems: @unchecked Sendable {
             if let c = t.volumeCurve { parts.append((try? Self.encoder.encode(c)) ?? Data()) }
         }
         parts.append((try? Self.encoder.encode(project.master)) ?? Data())
+        if project.usesBuses { parts.append(Data(busKey(for: project).utf8)) }
         return "master-" + hash(parts)
     }
 
@@ -154,6 +155,11 @@ public final class AudioStems: @unchecked Sendable {
                 try await renderLayoutMix(project, transcripts: transcripts, library: library)
                 done.append(project.master.layout.title)
             }
+        } else if project.usesBuses {
+            if cachedBusMix(for: project) == nil {
+                try await renderBusMix(project, transcripts: transcripts, library: library)
+                done.append("buses")
+            }
         } else if Self.hasMasterChain(project), cachedMaster(for: project) == nil {
             try await renderMaster(project, transcripts: transcripts, library: library)
             done.append("master")
@@ -167,8 +173,16 @@ public final class AudioStems: @unchecked Sendable {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
         let stems = files.filter { $0.pathExtension == "caf" && !$0.lastPathComponent.hasPrefix("dry-") && !$0.lastPathComponent.hasPrefix("stem-") }
-        // Routed sources are whole media files and outlive edits, so they're kept apart from stems.
-        for (group, limit) in [(stems.filter { !$0.lastPathComponent.hasPrefix("route-") }, keep), (stems.filter { $0.lastPathComponent.hasPrefix("route-") }, 16)] where group.count > limit {
+        // Routed sources are whole media files and outlive edits, so they're kept apart from stems, as are the
+        // per-track signals bus mixes are summed from and the (whole-timeline, float) bus mixes themselves.
+        func prefix(_ url: URL) -> String { ["route-", "sig-", "bus-"].first { url.lastPathComponent.hasPrefix($0) } ?? "" }
+        let groups = [
+            (stems.filter { prefix($0).isEmpty }, keep),
+            (stems.filter { prefix($0) == "route-" }, 16),
+            (stems.filter { prefix($0) == "sig-" }, 96),
+            (stems.filter { prefix($0) == "bus-" }, 12),
+        ]
+        for (group, limit) in groups where group.count > limit {
             let dated = group.map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
             for (url, _) in dated.sorted(by: { $0.1 > $1.1 }).dropFirst(limit) { try? fm.removeItem(at: url) }
         }

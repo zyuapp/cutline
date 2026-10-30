@@ -33,6 +33,8 @@ extension Project {
             if o.effects != t.effects { fields.append("effects") }
             if o.volumeCurve != t.volumeCurve { fields.append(t.volumeCurve == nil ? "volume automation removed" : "volume automation (\(t.volumeCurve!.keys.count) keys)") }
             if o.role != t.role { fields.append("role \(t.role ?? "auto")") }
+            if o.output != t.output { fields.append("output \(o.output ?? "master")→\(t.output ?? "master")") }
+            if o.sends != t.sends { fields.append("sends " + t.sends.map { "\($0.bus) \(fmt2($0.levelDb)) dB\($0.preFader ? " pre" : "")" }.joined(separator: ", ").ifEmpty("none")) }
             if !fields.isEmpty { out.append("~ track \(t.id): " + fields.joined(separator: ", ")) }
         }
 
@@ -55,6 +57,7 @@ extension Project {
         }
         if master.gainDb != old.master.gainDb { out.append("~ master gain \(fmt2(old.master.gainDb))→\(fmt2(master.gainDb)) dB") }
         if master.layout != old.master.layout { out.append("~ master layout \(old.master.layout.title)→\(master.layout.title)") }
+        out += busChanges(from: old)
         if master.effects != old.master.effects { out.append("~ master effects: " + master.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ").ifEmpty("none")) }
         let oldTr = Dictionary(uniqueKeysWithValues: old.transitions.map { ($0.id, $0) })
         let newTr = Set(transitions.map(\.id))

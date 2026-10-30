@@ -409,7 +409,7 @@ extension Toolbox {
             return "Added track \(t.id)"
         })
 
-        addEdit(EditTool(name: "track_update", description: "Rename, mute, hide, set volume of, or remove a track.", schema: Schema.object([
+        addEdit(EditTool(name: "track_update", description: "Rename, mute, hide, set volume of, route (output, sends) or remove a track.", schema: Schema.object([
             "track_id": Schema.string("Track id"),
             "name": Schema.string("Name"),
             "muted": Schema.bool("Mute audio"),
@@ -417,7 +417,7 @@ extension Toolbox {
             "volume": Schema.number("0–2, multiplies clip volumes (e.g. 0.25 to duck music under speech)"),
             "remove": Schema.bool("Delete the track and its clips"),
             "role": Schema.string("Audio role for stem export: dialogue, music, effects, or a custom name"),
-        ], required: ["track_id"]), label: { a, p in Toolbox.describeTrackUpdate(a, p) }) { p, args in
+        ].merging(Toolbox.trackRoutingSchema) { a, _ in a }, required: ["track_id"]), label: { a, p in Toolbox.describeTrackUpdate(a, p) }) { p, args in
             let id = try args.string("track_id")
             guard let i = p.trackIndex(id) else { throw EditError("No track \(id)") }
             if args.bool("remove", default: false) {
@@ -429,6 +429,7 @@ extension Toolbox {
             if let v = args.optBool("hidden") { p.tracks[i].hidden = v }
             if let v = args.optDouble("volume") { p.tracks[i].volume = v }
             if let v = args.optString("role") { p.tracks[i].role = v.isEmpty ? nil : v }
+            try Toolbox.applyTrackRouting(&p.tracks[i], args)
             return "Updated track \(id)"
         })
 
@@ -673,6 +674,8 @@ extension Toolbox {
         if let h = a.optBool("hidden") { return h ? "Hide \(name)" : "Show \(name)" }
         if a.optDouble("volume") != nil { return "Set \(name) volume" }
         if let r = a.optString("role") { return "Set \(name) role to \(r)" }
+        if let o = a.optString("output") { return "Route \(name) to \(o)" }
+        if a.has("sends") { return "Set \(name) sends" }
         return "Rename \(name)"
     }
 

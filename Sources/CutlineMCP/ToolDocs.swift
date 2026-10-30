@@ -119,8 +119,15 @@ extension Toolbox {
             "media_id": "Default every transcribed media", "min_pause": "Default 0.5", "keep": "Default 0.2", "fillers": "Default true",
         ]),
         "track_add": ToolBrief(text: "Add a track; later video tracks draw on top.", args: ["kind": "", "name": "", "position": "Index from the bottom"]),
-        "track_update": ToolBrief(text: "Rename, mute, hide, set volume or role of, or remove a track.", args: [
+        "track_update": ToolBrief(text: "Rename, mute, hide, set volume, role, bus output or sends of, or remove a track.", args: [
             "track_id": "", "name": "", "muted": "", "hidden": "", "remove": "", "volume": "0–2", "role": "dialogue, music, effects or custom (stems, captions)",
+            "output": "Bus id, or master", "sends": "[{bus, level_db, pre_fader, remove}]; [] clears",
+            "sends[].bus": "", "sends[].level_db": "", "sends[].pre_fader": "", "sends[].remove": "",
+        ]),
+        "audio_bus": ToolBrief(text: "Add, change or remove a submix bus (effects incl. Audio Units, fader, automation, mute/solo, output). Route tracks with track_update output/sends.", args: [
+            "bus": "Bus id", "action": "", "name": "", "output": "master or a bus id", "tracks": "Tracks to route into it", "layout": "",
+            "volume": "", "gain_db": "", "volume_keys": "[{t, v}] timeline seconds", "muted": "", "solo": "",
+            "type": "Effect type, as effect_add", "params": "", "effect_id": "", "index": "", "mix": "", "enabled": "", "remove_effect": "",
         ]),
         "captions_set": ToolBrief(text: "Turn on and style live captions from the transcripts. Presets: karaoke, bold, clean, reveal, minimal.", args: [
             "preset": "", "enabled": "Default true", "animation": "", "font": "", "size": "Fraction of the short side", "weight": "",

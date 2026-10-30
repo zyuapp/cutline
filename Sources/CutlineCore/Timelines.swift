@@ -10,6 +10,7 @@ public struct StoredTimeline: Codable, Equatable, Sendable {
     public var markers: [Marker]
     public var captions: Captions
     public var master: MasterAudio
+    public var buses: [AudioBus]?
 }
 
 extension Project {
@@ -18,7 +19,7 @@ extension Project {
     public var timelineNames: [String] { [currentTimelineName] + timelines.map(\.name) }
 
     func stored(as name: String) -> StoredTimeline {
-        StoredTimeline(name: name, canvas: canvas, tracks: tracks, transitions: transitions, markers: markers, captions: captions, master: master)
+        StoredTimeline(name: name, canvas: canvas, tracks: tracks, transitions: transitions, markers: markers, captions: captions, master: master, buses: buses.isEmpty ? nil : buses)
     }
 
     mutating func load(_ t: StoredTimeline) {
@@ -28,6 +29,7 @@ extension Project {
         markers = t.markers
         captions = t.captions
         master = t.master
+        buses = t.buses ?? []
         timelineName = t.name
     }
 
@@ -43,6 +45,8 @@ extension Project {
             markers = []
             captions = Captions()
             master = MasterAudio()
+            buses = []
+            for i in tracks.indices { tracks[i].output = nil }
         }
         timelineName = name
     }

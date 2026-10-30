@@ -93,6 +93,10 @@ extension Toolbox {
             .init("persist", .bool, "Keep the target on the master for every export, default true; false is a one-off gain"),
             .init("off", .bool, "Clear the master loudness target"),
         ]),
+        RecipeSpec(name: "dme_buses", group: "Sound", summary: "DME mix structure: adds DIA, MUS and FX buses and routes each track by its role, else its name (VO, Score, SFX, Room tone…), else detected speech; a light compressor on DIA and a −1 dBFS master limiter. Running it again only routes new tracks.", args: [
+            .init("compressor", .bool, "Light compressor on DIA, default true"),
+            .init("limiter", .bool, "Master limiter at −1 dBFS, default true"),
+        ]),
         RecipeSpec(name: "split_edit", group: "Sound", summary: "J or L cut at a cut between two clips.", args: [
             .init("edit", .string, "\"clip_a|clip_b\""),
             .init("offset", .number, "Seconds: + J cut (b's sound starts early), − L cut (a's sound runs on)"),

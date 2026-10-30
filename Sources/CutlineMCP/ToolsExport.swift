@@ -33,8 +33,10 @@ extension Toolbox {
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
             "strict": Schema.bool("With platform: refuse to export when the platform check finds issues, listing them; default false exports anyway and leads the report with them"),
             "reveal": Schema.bool("Show the file in Finder when done, default false"),
-            "deliver": Schema.string("What to make: video (default); audio (mix only, see audio_format); stems (one audio file per role: dialogue, music, effects, in the master layout); stills (frames at `times`); image_sequence; gif; archive (copy the project and its media, trimmed with trim:true, to path)", values: ["video", "audio", "stems", "stills", "image_sequence", "gif", "archive"]),
+            "deliver": Schema.string("What to make: video (default); audio (mix only, see audio_format); stems (one audio file per role: dialogue, music, effects and clip subroles, in the master layout; stems:\"buses\" for one per bus plus M&E); stills (frames at `times`); image_sequence; gif; archive (copy the project and its media, trimmed with trim:true, to path)", values: ["video", "audio", "stems", "stills", "image_sequence", "gif", "archive"]),
             "audio_format": Schema.string("For audio and stems, default wav24", values: Delivery.AudioFormat.allCases.map(\.rawValue)),
+            "stems": Schema.string("For stems: roles (default; track roles and clip audio.role subroles) or buses (one file per bus feeding the master, a \"direct\" file for tracks routed straight to it, and M&E)", values: ["roles", "buses"]),
+            "music_and_effects": Schema.bool("For stems: also write M&E, everything except dialogue (default true for buses)"),
             "downmix": Schema.string("For audio and stems: fold the master layout (5.1/7.1) down to stereo or mono (ITU-R BS.775); default keeps the layout", values: AudioLayout.allCases.map(\.rawValue)),
             "image_format": Schema.string("For stills and image sequences, default png", values: Delivery.StillFormat.allCases.map(\.rawValue)),
             "times": Schema.numbers("For stills: timeline times"),
@@ -341,23 +343,7 @@ extension Toolbox {
             let conform = try await Delivery.audio(try await session.timeline(for: p), range: range, to: url, format: format, layout: layout)
             return .text("Wrote \(url.path) (\(format.rawValue), \((layout ?? p.master.layout).title)), took \(fmt1(Date().timeIntervalSince(started)))s" + (conform.map { "\n" + $0.summary } ?? ""))
         case "stems":
-            let format = try args.enumValue("audio_format", Delivery.AudioFormat.self) ?? .wav24
-            let dir = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem + " stems", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let roles = p.roles(transcripts: b.transcripts(for: p))
-            var lines: [String] = []
-            for role in Set(roles.values).sorted() {
-                var solo = p
-                for i in solo.tracks.indices where roles[solo.tracks[i].id] != role { solo.tracks[i].muted = true }
-                // Stems are pre-master so they sum back to the mix; the master bus effects stay off.
-                solo.master.effects = []
-                solo.master.loudnessTarget = nil
-                let url = dir.appendingPathComponent("\(stem) - \(role)").appendingPathExtension(format.fileExtension)
-                try await Delivery.audio(try await session.timeline(for: solo), range: range, to: url, format: format, layout: try args.enumValue("downmix", AudioLayout.self))
-                let tracks = roles.filter { $0.value == role }.keys.sorted()
-                lines.append("\(role): \(url.lastPathComponent) (\(tracks.joined(separator: ", ")))")
-            }
-            return .text("Wrote \(roles.isEmpty ? 0 : Set(roles.values).count) stems to \(dir.path):\n" + lines.joined(separator: "\n") + "\nSet roles with track_update role." + (p.master.loudnessTarget == nil ? "" : "\nStems are pre-master, so the master loudness target isn't applied to them."))
+            return try await deliverStems(args, project: p, bundle: b, range: range, name: stem)
         case "stills":
             guard let times = args.raw["times"]?.array?.compactMap({ try? Args.parseTime($0, name: "times") }), !times.isEmpty else { throw EditError("Pass times") }
             let format = try args.enumValue("image_format", Delivery.StillFormat.self) ?? .png

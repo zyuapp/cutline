@@ -288,6 +288,7 @@ extension AudioStems {
             parts.append(Data(clips.map { "\($0.id):\($0.audioRange.start):\($0.audioRange.end)" }.joined(separator: ",").utf8))
         }
         parts.append((try? Self.encoder.encode(project.master)) ?? Data())
+        if project.usesBuses { parts.append(Data(busKey(for: project).utf8)) }
         return "\(project.master.layout.rawValue)-" + hash(parts)
     }
 
@@ -317,7 +318,15 @@ extension AudioStems {
             return u
         }
         let mix = temp("stem")
-        if layout == .mono {
+        if project.usesBuses {
+            if layout == .mono {
+                let stereo = temp("dry")
+                try await renderRouted(project, layout: .stereo, frames: frames, transcripts: transcripts, library: library, to: stereo)
+                try AudioIO.convert(stereo, matrix: AudioLayout.stereo.downmixMatrix(to: .mono), layout: .mono, frames: 0..<frames, to: mix)
+            } else {
+                try await renderRouted(project, layout: layout, frames: frames, transcripts: transcripts, library: library, to: mix)
+            }
+        } else if layout == .mono {
             let built = try await TimelineBuilder.build(project, transcripts: transcripts, library: library, renderScale: 1, stems: self, dryTrack: nil, masterStage: false, soundOnly: true)
             var stereo = temp("dry")
             let n = try await AudioIO.mixdown(built, range: nil, to: stereo)

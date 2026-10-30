@@ -282,6 +282,7 @@ extension Project {
             }
             for clip in track.clips { try checkClipFits(clip, track: track) }
         }
+        try validateRouting()
     }
 
     func checkClipFits(_ clip: Clip, track: Track) throws {
