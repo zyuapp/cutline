@@ -1,9 +1,10 @@
+import CoreGraphics
 import CutlineCore
 import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio"]
+    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color"]
 
     static let recipeDocs = """
         duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
@@ -20,6 +21,7 @@ extension Toolbox {
         glitch: {at: [times or anchors], duration: 0.3, amount: 0.8}; adds glitch hits on an adjustment track. \
         whip_pan: {cut: "clip_a|clip_b", direction: left, duration: 0.35}. \
         template: {template: name (omit to list templates), at: time, values: {field: text}}. \
+        match_color: {clips: [ids] (default every media clip on V1), reference: clip id whose look the others match, strength: 0.8}; shot matching like Resolve's: measures each shot's color and exposure and adds a match LUT (effect "match") in front of its other color effects. \
         sync_audio: {clips: [video clip ids] (default every clip of that camera media on V1), audio: media id of the separate recorder, track: audio track (default new "Production sound"), keep_camera: false}; lines up dual-system sound by waveform, links it to the picture and mutes the camera mic. \
         follow: {clip: the graphic, title or overlay to move, target: "track:<id>" (media_track) or "face:<media>[:n]", offset_x: 0, offset_y: -0.1 (fractions of the frame; negative is above), smooth: 0.2}; keeps the clip on its subject wherever the media plays. \
         kinetic_text: {start, end (timeline or word anchors), preset: pop, unit: word, size: 0.09, y: 0.5, color, highlight: color, uppercase: false, max_width: 0.8}; spoken words appear as they are said. \
@@ -156,6 +158,34 @@ extension Toolbox {
                 let c = Clip(id: Project.newClipId(), kind: .text, name: "kinetic", start: start, duration: max(0.5, min(hi, words.last!.end + 0.6) - start), text: spec)
                 try p.addClip(c, trackId: t.id, mode: .place)
                 return "Added \(c.id) on \(t.id): \(words.count) words appear as they're spoken (\(fmt2(c.start))–\(fmt2(c.end))s). Restyle with param_set text.* or text_add-style animator via clip_update."
+            }
+        case "match_color":
+            let refId = try a.string("reference")
+            guard let ref = current.clip(refId), ref.kind == .media else { throw EditError("reference must be a media clip") }
+            let ids = (a.strings("clips") ?? current.tracks.first { $0.kind == .video }.map { $0.clips.filter { $0.kind == .media }.map(\.id) } ?? []).filter { $0 != refId }
+            let strength = a.optDouble("strength") ?? 0.8
+            let refStats = try await Toolbox.colorStats(ref, current)
+            var files: [String: URL] = [:]
+            let dir = b.cacheURL.appendingPathComponent("looks", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            var report: [String] = []
+            for id in ids {
+                guard let c = current.clip(id), c.kind == .media else { continue }
+                let st = try await Toolbox.colorStats(c, current)
+                let f = ColorMatch.transform(from: st, to: refStats, strength: strength)
+                let url = dir.appendingPathComponent("match-\(id)-\(refId).cube")
+                try Toolbox.writeCube(ColorMath.cubeData(size: 33, f), size: 33, title: "Match \(id) to \(refId)", to: url)
+                files[id] = url
+                report.append(String(format: "%@ (L %.0f→%.0f, a %.1f→%.1f, b %.1f→%.1f)", id, st.mean.x, refStats.mean.x, st.mean.y, refStats.mean.y, st.mean.z, refStats.mean.z))
+            }
+            let made = files
+            return try runEdit("Match \(made.count) shot(s) to \(Toolbox.clipName(refId, current))", dry: dry) { p in
+                for (id, url) in made {
+                    guard let loc = p.locateClip(id) else { continue }
+                    p.tracks[loc.track].clips[loc.clip].effects.removeAll { $0.id == "match" }
+                    p.tracks[loc.track].clips[loc.clip].effects.insert(Effect(id: "match", type: "color.lut", params: ["file": .string(url.path)]), at: 0)
+                }
+                return "Matched to \(refId): " + report.joined(separator: "; ") + ". Tune with param_set fx.match.mix."
             }
         case "sync_audio":
             let audioId = try a.string("audio")
@@ -319,5 +349,34 @@ extension Toolbox {
             let counts = Dictionary(grouping: finalTurns, by: \.angle).mapValues(\.count)
             return "Synced: " + (summary.isEmpty ? "single angle" : summary.joined(separator: ", ")) + ". Cut \(finalTurns.count) shots on \(trackId) (" + counts.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ") + ") with \(audioId)'s sound on \(audioTrack.id)."
         }
+    }
+}
+
+extension Toolbox {
+    /// Lab statistics of a clip's picture from three frames across what it plays.
+    static func colorStats(_ c: Clip, _ p: Project) async throws -> ColorMatch.Stats {
+        guard let m = c.mediaId.flatMap({ p.mediaAsset($0) }), m.hasVideo else { throw EditError("\(c.id) has no picture") }
+        let times = m.isImage ? [0.0] : [0.2, 0.5, 0.8].map { min(c.sourceIn, c.sourceOut) + abs(c.sourceOut - c.sourceIn) * $0 }
+        var pixels: [SIMD3<Float>] = []
+        for f in try await Frames.media(m, times: times, maxSize: CGSize(width: 160, height: 160)) {
+            let w = f.image.width, h = f.image.height
+            guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let data = ctx.data else { continue }
+            ctx.draw(f.image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            let px = data.assumingMemoryBound(to: UInt8.self)
+            for i in stride(from: 0, to: w * h, by: 2) {
+                pixels.append(SIMD3(Float(px[i * 4]) / 255, Float(px[i * 4 + 1]) / 255, Float(px[i * 4 + 2]) / 255))
+            }
+        }
+        return ColorMatch.stats(pixels)
+    }
+
+    /// Writes RGBA float cube data (red fastest) as a .cube LUT.
+    static func writeCube(_ rgba: [Float], size: Int, title: String, to url: URL) throws {
+        var text = "TITLE \"\(title)\"\nLUT_3D_SIZE \(size)\n"
+        text.reserveCapacity(size * size * size * 24)
+        for i in 0..<(size * size * size) {
+            text += String(format: "%.6f %.6f %.6f\n", rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2])
+        }
+        try text.write(to: url, atomically: true, encoding: .utf8)
     }
 }

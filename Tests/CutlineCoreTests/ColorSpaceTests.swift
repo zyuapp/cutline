@@ -180,3 +180,15 @@ private let midGrey: [LogProfile: Float] = [
     #expect(outside.z > -0.3 && outside.z >= -0.01)
     #expect(outside.x == 0.8)
 }
+
+@Test func colorMatchMovesStatisticsOntoTheReference() {
+    let warm: [SIMD3<Float>] = (0..<200).map { i in let v = Float(i) / 200; return SIMD3(min(1, v * 0.9 + 0.1), v * 0.7, v * 0.5) }
+    let cool: [SIMD3<Float>] = (0..<200).map { i in let v = Float(i) / 200; return SIMD3(v * 0.5, v * 0.7, min(1, v * 0.9 + 0.1)) }
+    let a = ColorMatch.stats(warm), b = ColorMatch.stats(cool)
+    let f = ColorMatch.transform(from: a, to: b)
+    let matched = ColorMatch.stats(warm.map(f))
+    #expect(abs(matched.mean.y - b.mean.y) < 3 && abs(matched.mean.z - b.mean.z) < 3)
+    let identity = ColorMatch.transform(from: a, to: a)
+    let p = SIMD3<Float>(0.4, 0.3, 0.2)
+    #expect(simd_distance(identity(p), p) < 0.01)
+}
