@@ -70,6 +70,10 @@ private func squareMovie(_ url: URL) async throws {
     #expect(dry.plainText.contains("Dry run") && dry.plainText.contains("removal1"), "\(dry.plainText)")
     #expect(bundle.analysis([ObjectTrack].self, "sq", "tracks")?.count == 1)
 
+    // A fixed box with a clean plate frame and the smooth fill, previewed.
+    let plated = await box.call("recipe", ["name": "remove_object", "args": ["clip": "c1", "box": ["x": .number(0.1), "y": .number(0.1), "width": .number(0.1), "height": .number(0.1)], "fixed": true, "clean_plate_at": 0.2, "fill": "smooth"], "dry_run": true])
+    #expect(!plated.isError && plated.plainText.contains("Clean plate from source"), "\(plated.plainText)")
+
     let removed = await box.call("recipe", ["name": "remove_object", "args": ["clip": "c1", "track": "track:trk1", "padding": 0.03]])
     #expect(!removed.isError, "\(removed.plainText)")
     #expect(removed.plainText.contains("renders in the background"), "\(removed.plainText)")

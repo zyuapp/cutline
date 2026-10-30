@@ -3,6 +3,7 @@ import CoreVideo
 import CutlineCore
 import Foundation
 import VideoToolbox
+import simd
 
 /// An RGB picture in 0…1, rows from the top, channels interleaved.
 struct Plane {
@@ -382,7 +383,8 @@ final class PictureProcessor {
     }
 
     /// Builds the stages for the enabled `video.*` effects of a clip, for frames `width`×`height` at `fps`.
-    static func stages(_ effects: [Effect], width: Int, height: Int, fps: Double, context: CIContext) -> [TemporalStage] {
+    /// `plates` are the clean plates of object removals by effect id, at the frame size, with the object's box in each.
+    static func stages(_ effects: [Effect], width: Int, height: Int, fps: Double, context: CIContext, plates: [String: (CVPixelBuffer, NormRect?)] = [:]) -> [TemporalStage] {
         var flow: OpticalFlow?
         var triedFlow = false
         return effects.compactMap { e -> TemporalStage? in
@@ -398,7 +400,13 @@ final class PictureProcessor {
             case "video.remove_object":
                 let samples = ObjectTrack.decodeBoxes(e.params["boxes"]?.string ?? "")
                 guard !samples.isEmpty else { return nil }
-                let s = ObjectRemover.Settings(samples: samples, padding: Float(n("padding")), window: n("window"), feather: Float(n("feather")), mix: Float(e.mix))
+                var s = ObjectRemover.Settings(samples: samples, padding: Float(n("padding")), window: n("window"), feather: Float(n("feather")), mix: Float(e.mix))
+                s.patchFill = (e.params["fill"]?.string ?? "patch") != "smooth"
+                if let (plate, box) = plates[e.id] {
+                    s.plate = plate
+                    let pad = s.padding * Float(height)
+                    s.plateHole = box.map { SIMD4(Float($0.x) * Float(width) - pad, Float($0.y) * Float(height) - pad, Float($0.x + $0.width) * Float(width) + pad, Float($0.y + $0.height) * Float(height) + pad) }
+                }
                 return ObjectRemover(s, fps: fps, context: context)
             default:
                 return nil
@@ -682,10 +690,18 @@ final class ObjectRemover: TemporalStage {
         var window: Seconds
         var feather: Float
         var mix: Float
+        /// What fills pixels no frame shows: patches from around the hole (`patch`) or a smooth membrane.
+        var patchFill = true
+        /// A picture of the background to take it from first, with the object's box in it (pixels) if it shows.
+        var plate: CVPixelBuffer?
+        var plateHole: SIMD4<Float>?
     }
 
     let settings: Settings
     let context: CIContext
+    /// The previous frame's completed region, guiding this one so the fill holds still.
+    private var previous: (index: Int, origin: SIMD2<Int>, width: Int, height: Int, rgb: [Float], has: [Bool], nnf: [Int32])?
+    private var plateSmall: CVPixelBuffer?
     /// Frames each side searched for the background.
     let reach: Int
     /// Only every `step`th frame is kept and searched.
@@ -700,6 +716,7 @@ final class ObjectRemover: TemporalStage {
         self.context = context
         reach = max(2, Int((settings.window * max(1, fps)).rounded()))
         step = max(1, reach / 12)
+        if let plate = settings.plate { plateSmall = Registration.small(plate, context: context) }
     }
 
     func needs(_ j: Int, from i: Int) -> Bool { j >= i - reach && j % step == 0 }
@@ -792,6 +809,14 @@ final class ObjectRemover: TemporalStage {
                 }
             }
         }
+        if let plate = settings.plate {
+            usePlate(plate, here: herePB, ring: ring, box: box, origin: SIMD2(x0, y0), width: rw, height: rh, fill: &fill, known: &known)
+        }
+        if settings.patchFill, known.contains(false) {
+            complete(i, current, box: SIMD4(x0, y0, x1, y1), fill: &fill, known: &known)
+        } else {
+            previous = nil
+        }
         ObjectRemover.diffuse(&fill, &known, rw, rh, border: { x, y in
             let cx = min(w - 1, max(0, x0 + x)), cy = min(h - 1, max(0, y0 + y))
             let o = (cy * w + cx) * 3
@@ -814,6 +839,129 @@ final class ObjectRemover: TemporalStage {
         }
     }
 
+    /// Takes the box's background from the clean plate where the plate shows it: aligned to this frame around the
+    /// hole and matched to its exposure there.
+    func usePlate(_ plate: CVPixelBuffer, here herePB: CVPixelBuffer, ring: SIMD4<Float>, box: SIMD4<Float>, origin: SIMD2<Int>, width rw: Int, height rh: Int, fill: inout [Float], known: inout [Bool]) {
+        let here = PixelView(herePB), there = PixelView(plate)
+        defer { here.unlock(); there.unlock() }
+        var start = SIMD2<Float>(0, 0)
+        if let a = Registration.small(herePB, context: context), let b = plateSmall {
+            let t = Registration.translation(a, b, fullWidth: CVPixelBufferGetWidth(plate))
+            start = SIMD2(Float(t.x), Float(t.y))
+        }
+        let away = SIMD4<Float>(-1e6, -1e6, -1e6, -1e6)
+        // The object's box at the plate's time is skipped, unless it covers where the object is now: then the plate
+        // was picked as a frame without the object.
+        var hole = settings.plateHole ?? away
+        let ix = max(0, min(hole.z, box.z) - max(hole.x, box.x)), iy = max(0, min(hole.w, box.w) - max(hole.y, box.y))
+        if ix * iy > 0.5 * (box.z - box.x) * (box.w - box.y) { hole = away }
+        let offset = ObjectRemover.refine(start, here: here, there: there, ring: ring, hole: box, holeThere: hole, search: 10)
+        // Exposure: the mean difference over the ring, outside both holes.
+        var diff = SIMD3<Float>(repeating: 0)
+        var n: Float = 0
+        var y = ring.y
+        while y <= ring.w {
+            var x = ring.x
+            while x <= ring.z {
+                let inHole = x >= box.x - 1 && x <= box.z + 1 && y >= box.y - 1 && y <= box.w + 1
+                let qx = x + offset.x, qy = y + offset.y
+                let inPlateHole = qx >= hole.x - 1 && qx <= hole.z + 1 && qy >= hole.y - 1 && qy <= hole.w + 1
+                if !inHole, !inPlateHole, qx >= 0, qy >= 0, qx <= Float(there.width - 1), qy <= Float(there.height - 1) {
+                    diff += here.sample(x, y) - there.sample(qx, qy)
+                    n += 1
+                }
+                x += 3
+            }
+            y += 3
+        }
+        let gain = n > 20 ? diff / n : .zero
+        for ry in 0..<rh {
+            for rx in 0..<rw {
+                let qx = Float(origin.x + rx) + offset.x, qy = Float(origin.y + ry) + offset.y
+                guard qx >= 0, qy >= 0, qx <= Float(there.width - 1), qy <= Float(there.height - 1) else { continue }
+                if qx >= hole.x - 1, qx <= hole.z + 1, qy >= hole.y - 1, qy <= hole.w + 1 { continue }
+                let v = there.sample(qx, qy) + gain
+                let o = ry * rw + rx
+                fill[o * 3] = v.x; fill[o * 3 + 1] = v.y; fill[o * 3 + 2] = v.z
+                known[o] = true
+            }
+        }
+    }
+
+    /// Fills what no frame (or plate) shows by exemplar inpainting of a region around the box, guided by the
+    /// previous frame's fill moved with the camera.
+    private func complete(_ i: Int, _ current: Plane, box: SIMD4<Int>, fill: inout [Float], known: inout [Bool]) {
+        let w = current.width, h = current.height
+        let (x0, y0, x1, y1) = (box.x, box.y, box.z, box.w)
+        let rw = x1 - x0 + 1, rh = y1 - y0 + 1
+        let margin = min(200, max(24, max(rw, rh)))
+        let cx0 = max(0, x0 - margin), cy0 = max(0, y0 - margin), cx1 = min(w - 1, x1 + margin), cy1 = min(h - 1, y1 + margin)
+        let cw = cx1 - cx0 + 1, ch = cy1 - cy0 + 1
+        var rgb = [Float](repeating: 0, count: cw * ch * 3)
+        var hole = [Bool](repeating: false, count: cw * ch)
+        for y in 0..<ch {
+            for x in 0..<cw {
+                let fx = cx0 + x, fy = cy0 + y, c = (y * cw + x) * 3
+                if fx >= x0, fx <= x1, fy >= y0, fy <= y1 {
+                    let r = (fy - y0) * rw + fx - x0
+                    if known[r] {
+                        for k in 0..<3 { rgb[c + k] = fill[r * 3 + k] }
+                    } else {
+                        hole[y * cw + x] = true
+                    }
+                } else {
+                    let o = (fy * w + fx) * 3
+                    for k in 0..<3 { rgb[c + k] = current.data[o + k] }
+                }
+            }
+        }
+        let origin = SIMD2(cx0, cy0)
+        var guide: Inpainter.Guide?
+        if let prev = previous, prev.index == i - 1, path.indices.contains(i), path.indices.contains(i - 1) {
+            // Content at p in this frame is at p + shift in the previous one.
+            let shift = path[i - 1] - path[i]
+            let sx = Float(shift.x), sy = Float(shift.y)
+            let ix = Int(shift.x.rounded()), iy = Int(shift.y.rounded())
+            var g = Inpainter.Guide(rgb: [Float](repeating: 0, count: cw * ch * 3), has: [Bool](repeating: false, count: cw * ch), nnf: [Int32](repeating: -1, count: cw * ch))
+            for y in 0..<ch {
+                for x in 0..<cw where hole[y * cw + x] {
+                    let px = Float(origin.x + x) + sx - Float(prev.origin.x), py = Float(origin.y + y) + sy - Float(prev.origin.y)
+                    let ax = Int(px.rounded(.down)), ay = Int(py.rounded(.down))
+                    guard ax >= 0, ay >= 0, ax + 1 < prev.width, ay + 1 < prev.height else { continue }
+                    let corners = [ay * prev.width + ax, ay * prev.width + ax + 1, (ay + 1) * prev.width + ax, (ay + 1) * prev.width + ax + 1]
+                    guard corners.allSatisfy({ prev.has[$0] }) else { continue }
+                    let fx = px - Float(ax), fy = py - Float(ay)
+                    let weights = [(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy]
+                    let t = y * cw + x
+                    for k in 0..<3 { g.rgb[t * 3 + k] = zip(corners, weights).reduce(0) { $0 + prev.rgb[$1.0 * 3 + k] * $1.1 } }
+                    g.has[t] = true
+                }
+            }
+            for y in 0..<ch {
+                for x in 0..<cw {
+                    let qx = origin.x + x + ix - prev.origin.x, qy = origin.y + y + iy - prev.origin.y
+                    guard qx >= 0, qy >= 0, qx < prev.width, qy < prev.height else { continue }
+                    let s = prev.nnf[qy * prev.width + qx]
+                    guard s >= 0 else { continue }
+                    let sx = Int(s) % prev.width + prev.origin.x - ix - origin.x, sy = Int(s) / prev.width + prev.origin.y - iy - origin.y
+                    if sx >= 0, sy >= 0, sx < cw, sy < ch { g.nnf[y * cw + x] = Int32(sy * cw + sx) }
+                }
+            }
+            guide = g
+        }
+        let result = Inpainter.fill(&rgb, width: cw, height: ch, hole: hole, guide: guide)
+        for y in y0...y1 {
+            for x in x0...x1 {
+                let r = (y - y0) * rw + x - x0
+                guard !known[r] else { continue }
+                let c = ((y - cy0) * cw + x - cx0) * 3
+                for k in 0..<3 { fill[r * 3 + k] = rgb[c + k] }
+                known[r] = true
+            }
+        }
+        previous = (i, origin, cw, ch, rgb, hole, result.nnf)
+    }
+
     /// The band around a hole whose background registers the frames locally, (x0, y0, x1, y1) in pixels.
     static func ring(_ hole: SIMD4<Float>, width w: Int, height h: Int) -> SIMD4<Float> {
         let m = max(16, 0.6 * max(hole.z - hole.x, hole.w - hole.y))
@@ -822,7 +970,8 @@ final class ObjectRemover: TemporalStage {
 
     /// Refines the offset that maps this frame's pixels onto another frame's (`there`) by Gauss-Newton translation
     /// alignment of the band around the hole, skipping both frames' holes; keeps `start` when that doesn't improve.
-    static func refine(_ start: SIMD2<Float>, here: PixelView, there: PixelView, ring: SIMD4<Float>, hole: SIMD4<Float>, holeThere: SIMD4<Float>) -> SIMD2<Float> {
+    /// With `search`, whole-pixel offsets that far around `start` are tried first and the best one is refined.
+    static func refine(_ start: SIMD2<Float>, here: PixelView, there: PixelView, ring: SIMD4<Float>, hole: SIMD4<Float>, holeThere: SIMD4<Float>, search: Int = 0) -> SIMD2<Float> {
         let area = max(1, (ring.z - ring.x) * (ring.w - ring.y))
         let stride = max(1, Int((area / 3000).squareRoot().rounded()))
         var points: [(Float, Float, Float)] = []
@@ -837,22 +986,36 @@ final class ObjectRemover: TemporalStage {
             y += stride
         }
         guard points.count > 50 else { return start }
+        // A uniform brightness difference between the frames is solved for along with the motion.
         func cost(_ o: SIMD2<Float>) -> (Float, Int) {
-            var s: Float = 0, n = 0
+            var s: Float = 0, s2: Float = 0, n = 0
             for (px, py, v) in points {
                 let qx = px + o.x, qy = py + o.y
                 if qx >= holeThere.x - 1 && qx <= holeThere.z + 1 && qy >= holeThere.y - 1 && qy <= holeThere.w + 1 { continue }
                 if qx < 1 || qy < 1 || qx > Float(there.width - 2) || qy > Float(there.height - 2) { continue }
                 let r = there.gray(qx, qy) - v
-                s += r * r
+                s += r
+                s2 += r * r
                 n += 1
             }
-            return (n > 0 ? s / Float(n) : .infinity, n)
+            guard n > 0 else { return (.infinity, 0) }
+            let mean = s / Float(n)
+            return (s2 / Float(n) - mean * mean, n)
         }
         var o = start
         var (best, _) = cost(o)
+        if search > 0 {
+            for dy in -search...search {
+                for dx in -search...search where dx != 0 || dy != 0 {
+                    let candidate = start + SIMD2(Float(dx), Float(dy))
+                    let (c, n) = cost(candidate)
+                    if n > points.count / 2, c < best { best = c; o = candidate }
+                }
+            }
+        }
         for spread: Float in [2, 2, 1, 1, 1, 1] {
-            var hxx: Float = 0, hxy: Float = 0, hyy: Float = 0, bx: Float = 0, by: Float = 0
+            var h = simd_float3x3(), g = SIMD3<Float>(repeating: 0)
+            var count = 0
             for (px, py, v) in points {
                 let qx = px + o.x, qy = py + o.y
                 if qx >= holeThere.x - 1 && qx <= holeThere.z + 1 && qy >= holeThere.y - 1 && qy <= holeThere.w + 1 { continue }
@@ -860,15 +1023,14 @@ final class ObjectRemover: TemporalStage {
                 let gx = (there.gray(qx + spread, qy) - there.gray(qx - spread, qy)) / (2 * spread)
                 let gy = (there.gray(qx, qy + spread) - there.gray(qx, qy - spread)) / (2 * spread)
                 let r = there.gray(qx, qy) - v
-                hxx += gx * gx
-                hxy += gx * gy
-                hyy += gy * gy
-                bx += gx * r
-                by += gy * r
+                let j = SIMD3(gx, gy, 1)
+                h += simd_float3x3(columns: (j * gx, j * gy, j))
+                g += j * r
+                count += 1
             }
-            let det = hxx * hyy - hxy * hxy
-            guard det > 1e-9 else { break }
-            let step = SIMD2(-(hyy * bx - hxy * by) / det, -(hxx * by - hxy * bx) / det)
+            guard count > 10, abs(h.determinant) > 1e-9 else { break }
+            let solved = -(h.inverse * g)
+            let step = SIMD2(solved.x, solved.y)
             guard step.x.isFinite, step.y.isFinite, abs(step.x) < 4, abs(step.y) < 4 else { break }
             let next = o + step
             let (c, n) = cost(next)

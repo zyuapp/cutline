@@ -648,6 +648,23 @@ public enum ColorPipeline {
         return { c in Transfer.hlgInverseEOTF(nits(pointwiseMax(c, .zero) * gain), peak: peak) }
     }
 
+    /// An encoded `source` signal to BT.1886 Rec. 709 for viewing on SDR displays. Content up to `knee` of reference
+    /// white (203 cd/m² for HDR) maps back exactly; brighter colors roll off toward SDR white keeping their hue.
+    public static func sdrPreview(from source: WorkingSpace, knee: Float = 0.9) -> ColorMath.Transform {
+        let m = Primaries.matrix(from: source.primaries, to: .rec709).float
+        let decode = sceneLinear(source)
+        return { c in
+            var v = pointwiseMax(m * decode(c), .zero)
+            let peak = max(v.x, max(v.y, v.z))
+            if peak > knee {
+                let rolled = knee + (1 - knee) * (1 - exp(-(peak - knee) / (1 - knee)))
+                v *= rolled / peak
+            }
+            v = simd_clamp(v, .zero, SIMD3(repeating: 1))
+            return SIMD3(Transfer.gammaEncode(v.x, 2.4), Transfer.gammaEncode(v.y, 2.4), Transfer.gammaEncode(v.z, 2.4))
+        }
+    }
+
     /// Scale applied before an HDR tone curve so mid grey lands where the linear `.none` mapping puts it.
     static func hdrGain(_ tone: ToneMap, peak: Float) -> Float {
         let goal = 0.18 * referenceWhiteNits / peak

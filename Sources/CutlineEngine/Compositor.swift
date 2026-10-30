@@ -143,7 +143,7 @@ public final class RenderScene: @unchecked Sendable {
                 if let media, let log = media.log {
                     img = ColorManagement.applyInput(Deinterlace.apply(ColorManagement.rawImage(pb), order: fields), log: log, target: project.canvas.colorSpace, tone: clip.inputTone ?? .aces, exposure: Float(clip.inputExposure ?? 0), recordedIn: media.signalRange ?? .video).oriented(orientation)
                 } else {
-                    img = Deinterlace.apply(CIImage(cvPixelBuffer: pb), order: fields).oriented(orientation)
+                    img = ColorManagement.sourceImage(pb, canvas: project.canvas.colorSpace) { Deinterlace.apply($0, order: fields) }.oriented(orientation)
                 }
                 opaque = true
             }

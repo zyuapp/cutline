@@ -275,7 +275,7 @@ extension Toolbox {
             .init("type", .string, "Type of a new effect, default color.wheels"),
             .init("window", .bool, "With face: an ellipse window on the face (default true)"),
         ]),
-        RecipeSpec(name: "remove_object", group: "Finishing", summary: "Paints an object out with the background from other frames where it shows (aligned to the camera's motion, temporal median) and diffusion where no frame shows it, rendered in the background as a processed copy.", args: [
+        RecipeSpec(name: "remove_object", group: "Finishing", summary: "Paints an object out with the background from other frames where it shows (aligned to the camera's motion, temporal median), a clean plate if given, and patch-based inpainting that continues lines where no frame shows it; rendered in the background as a processed copy.", args: [
             .init("clip", .string, "Video clip"),
             .init("track", .string, "\"track:<id>\" from media_track"),
             .init("box", .object, "Or the object's box in source frame fractions, tracked now", fields: [
@@ -287,6 +287,9 @@ extension Toolbox {
             .init("padding", .number, "Fraction of frame height, default 0.02"),
             .init("window", .number, "Seconds searched each side, default 1.5"),
             .init("feather", .number, "Default 0.004"),
+            .init("fill", .string, "patch (default) or smooth, for pixels no frame shows"),
+            .init("clean_plate", .string, "Image of the background without the object"),
+            .init("clean_plate_at", .time, "Or a timeline time where the background shows"),
         ]),
     ]
 

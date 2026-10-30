@@ -183,6 +183,8 @@ extension Toolbox {
         ]),
         "export": ToolBrief(text: "Render the timeline (default HEVC .mp4 in <project>/exports). platform picks the codec and checks shape, length, loudness, true peak and UI-safe text; strict refuses on failures. Also subtitles, chapters, captions, interchange files, stems, stills, archive, variants. catalog tool=export explains every option.", args: [
             "path": "", "platform": "", "strict": "Refuse to export when the platform check fails", "check_only": "Only run the platform checks",
+            "hdr": "PQ HEVC: {mastering, max_nits, min_nits, max_cll, max_fall}; MaxCLL/FALL measured when omitted",
+            "hdr.mastering": "", "hdr.max_nits": "", "hdr.min_nits": "", "hdr.max_cll": "", "hdr.max_fall": "",
             "preset": "Default hevc; dnxhr_* and xdcam_hd422 need ffmpeg", "container": "mov carries timecode; mxf for DNxHR", "bitrate_mbps": "", "start": "", "end": "",
             "deliver": "Default video; stems is one file per audio role", "audio_format": "", "downmix": "", "image_format": "", "times": "For stills",
             "interlaced": "1080i master: tff or bff", "leader": "Bars, slate, 2-pop: true or {bars, slate, black, pop, version}",

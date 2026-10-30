@@ -124,6 +124,9 @@ public struct ExportOptions: Sendable {
     public var leader: Leader?
     /// Interlaced output: the timeline is rendered at the field rate and woven, top or bottom field first. ProRes only.
     public var interlaced: FieldOrder?
+    /// HDR10 static metadata for PQ timelines; nil uses the defaults (P3-D65 1000 cd/m² mastering display) with
+    /// MaxCLL and MaxFALL measured from the render.
+    public var hdr: HDRMetadata?
 
     public init(preset: ExportPreset = .hevc, bitrateMbps: Double? = nil, range: TimeRange? = nil, subtitles: [TimedText] = [], subtitleLanguage: String = "en", chapters: [TimedText] = [], closedCaptions: [TimedText] = [], audioKbps: Int = 256, timecodeStart: String? = nil, leader: Leader? = nil) {
         self.preset = preset
@@ -255,11 +258,22 @@ public enum Exporter {
         let fps = canvas.fps
         var compression: [String: Any] = [AVVideoExpectedSourceFrameRateKey: fps]
         if !options.preset.isProRes {
-            let bitrate = options.bitrateMbps.map { Int($0 * 1_000_000) } ?? options.preset.defaultBitrate(width: Int(size.width), height: Int(size.height), fps: fps)
+            let bitrate = options.bitrateMbps.map { Int($0 * 1_000_000) }
+                ?? (space.isHDR ? HDRMetadata.defaultBitrate(width: Int(size.width), height: Int(size.height), fps: fps) : options.preset.defaultBitrate(width: Int(size.width), height: Int(size.height), fps: fps))
             compression[AVVideoAverageBitRateKey] = bitrate
             compression[AVVideoMaxKeyFrameIntervalDurationKey] = 2
             compression[AVVideoAllowFrameReorderingKey] = true
             compression[AVVideoProfileLevelKey] = options.preset == .h264 ? AVVideoProfileLevelH264HighAutoLevel : (space.isHDR || options.preset == .hevc_10bit ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel) as String
+        }
+        if space == .rec2020_pq, options.preset.codec == .hevc {
+            var meta = options.hdr ?? HDRMetadata()
+            if meta.maxCLL == nil || meta.maxFALL == nil {
+                let levels = try await HDRMetadata.measure(built, range: range)
+                meta.maxCLL = meta.maxCLL ?? Int(levels.maxCLL.rounded())
+                meta.maxFALL = meta.maxFALL ?? Int(levels.maxFALL.rounded())
+            }
+            compression[kVTCompressionPropertyKey_MasteringDisplayColorVolume as String] = meta.masteringDisplayData
+            compression[kVTCompressionPropertyKey_ContentLightLevelInfo as String] = HDRMetadata.contentLightData(maxCLL: meta.maxCLL ?? 0, maxFALL: meta.maxFALL ?? 0)
         }
         var videoSettings: [String: Any] = [
             AVVideoCodecKey: options.preset.codec,

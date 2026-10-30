@@ -9,7 +9,15 @@ extension Toolbox {
             "path": Schema.string("Output file path"),
             "preset": Schema.string("hevc (default, small and sharp), hevc_10bit (Main 10), h264 (most compatible, 8-bit only), prores (422), prores_hq (broadcast master), prores_lt, prores_proxy (offline), prores4444 (with alpha), prores4444xq. ProRes writes .mov. With ffmpeg installed: dnxhr_hq, dnxhr_hqx (10-bit), dnxhr_sq, dnxhr_lb (.mov, or container mxf for MXF OP1a) and xdcam_hd422 (MPEG-2 4:2:2 50 Mb/s long GOP, 1920×1080, eight 24-bit PCM channels, MXF OP1a); these render a ProRes intermediate that ffmpeg encodes, keeping timecode, audio channels and color tags. 10-bit H.264 isn't available", values: ExportPreset.allCases.map(\.rawValue)),
             "platform": Schema.string("Delivery target; sets the preset and runs its checks", values: Platform.all.map(\.id)),
-            "bitrate_mbps": Schema.number("Video bitrate in megabits per second; default high quality for the size"),
+            "bitrate_mbps": Schema.number("Video bitrate in megabits per second; default high quality for the size (HDR HEVC: 20 Mb/s at 1080p30, scaled with size and frame rate)"),
+            "hdr": ["type": "object", "description": "HDR10 static metadata for PQ (canvas color_space rec2020_pq) HEVC exports, always written: mastering display (SMPTE ST 2086) and content light levels. Defaults: P3-D65 1000 cd/m² mastering display, MaxCLL and MaxFALL measured from the render (one extra render pass)",
+                    "properties": [
+                        "mastering": Schema.string("Primaries of the grading monitor, default p3_d65", values: HDRMetadata.MasteringPrimaries.allCases.map(\.rawValue)),
+                        "max_nits": Schema.number("Mastering display peak, cd/m² (default 1000)"),
+                        "min_nits": Schema.number("Mastering display black, cd/m² (default 0.0001)"),
+                        "max_cll": Schema.integer("MaxCLL in cd/m²; default measured"),
+                        "max_fall": Schema.integer("MaxFALL in cd/m²; default measured"),
+                    ]],
             "container": Schema.string("File format for HEVC and H.264: mp4 (default) or mov (QuickTime, carries a timecode track); ProRes is always mov. DNxHR: mov (default) or mxf (OP1a, one track per audio channel); XDCAM is always mxf. A path ending .mov or .mxf also picks it", values: ["mp4", "mov", "mxf"]),
             "timecode_start": Schema.string("Timecode of the first program frame, \"hh:mm:ss:ff\"; default the canvas start timecode (01:00:00:00 unless set with canvas_set)"),
             "leader": ["type": ["boolean", "object"], "description": "Broadcast leader before the program: true, or {bars, slate, black, pop, version}. SMPTE color bars with 1 kHz tone at −20 dBFS (bars seconds, default 10), a slate with title, date, duration, loudness, audio layout and version (slate seconds, default 10), then black (default 10) with a 2-pop 2 s before the program (pop, default true). The timecode track starts earlier so the program starts at timecode_start (bars at 00:59:30:00 by default)",
@@ -176,6 +184,19 @@ extension Toolbox {
             options.interlaced = fields
             if options.interlaced != nil { report.append("Interlaced \(options.interlaced!.rawValue == "tff" ? "top" : "bottom") field first at \(fmt2(p.canvas.fps * 2)) fields/s") }
             options.closedCaptions = closed
+            if let o = args.raw["hdr"]?.object {
+                var meta = HDRMetadata()
+                if let m = o["mastering"]?.string {
+                    guard let primaries = HDRMetadata.MasteringPrimaries(rawValue: m) else { throw EditError("hdr.mastering is one of \(HDRMetadata.MasteringPrimaries.allCases.map(\.rawValue).joined(separator: ", "))") }
+                    meta.primaries = primaries
+                }
+                if let v = o["max_nits"]?.double { meta.maxLuminance = v }
+                if let v = o["min_nits"]?.double { meta.minLuminance = v }
+                meta.maxCLL = o["max_cll"]?.double.map { Int($0.rounded()) }
+                meta.maxFALL = o["max_fall"]?.double.map { Int($0.rounded()) }
+                guard meta.maxLuminance > meta.minLuminance, meta.minLuminance >= 0 else { throw EditError("hdr.max_nits must be above hdr.min_nits") }
+                options.hdr = meta
+            }
             let tcFormat = p.canvas.timecodeFormat
             if let tc = args.optString("timecode_start") {
                 guard let f = tcFormat.frames(tc) else { throw EditError("timecode_start is hh:mm:ss:ff with frames below \(tcFormat.nominal), e.g. 01:00:00:00") }
@@ -243,6 +264,9 @@ extension Toolbox {
             let mbps = seconds > 0 ? Double(size) * 8 / seconds / 1_000_000 : 0
             let timecode = try await TimecodeTrack.read(url)
             report.insert("Exported \(url.path)\n\(check.width)×\(check.height), \(fmt2(seconds))s, \(String(format: "%.1f", Double(size) / 1_048_576)) MB (\(fmt1(mbps)) Mb/s), \(preset.title), \(p.master.layout.title) audio, took \(fmt1(Date().timeIntervalSince(started)))s", at: lead)
+            if let hdr = try await HDRMetadata.read(url) {
+                report.append("HDR10: \(hdr.primaries.rawValue) mastering display \(fmt1(hdr.maxLuminance))/\(hdr.minLuminance) cd/m², MaxCLL \(hdr.maxCLL ?? 0), MaxFALL \(hdr.maxFALL ?? 0)" + (options.hdr?.maxCLL == nil ? " (measured)" : ""))
+            }
             report.insert(timecode.map { "Timecode track starts at \($0)" + (tcFormat.dropFrame ? " (drop frame)" : "") } ?? "No timecode track: MP4 can't carry one; export with container:\"mov\" for a timecode track.", at: lead + 1)
             return .text(report.joined(separator: "\n"))
         })

@@ -274,9 +274,13 @@ public enum TimelineBuilder {
         let h = (Double(project.canvas.height) * renderScale / 2).rounded() * 2
         vc.renderSize = CGSize(width: w, height: h)
         let tags = ColorManagement.videoCompositionTags(project.canvas.colorSpace)
-        vc.colorPrimaries = tags.primaries
-        vc.colorTransferFunction = tags.transfer
-        vc.colorYCbCrMatrix = tags.matrix
+        // Wide and HDR canvases take source frames as decoded and convert them in the compositor: AVFoundation's
+        // conversion to these tags skips some frames and mislabels half-float ones.
+        if project.canvas.colorSpace == .rec709 {
+            vc.colorPrimaries = tags.primaries
+            vc.colorTransferFunction = tags.transfer
+            vc.colorYCbCrMatrix = tags.matrix
+        }
         vc.instructions = [CutlineInstruction(timeRange: CMTimeRange(start: .zero, duration: time(duration)), scene: scene)]
 
         let mix = AVMutableAudioMix()
