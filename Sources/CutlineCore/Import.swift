@@ -2284,14 +2284,18 @@ extension Project {
         /// Source frames from midnight at second `t` of the clip's media, in its own counting.
         func nativeSrc(_ c: Clip, _ t: Seconds) -> Int { c.mediaId.flatMap(mediaAsset)?.sourceFrames(at: t, fallback: canvas.fps) ?? grid.frames(t) }
         /// Source frame `f` counted as `s` does, in the list's counting: the same frame count at the same rate (only the
-        /// drop-frame labels change), else the label's time of day (hh:mm:ss and the fraction of a second) at the list's rate.
+        /// drop-frame labels change), else the list frame nearest the label's time of day (hh:mm:ss and the fraction of
+        /// a second), so every label is valid at the list's rate: a fraction that rounds to a whole second carries into it.
         func listFrames(_ f: Int, from s: TimecodeFormat) -> Int {
             if s.frameNum * format.frameDen == format.frameNum * s.frameDen { return f }
             let parts = s.string(f).split(whereSeparator: { ":;".contains($0) }).compactMap { Int($0) }
             guard parts.count == 4 else { return f }
-            var ff = min(nominal - 1, Int((Double(parts[3]) / Double(s.nominal) * Double(nominal)).rounded()))
-            if drop, parts[2] == 0, parts[1] % 10 != 0 { ff = max(ff, EDLTimecode.dropFrames(nominal)) }
-            return EDLTimecode.frames(parts[0], parts[1], parts[2], ff, nominal: nominal, drop: drop)
+            let frames = Int((Double(parts[3]) / Double(s.nominal) * Double(nominal)).rounded())
+            let second = parts[0] * 3600 + parts[1] * 60 + parts[2] + frames / nominal
+            let (h, m, sec) = (second / 3600 % 24, second / 60 % 60, second % 60)
+            var ff = frames % nominal
+            if drop, sec == 0, m % 10 != 0 { ff = max(ff, EDLTimecode.dropFrames(nominal)) }
+            return EDLTimecode.frames(h, m, sec, ff, nominal: nominal, drop: drop)
         }
         /// Source frame at second `t` of the clip's media, counted at the list's rate and drop frame.
         func src(_ c: Clip, _ t: Seconds) -> Int { listFrames(nativeSrc(c, t), from: srcFormat(c)) }

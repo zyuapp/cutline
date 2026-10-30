@@ -96,7 +96,7 @@ extension Toolbox {
                 guard !lines.isEmpty else { throw EditError("No cut could take the transition:\n" + skipped.joined(separator: "\n")) }
                 lines.append("Skipped \(skipped.count) cut(s):\n" + skipped.map { "  " + $0 }.joined(separator: "\n"))
             }
-            return lines.joined(separator: "\n")
+            return Toolbox.compactTransitions(lines)
         })
     }
 

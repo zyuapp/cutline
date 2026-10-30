@@ -66,7 +66,7 @@ extension Toolbox {
                     }
                 }
             }
-            return lines.joined(separator: "\n")
+            return Toolbox.compactTargets(lines, p)
         })
 
         addEdit(EditTool(name: "effect_add", description: "Add, update, reorder or remove an effect on clips or tracks. Effects stack in order on each clip: blur, sharpen, color correction, black and white, glow, vignette, film grain, pixelate, posterize, drop shadow, border, distortions, and rect/ellipse masks (feathered, inverted, animatable). Effects on an adjustment layer (clip_add adjustment:true) apply to everything below it. Audio effects (audio.eq, compressor, gate, limiter, voice_isolation, reverb, delay, character, pitch, and repair: denoise, deess, dehum, declick, plus pan and width) go on a clip (its sound only), a track (every clip's sound on it) or the master; they are rendered offline, so preview and export match. Finishing: video.denoise (temporal noise reduction, rendered in the background) and mask.object (roto of a media_track object: params {track: \"trk1\"}). Passing an existing id updates that effect. Animate parameters afterwards with param_set path fx.<id>.<param>. Call catalog for each type's parameters.", schema: Schema.object([
@@ -116,7 +116,7 @@ extension Toolbox {
                     lines.append(Toolbox.describePlan(plan, effects: t.effects, owner: t.id))
                 }
             }
-            return lines.joined(separator: "\n")
+            return Toolbox.compactTargets(lines, p)
         })
 
         add(Tool(name: "catalog", description: "Look up what Cutline can do. No arguments: effect types by category, transitions, blend modes, eases, parameter paths and time anchors. type: one effect's parameters with ranges, units and an example call. search: find effects by word. paths: every clip and track parameter path.", schema: Schema.object([
@@ -253,7 +253,7 @@ extension Toolbox {
                 snapped = " (snapped from \(fmt(n))s to the \(Describe.fmtFps(canvas.fps))fps frame grid; subframe:true keeps it sample-accurate)"
             }
             try c.set(path, value)
-            parts.append("\(canonical) \(before.map(\.description) ?? "–")→\(c.staticValue(canonical).map(\.description) ?? "?")" + snapped + (c.anim[canonical] != nil ? " (animated; the animation still wins)" : ""))
+            parts.append("\(canonical) \(before.map(\.description) ?? "–")→\(c.staticValue(canonical).map(\.description) ?? "?")" + snapped + (c.animationKeys(canonical) != nil ? " (animated; the animation still wins)" : ""))
         }
         let relative = args.bool("relative", default: false)
         for (given, raw) in (args.raw["animate"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
@@ -289,7 +289,7 @@ extension Toolbox {
             try c.animate(path, keys: keys)
             let canonical = Clip.canonical(path)
             let outside = keys.filter { $0.t < -1e-6 || $0.t > c.duration + 1e-6 }
-            var line = "animate \(canonical): " + (c.anim[canonical]?.keys ?? []).map { "\(fmt2($0.t))s→\($0.v)" }.joined(separator: ", ")
+            var line = "animate \(canonical): " + (c.animationKeys(canonical) ?? []).map { "\(fmt2($0.t))s→\($0.v)" }.joined(separator: ", ")
             if !outside.isEmpty { line += " (warning: \(outside.count) keys fall outside the clip's 0–\(fmt2(c.duration))s)" }
             parts.append(line)
         }
@@ -417,7 +417,7 @@ extension Toolbox {
             "Eases for animation keys: " + Easing.allCases.map(\.rawValue).joined(separator: ", "),
             "3D: param_set transform.3d true puts a layer in 3D space (transform.z depth, rotate_x/rotate_y/rotation); clip_add generator \"camera\" adds a camera that orbits, dollies, zooms and focuses (animate fx.gen.orbit, distance, fov, zoom, focus_distance, blur). Neighbouring 3D layers draw far to near.",
             "Parameter paths: transform.{scale,x,y,rotation,opacity,fit,crop.left|top|right|bottom,3d,z}, blend, fade.{in,out}, audio.{volume,fade_in,fade_out,lead,lag,channels}, text.*, color, fx.<id>.<param>. catalog paths=true lists them all.",
-            "Units: lengths are fractions of frame height; positions are fractions of the frame with 0,0 top left; angles are degrees clockwise.",
+            "Units: lengths are fractions of frame height; positions (text.x/y, fx.gen.x/y, transform.pos_x/pos_y) are fractions of the frame with 0,0 top left, but transform.x/y offset the clip's center from the frame center (0 centered, ±0.5 on an edge); angles are degrees clockwise.",
             "Time anchors (anywhere a time is taken): seconds, \"m:ss.f\", \"<media>.w12\" / \"<media>.w12.end\" (transcript words; source-time arguments resolve them in the media), \"<media>.b8\" / \"<media>.d2\" / \"<media>.s3\" (beats, downbeats, shots), \"beat:12\", \"<media>@01:00:12:10\" (that media's source timecode at its own rate, \";\" before the frames for drop frame; a source time), \"tc:00:00:10:00\" (timeline timecode), \"<clip id>.start\" / \".end\", \"marker:<label>\", \"start\", \"end\", each with optional +/- seconds.",
             "Every edit tool takes dry_run:true to preview its changes. batch groups edits into one undo step and can name results with as:\"x\" for later \"$x\".",
             Toolbox.busDocs,

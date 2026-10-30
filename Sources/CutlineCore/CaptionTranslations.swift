@@ -29,22 +29,22 @@ extension Project {
             guard let i = starts[t.from], let j = ends[t.to], j >= i else { stale += 1; continue }
             let parts = j == i ? [t.text] : Self.share(t.text, over: cues[i...j].map { $0.text.count })
             for (k, part) in parts.enumerated() where !part.isEmpty {
-                texts[i + k] = texts[i + k].map { $0 + " " + part } ?? part
+                texts[i + k] = texts[i + k].map { Self.joinWords([$0, part]) } ?? part
             }
         }
         return (texts, stale)
     }
 
-    /// `text` cut at spaces into `weights.count` consecutive parts sized like the weights.
+    /// `text` cut between words (`textUnits`) into `weights.count` consecutive parts sized like the weights.
     static func share(_ text: String, over weights: [Int]) -> [String] {
-        let tokens = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        let tokens = textUnits(text)
         let total = Double(max(1, weights.reduce(0, +)))
         var out: [String] = []
         var from = 0, acc = 0.0
         for (k, w) in weights.enumerated() {
             acc += Double(w)
             let to = k == weights.count - 1 ? tokens.count : min(tokens.count, Int((Double(tokens.count) * acc / total).rounded()))
-            out.append(tokens[from..<max(from, to)].joined(separator: " "))
+            out.append(joinWords(tokens[from..<max(from, to)]))
             from = max(from, to)
         }
         return out
@@ -59,7 +59,7 @@ extension Project {
         let texts = cueTranslations(language, cues: cues).texts
         return zip(cues, texts).map { cue, text in
             guard let text, let first = cue.words.first, let last = cue.words.last else { return cue }
-            let tokens = text.split(whereSeparator: \.isWhitespace).map(String.init)
+            let tokens = Self.textUnits(text)
             let total = Double(max(1, tokens.reduce(0) { $0 + $1.count + 1 }))
             let span = max(0.05, last.end - first.start)
             var t = first.start
@@ -104,7 +104,7 @@ extension Project {
                 overlap(cues[a], f) < overlap(cues[b], f)
             }
             guard let i = best, overlap(cues[i], f) > 0 else { continue }
-            let text = f.lines.joined(separator: " ")
+            let text = Self.joinWords(f.lines)
             out[i] = out[i].map { $0 + " " + text } ?? text
         }
         return out

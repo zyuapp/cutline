@@ -162,6 +162,14 @@ public struct HDRMetadata: Sendable, Equatable {
         return meta
     }
 
+    /// Whether a file's picture is tagged PQ or HLG; nil when it has none or can't be read.
+    public static func isHDR(_ url: URL) async -> Bool? {
+        guard let track = try? await AVURLAsset(url: url).loadTracks(withMediaType: .video).first,
+              let fd = try? await track.load(.formatDescriptions).first else { return nil }
+        let transfer = CMFormatDescriptionGetExtension(fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+        return transfer.map { [kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ, kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG].map { $0 as String }.contains($0) } ?? false
+    }
+
     /// Default HEVC bitrate for HDR delivery: 20 Mb/s at 1080p up to 30 fps, scaling with the 0.75 power of the
     /// pixel count and the 0.7 power of the frame rate above 30.
     public static func defaultBitrate(width: Int, height: Int, fps: Double) -> Int {

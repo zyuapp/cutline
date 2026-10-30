@@ -74,7 +74,7 @@ extension GeneratorCatalog {
     static let titles: [EffectType] = [
         EffectType(id: "title.lower_third_modern", category: "generator", summary: "Lower third: an accent bar springs up, the name slides out from behind it, the role follows in spaced capitals", params: [
             text("title", "Ada Lovelace", "Name"),
-            text("subtitle", "Mathematician", "Role or description; empty for none"),
+            text("subtitle", "", "Role or description, e.g. \"Mathematician\"; empty for none"),
             color("accent", "#FFC531", "Bar color"),
             color("text_color", "#FFFFFF", "Text color"),
             pos("x", 0.07, "Left edge"),
@@ -84,7 +84,7 @@ extension GeneratorCatalog {
         ] + timing),
         EffectType(id: "title.lower_third_box", category: "generator", summary: "Lower third: news-style stacked boxes, the name on an accent box and the role on a dark box, wiping on one after the other", params: [
             text("title", "Ada Lovelace", "Name"),
-            text("subtitle", "Mathematician · London", "Role; empty for none"),
+            text("subtitle", "", "Role, e.g. \"Mathematician · London\"; empty for none"),
             color("accent", "#E5322D", "Name box color"),
             color("panel", "#141416", "Role box color"),
             color("text_color", "#FFFFFF", "Text color"),
@@ -95,7 +95,7 @@ extension GeneratorCatalog {
         ] + timing),
         EffectType(id: "title.lower_third_pill", category: "generator", summary: "Lower third: a round badge with initials pops in, its ring draws on, then a frosted pill unrolls with the name and handle", params: [
             text("title", "Ada Lovelace", "Name"),
-            text("subtitle", "@ada", "Handle or role; empty for none"),
+            text("subtitle", "", "Handle or role, e.g. \"@ada\"; empty for none"),
             text("badge", "", "Badge text; empty uses the name's initials"),
             color("accent", "#6E8BFF", "Badge and ring color"),
             color("panel", "#16161ACC", "Pill color; keep some transparency"),
@@ -107,7 +107,7 @@ extension GeneratorCatalog {
         ] + timing),
         EffectType(id: "title.lower_third_line", category: "generator", summary: "Lower third: a fine rule draws across, the name rises above it and the role drops below; quiet documentary style", params: [
             text("title", "Ada Lovelace", "Name"),
-            text("subtitle", "Mathematician", "Role; empty for none"),
+            text("subtitle", "", "Role, e.g. \"Mathematician\"; empty for none"),
             color("accent", "#FFFFFF", "Rule color"),
             color("text_color", "#FFFFFF", "Text color"),
             ParamSpec("align", .choice(["left", "center"]), .string("left"), "left: from x; center: centered on x"),
@@ -117,9 +117,9 @@ extension GeneratorCatalog {
             font,
         ] + timing),
         EffectType(id: "title.card", category: "generator", summary: "Title card: a spaced kicker, a big title rising out of a mask, an accent rule growing from the center and a subtitle; optional full-frame background", params: [
-            text("kicker", "CHAPTER ONE", "Small line above the title; empty for none"),
+            text("kicker", "", "Small line above the title, e.g. \"CHAPTER ONE\"; empty for none"),
             text("title", "The Analytical Engine", "Title"),
-            text("subtitle", "London, 1843", "Line under the rule; empty for none"),
+            text("subtitle", "", "Line under the rule, e.g. \"London, 1843\"; empty for none"),
             color("accent", "#FFC531", "Rule and kicker color"),
             color("text_color", "#FFFFFF", "Title color"),
             color("background", "#00000000", "Full-frame background; transparent to lay the card over video"),
@@ -130,7 +130,7 @@ extension GeneratorCatalog {
         ] + timing),
         EffectType(id: "title.quote", category: "generator", summary: "Quote card: a large quotation mark scales in, the quote reveals line by line, the attribution follows a short rule", params: [
             text("quote", "The Analytical Engine weaves algebraic patterns just as the Jacquard loom weaves flowers and leaves.", "Quote text; wraps to width"),
-            text("author", "Ada Lovelace", "Attribution; empty for none"),
+            text("author", "", "Attribution, e.g. \"Ada Lovelace\"; empty for none"),
             color("accent", "#FFC531", "Quotation mark and rule color"),
             color("text_color", "#FFFFFF", "Text color"),
             color("background", "#00000000", "Full-frame background; transparent over video"),
@@ -142,8 +142,8 @@ extension GeneratorCatalog {
         ] + timing),
         EffectType(id: "title.end_card", category: "generator", summary: "End card: title and line, outlined slots for end-screen videos that draw on, and a button that pops in", params: [
             text("title", "Thanks for watching", "Title"),
-            text("subtitle", "New videos every week", "Line under the title; empty for none"),
-            text("button", "Subscribe", "Button text; empty for none"),
+            text("subtitle", "", "Line under the title, e.g. \"New videos every week\"; empty for none"),
+            text("button", "", "Button text, e.g. \"Subscribe\"; empty for none"),
             num("slots", 2, 0, 2, animatable: false, "Outlined 16:9 placeholders for end-screen videos"),
             color("accent", "#FF3B30", "Button color"),
             color("text_color", "#FFFFFF", "Text and outline color"),
@@ -157,7 +157,7 @@ extension GeneratorCatalog {
             num("decimals", 0, 0, 6, animatable: false, "Digits after the decimal point"),
             text("prefix", "", "Before the number, e.g. \"$\""),
             text("suffix", "%", "After the number"),
-            text("label", "of viewers watch to the end", "Line under the number; empty for none"),
+            text("label", "", "Line under the number, e.g. \"of viewers watch to the end\"; empty for none"),
             ParamSpec("style", .choice(["ring", "bar", "plain"]), .string("ring"), "ring: circular gauge around the number; bar: horizontal gauge under it; plain: number and label only"),
             num("fill", 0.87, 0, 1, "Share of the ring or bar filled"),
             color("accent", "#30D158", "Gauge color"),

@@ -11,6 +11,12 @@ extension Toolbox {
         Any animate on the path replaces its expression; bind the expression after animating.
         """
 
+    /// A parameter's value for an example call: its default, or for empty text the sample its summary gives (e.g. "…").
+    static func exampleValue(_ s: ParamSpec) -> ParamValue {
+        guard s.defaultValue.string?.isEmpty == true, let r = s.summary.range(of: #"e\.g\. "([^"]+)""#, options: .regularExpression) else { return s.defaultValue }
+        return .string(String(s.summary[r].dropFirst(6).dropLast()))
+    }
+
     /// Example calls for a generator's catalog entry.
     static func generatorExample(_ t: EffectType) -> [String] {
         switch t.id {
@@ -26,7 +32,7 @@ extension Toolbox {
                 #"Camera: clip_add {"generator": "camera", "track": "new", "start": 0, "duration": 6} then param_set {"target": "<camera clip>", "relative": true, "animate": {"fx.gen.orbit": [[0, -25], [6, 25, "easeInOut"]], "fx.gen.distance": [[0, 2.2], [6, 1.4, "easeInOut"]]}}"#,
             ]
         default:
-            let first = t.params.prefix(2).map { "\"\($0.name)\": \($0.defaultValue)" }.joined(separator: ", ")
+            let first = t.params.prefix(2).map { "\"\($0.name)\": \(Toolbox.exampleValue($0))" }.joined(separator: ", ")
             var lines = ["Example: clip_add {\"generator\": \"\(t.id)\", \"track\": \"new\", \"duration\": 5, \"params\": {\(first)}}"]
             if let p = t.params.first(where: { $0.animatable }) {
                 lines.append("Animate: param_set {\"target\": \"<clip>\", \"animate\": {\"fx.gen.\(p.name)\": [[\"<clip>.start\", \(p.defaultValue)], [\"<clip>.end\", …]]}}")

@@ -18,7 +18,7 @@ extension Toolbox {
                         "max_cll": Schema.integer("MaxCLL in cd/m²; default measured"),
                         "max_fall": Schema.integer("MaxFALL in cd/m²; default measured"),
                     ]],
-            "sdr_from_hdr": ["type": ["boolean", "object"], "description": "From an HDR (PQ or HLG) timeline, render a Rec. 709 SDR version instead of the HDR master (file name gets -sdr): true for defaults, or {method, target_nits, source_nits}. method bt2390 (default: BT.2390 EETF, a soft knee that keeps midtones and compresses highlights), reinhard (gentler, rolls off earlier) or clip (hard clip at SDR white). HDR reference white (203 cd/m²) lands on SDR white target_nits (default 100); highlights up to source_nits (default the canvas master_peak_nits, else 1000) fold into the SDR range; colors outside Rec. 709 are gamut-compressed. Render the HDR master and the SDR version in one call with variants"],
+            "sdr_from_hdr": ["type": ["boolean", "object"], "description": "From an HDR (PQ or HLG) timeline, render a Rec. 709 SDR version instead of the HDR master (the file name, given or default, gets -sdr unless it already says sdr; an existing HDR file is never overwritten): true for defaults, or {method, target_nits, source_nits}. method bt2390 (default: BT.2390 EETF, a soft knee that keeps midtones and compresses highlights), reinhard (gentler, rolls off earlier) or clip (hard clip at SDR white). HDR reference white (203 cd/m²) lands on SDR white target_nits (default 100); highlights up to source_nits (default the canvas master_peak_nits, else 1000) fold into the SDR range; colors outside Rec. 709 are gamut-compressed. Render the HDR master and the SDR version in one call with variants"],
             "container": Schema.string("File format for HEVC and H.264: mp4 (default) or mov (QuickTime, carries a timecode track); ProRes is always mov. DNxHR: mov (default) or mxf (OP1a, one track per audio channel); XDCAM is always mxf. A path ending .mov or .mxf also picks it", values: ["mp4", "mov", "mxf"]),
             "audio_tracks": ["type": ["string", "array"], "items": ["type": ["string", "object"]], "description": .string("Audio track layout of a .mov or MXF master instead of the one mix track. A preset (\(AudioTrackSpec.presets.map { "\($0.name) = \($0.layout)" }.joined(separator: "; "))), a list \"mix,me,dia,mus,fx,amb\" of content[@layout], or [{content, layout, name}]. content: mix (master mix, loudness-conformed), me (all but dialogue), dia, mus, fx, amb (roles; fx also takes roles no other track carries, amb is effects whose role or track name says ambience/atmos/BG), bus:<id> (a bus feeding the master), role:<name>, silence, tone (1 kHz −20 dBFS). layout: mono, stereo, 5.1, 7.1 (mix and me default stereo, others mono). Stems are pre-master and unconformed, so they sum to the mix. MXF writes every channel as a mono track (no track names: see <name>.tracks.txt); QuickTime names each track. Platforms netflix_master and broadcast_uk_dpp pick one; \"none\" turns it off")],
             "audio_tracks_as": Schema.string("QuickTime: one track per entry (tracks, default) or every channel in one discrete multichannel track (channels)", values: AudioTrackSpec.Packing.allCases.map(\.rawValue)),
@@ -34,7 +34,7 @@ extension Toolbox {
             "start": Schema.time("Export from this timeline time"),
             "end": Schema.time("Export until this timeline time"),
             "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (subtitle_formats, default .srt and .vtt) or both; ttml, imsc or ebu-tt-d writes just that sidecar", values: ["none", "embed", "sidecar", "both"] + TimedTextFormat.allCases.map(\.rawValue)),
-            "subtitle_formats": Schema.strings("Sidecar formats, from srt, vtt, ttml (TTML 2), imsc (IMSC 1.1 Text profile, e.g. Netflix) and ebu-tt-d (EBU-TT-D broadcast); default [\"srt\", \"vtt\"]. All share the same cues"),
+            "subtitle_formats": Schema.strings("Sidecar formats, from srt, vtt, ttml (TTML 2), imsc (IMSC 1.1 Text profile, e.g. Netflix) and ebu-tt-d (EBU-TT-D broadcast); default [\"srt\", \"vtt\"]. All share the same cues and one time base: media time from the file's first frame, so a leader delays every format alike (TTML timeBase media, not timecode). Lines keep to the language's length and reading speed (Japanese 13 full-width characters, Chinese and Korean 16, others 42)"),
             "subtitle_languages": Schema.strings("Translations to deliver too (captions_translate first), e.g. [\"fr\", \"de\"]: an embedded subtitle track per language with its language tag (one alternate group with the spoken language) and sidecars <name>.<lang>.srt, .vtt, .imsc.ttml… Same cue times as the spoken subtitles"),
             "subtitle_default": Schema.string("Language of the embedded subtitle track players pick first; default the spoken language"),
             "subtitle_forced": Schema.strings("Languages whose embedded track is marked forced (all cues shown even with subtitles off)"),
@@ -156,6 +156,16 @@ extension Toolbox {
                 report.append("ffmpeg's DNxHR is progressive only, so this interlaced master is \(tier.name) 1080i (\(preset.title)'s interlaced tier, \(tier.tenBit ? "10" : "8")-bit, top field first).")
             }
             if !audioSpecs.isEmpty, !preset.needsFFmpeg, url.pathExtension.lowercased() != "mov" { throw EditError("An audio track layout needs a QuickTime master: export with container:\"mov\" (MP4 carries the mix only)") }
+            if trim != nil, args.has("path"), let named = Toolbox.sdrNamed(url) {
+                url = named
+                report.append("SDR version written as \(url.lastPathComponent) so it doesn't replace the HDR master; name the path with \"sdr\" in it to choose another name.")
+            }
+            let hdrOut = trim == nil && p.canvas.colorSpace.isHDR
+            if FileManager.default.fileExists(atPath: url.path), let existing = await HDRMetadata.isHDR(url), existing != hdrOut {
+                let kept = url.lastPathComponent
+                url = Toolbox.freeURL(url)
+                report.append("\(kept) is \(existing ? "an HDR" : "an SDR") file and this is \(hdrOut ? "an HDR" : "an SDR") version, so it was kept and this one is \(url.lastPathComponent).")
+            }
             let base = url.deletingPathExtension()
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let transcripts = b.transcripts(for: p)
@@ -536,6 +546,25 @@ extension Toolbox {
 }
 
 extension Toolbox {
+    /// `url` with "-sdr" added to its name, or nil when the name already says SDR.
+    static func sdrNamed(_ url: URL) -> URL? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard !stem.lowercased().contains("sdr") else { return nil }
+        return url.deletingLastPathComponent().appendingPathComponent(stem + "-sdr").appendingPathExtension(url.pathExtension)
+    }
+
+    /// The first of `url`, <name>-2, <name>-3… that doesn't exist yet.
+    static func freeURL(_ url: URL) -> URL {
+        let dir = url.deletingLastPathComponent(), stem = url.deletingPathExtension().lastPathComponent, ext = url.pathExtension
+        var n = 2
+        var out = url
+        while FileManager.default.fileExists(atPath: out.path) {
+            out = dir.appendingPathComponent("\(stem)-\(n)").appendingPathExtension(ext)
+            n += 1
+        }
+        return out
+    }
+
     /// Writes the subtitle sidecars an export asks for; returns report lines.
     /// `translation` writes that language's cue text; `language` tags the TTML documents.
     func writeSubtitleSidecars(_ p: Project, _ args: Args, transcripts: [String: Transcript], range: TimeRange?, base: URL, bundle b: ProjectBundle, offset: Seconds = 0, mode: String? = nil, language: String = "en", translation: String? = nil) throws -> [String] {
@@ -546,6 +575,7 @@ extension Toolbox {
         options.translation = translation
         if let pos = args.optString("subtitle_position") { options.position = pos }
         options.speakerColors = args.bool("subtitle_speakers", default: false)
+        options.offset = offset
         var analyses: [String: SpeakerAnalysis] = [:]
         let speaker: (String) -> String? = { anchor in
             guard let (media, word) = Project.parseWordAnchor(anchor) else { return nil }
@@ -569,7 +599,12 @@ extension Toolbox {
                 files.append(base.lastPathComponent + "." + format.fileSuffix)
             }
         }
-        let count = p.subtitleCues(transcripts: transcripts, range: range, language: translation).count
-        return ["Subtitles\(translation.map { " (\($0))" } ?? ""): " + files.joined(separator: ", ") + " (\(count) cues)"] + notes
+        let cues = p.subtitleCues(transcripts: transcripts, range: range, language: translation)
+        let rules = p.subtitleRules(language: translation, transcripts: transcripts)
+        let fast = rules.tooFast(cues)
+        let lang = translation.map { Project.languageTag($0) } ?? language
+        if rules.wide || !fast.isEmpty { notes.append("  \(lang): lines up to \(rules.maxCharsPerLine) \(rules.wide ? "full-width " : "")characters, reading speed \(fmt1(rules.charsPerSecond)) characters/s" + (fast.isEmpty ? "." : "; \(fast.count) cue(s) read faster (first at \(fmt2(fast[0].start + offset))s): shorten or lengthen them.")) }
+        let timing = offset > 0 ? "times count from the file's first frame (media time), the \(fmt2(offset))s leader included, in every format" : "times count from the file's first frame (media time)"
+        return ["Subtitles\(translation.map { " (\($0))" } ?? ""): " + files.joined(separator: ", ") + " (\(cues.count) cues); \(timing)"] + notes
     }
 }

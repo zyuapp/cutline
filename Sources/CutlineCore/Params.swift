@@ -91,8 +91,18 @@ public struct Curve: Codable, Equatable, Hashable, Sendable {
     /// Keys kept in step with another clip's parameter (`Project.refreshLinks`).
     public var link: CurveLink?
 
+    /// Keys in time order; keys within 1e-6 s of each other are one key, the last given.
     public init(keys: [CurveKey]) {
-        self.keys = keys.sorted { $0.t < $1.t }
+        let sorted = keys.enumerated().sorted { $0.element.t < $1.element.t || ($0.element.t == $1.element.t && $0.offset < $1.offset) }
+        var out: [(offset: Int, key: CurveKey)] = []
+        for (i, k) in sorted {
+            if let last = out.last, abs(k.t - last.key.t) <= 1e-6 {
+                if i > last.offset { out[out.count - 1] = (i, CurveKey(t: last.key.t, v: k.v, ease: k.ease, bezier: k.bezier)) }
+            } else {
+                out.append((i, k))
+            }
+        }
+        self.keys = out.map(\.key)
     }
 
     public func value(at t: Seconds) -> ParamValue? {

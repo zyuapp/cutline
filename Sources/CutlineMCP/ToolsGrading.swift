@@ -73,7 +73,8 @@ extension Toolbox {
     }
 
     /// Splits the plan into shots: each clip that plays several shots (scope shot, the default) gets one LUT per shot,
-    /// the reference is measured in its own shot only, and the reference clip's other shots match it too.
+    /// the reference is measured in its own shot only. The reference clip is left alone unless
+    /// include_reference_shots matches its other shots too.
     func matchUnits(_ plan: inout MatchPlan, _ a: Args, _ current: Project) throws {
         let scope = try Toolbox.gradeScope(a, shots: 2)
         let refShots = clipShots(plan.ref, current)
@@ -83,7 +84,9 @@ extension Toolbox {
             let r = refShots[i]
             if plan.refTimes == nil { plan.refTimes = [0.1, 0.3, 0.5, 0.7, 0.9].map { r.start + (r.end - r.start) * $0 } }
             plan.refShot = Toolbox.shotLabel(refShots, i, clip: plan.ref)
-            for j in refShots.indices where j != i { plan.units.append(MatchUnit(clip: plan.ref.id, shot: refShots[j], index: j, count: refShots.count)) }
+            if a.bool("include_reference_shots", default: false) {
+                for j in refShots.indices where j != i { plan.units.append(MatchUnit(clip: plan.ref.id, shot: refShots[j], index: j, count: refShots.count)) }
+            }
         }
         for id in plan.ids {
             guard let c = current.clip(id) else { throw EditError("No clip \(id)") }

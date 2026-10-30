@@ -103,6 +103,18 @@ private func matteWhite(_ box: Toolbox, clip: String, effect: String, times: [Do
     #expect(!lifted.isError && warm != nil && warm?.sourceRange == nil, "\(lifted.plainText)")
 }
 
+@Test func matchColorLeavesTheReferenceClipAlone() async throws {
+    let (box, dir) = try await openShots()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let m = await box.call("recipe", ["name": "match_color", "args": ["clips": ["r"], "reference": "a", "reference_at": 1]])
+    #expect(!m.isError, "\(m.plainText)")
+    #expect(try box.session.project().clip("a")!.effects.isEmpty, "the reference clip gets no LUT")
+    #expect(try box.session.project().clip("r")!.effects.map(\.id) == ["match"])
+    let opted = await box.call("recipe", ["name": "match_color", "args": ["clips": ["r"], "reference": "a", "reference_at": 1, "include_reference_shots": true]])
+    #expect(!opted.isError, "\(opted.plainText)")
+    #expect(try box.session.project().clip("a")!.effects.map(\.id) == ["match_s2"], "only the reference clip's other shot")
+}
+
 @Test func matchColorAndSplitWorkPerShot() async throws {
     let (box, dir) = try await openShots()
     defer { try? FileManager.default.removeItem(at: dir) }

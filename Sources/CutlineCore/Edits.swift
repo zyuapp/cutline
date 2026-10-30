@@ -32,6 +32,29 @@ public struct SourceSegment: Equatable, Sendable {
         self.sourceOut = sourceOut
     }
 
+    /// `padded` (each of `requested` with its handles) with no source frame played twice: where a segment's handles
+    /// reach into the next one of the same media in playback order (contiguous or overlapping takes), the two share
+    /// one edit, at the middle of the gap between the requested ranges (the first's requested end when they overlap),
+    /// on whole frames of `fps`. A segment that lies inside the one before it is left alone.
+    public static func butted(_ padded: [SourceSegment], requested: [SourceSegment], fps: Double) -> [SourceSegment] {
+        guard padded.count == requested.count, padded.count > 1 else { return padded }
+        var out = padded
+        let frame = fps > 0 ? 1 / fps : 0
+        for i in 1..<out.count {
+            let a = requested[i - 1], b = requested[i]
+            guard a.mediaId == b.mediaId, b.sourceIn >= a.sourceIn - 1e-9, b.sourceOut > a.sourceOut + 1e-9,
+                  out[i].sourceIn < out[i - 1].sourceOut - 1e-9 else { continue }
+            var edit = b.sourceIn >= a.sourceOut ? (a.sourceOut + b.sourceIn) / 2 : a.sourceOut
+            if frame > 0 { edit = out[i - 1].sourceIn + ((edit - out[i - 1].sourceIn) / frame).rounded() * frame }
+            edit = min(max(edit, out[i - 1].sourceIn + frame), out[i].sourceOut - frame)
+            let length = out[i].sourceOut - edit
+            out[i - 1].sourceOut = edit
+            out[i].sourceIn = edit
+            if frame > 0 { out[i].sourceOut = edit + max(1, (length / frame - 1e-6).rounded(.up)) * frame }
+        }
+        return out
+    }
+
     /// The segment with handles around the words it plays (those whose middle is inside it): it starts at least
     /// `before` ahead of the first word and ends at least `after` past the last, never reaching into the words either
     /// side or outside `0...duration`, and lasts whole frames of `fps`, rounded out so the last word is never cut.

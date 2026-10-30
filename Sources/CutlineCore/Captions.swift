@@ -26,7 +26,7 @@ public struct CaptionSegment: Equatable, Hashable, Sendable, Identifiable {
     public var lines: [[CaptionWord]]
 
     public var words: [CaptionWord] { lines.flatMap { $0 } }
-    public var text: String { lines.map { $0.map(\.text).joined(separator: " ") }.joined(separator: "\n") }
+    public var text: String { lines.map { Project.joinWords($0.map(\.text)) }.joined(separator: "\n") }
 }
 
 /// A transcript word placed on the timeline.
@@ -196,18 +196,24 @@ extension Project {
         let perLine = max(1, style.maxWordsPerLine)
         let perPage = perLine * max(1, style.maxLines)
         let cues = captionCues(transcripts: transcripts, language: captions.language)
+        // Chinese, Japanese and Korean lines keep to the language's line length in characters, not a word count.
+        let translated = captions.language.map { captions.translations[Self.languageTag($0)] != nil } ?? false
+        let wide = translated ? SubtitleRules.forLanguage(captions.language!) : SubtitleRules.forText(cues.prefix(20).map(\.text).joined())
+        let columns = wide.flatMap { $0.wide ? $0.columns : nil }
         var segments: [CaptionSegment] = []
         for (ci, cue) in cues.enumerated() {
             var words = cue.words
             if style.uppercase { for i in words.indices { words[i].text = words[i].text.uppercased() } }
-            let pages = Self.evenChunks(words, max: perPage)
+            let columns = SubtitleRules.forText(cue.text) == nil ? nil : columns
+            let pages = columns.map { Self.splitToFit(words, width: $0, lines: max(1, style.maxLines)) } ?? Self.evenChunks(words, max: perPage)
             var end = cue.end
             // Back-to-back cues stay up until the next one rather than blinking off for the subtitle gap.
             if ci + 1 < cues.count, cues[ci + 1].start - cue.end < 0.15 { end = cues[ci + 1].start }
             for (pi, page) in pages.enumerated() {
                 let s = pi == 0 ? cue.start : max(page[0].start, segments.last?.start ?? cue.start)
                 let e = pi + 1 < pages.count ? max(pages[pi + 1][0].start, s) : end
-                segments.append(CaptionSegment(id: segments.count, start: s, end: max(e, s), lines: Self.evenChunks(page, max: perLine)))
+                let lines = columns.map { width in Self.lineGroups(page.map(\.text), width: width).map { Array(page[$0]) } } ?? Self.evenChunks(page, max: perLine)
+                segments.append(CaptionSegment(id: segments.count, start: s, end: max(e, s), lines: lines))
             }
         }
         return segments

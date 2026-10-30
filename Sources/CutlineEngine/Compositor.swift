@@ -422,7 +422,7 @@ public final class RenderScene: @unchecked Sendable {
                     var color = style.color
                     if mode == .karaoke && index == active { color = style.highlightColor }
                     if mode == .reveal && index > active { color = style.color.with(alpha: 0) }
-                    runs.append(.init(text: w.text + (wi < line.count - 1 ? " " : ""), color: color))
+                    runs.append(.init(text: w.text + (wi < line.count - 1 ? Project.wordSeparator(w.text, line[wi + 1].text) : ""), color: color))
                     index += 1
                 }
                 if li < seg.lines.count - 1 { runs.append(.init(text: "\n", color: style.color)) }

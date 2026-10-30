@@ -128,7 +128,7 @@ extension Toolbox {
             try Toolbox.applySet(&clip, args)
             let placedBy = Set(args.raw["set"]?.object?.keys.map { $0 } ?? [])
             var framing = ""
-            if clip.kind == .media, clip.transform.fit == .fill, placedBy.isDisjoint(with: ["transform.x", "transform.y"]), let mid = clip.mediaId, let b = try? session.requireBundle(),
+            if clip.kind == .media, clip.transform.fit == .fill, placedBy.isDisjoint(with: ["transform.x", "transform.y", "transform.pos_x", "transform.pos_y", "x", "y"]), let mid = clip.mediaId, let b = try? session.requireBundle(),
                let f = Toolbox.fillFraming(clip, p, Toolbox.shotIndex(b, p, media: [mid])) {
                 clip.transform.x = f.x
                 clip.transform.y = f.y
@@ -376,15 +376,19 @@ extension Toolbox {
             guard pad.before >= 0, pad.after >= 0, pad.before <= 2, pad.after <= 2 else { throw EditError("pad is 0–2 seconds") }
             var transcripts: [String: Transcript] = [:]
             var padded = 0
-            let segs = try raw.map { j -> SourceSegment in
+            let requested = try raw.map { j -> SourceSegment in
                 let a = Args(j)
-                let seg = SourceSegment(mediaId: try a.string("media_id"), sourceIn: try a.sourceTime("start"), sourceOut: try a.sourceTime("end"))
+                return SourceSegment(mediaId: try a.string("media_id"), sourceIn: try a.sourceTime("start"), sourceOut: try a.sourceTime("end"))
+            }
+            let handled = requested.map { seg -> SourceSegment in
                 if transcripts[seg.mediaId] == nil { transcripts[seg.mediaId] = session.bundle?.transcript(seg.mediaId) }
                 guard seg.sourceOut > seg.sourceIn, let t = transcripts[seg.mediaId], let m = p.mediaAsset(seg.mediaId), !m.isImage else { return seg }
                 let out = seg.withHandles(t, before: pad.before, after: pad.after, fps: p.canvas.fps, duration: m.duration)
                 if out != seg { padded += 1 }
                 return out
             }
+            let segs = SourceSegment.butted(handled, requested: requested, fps: p.canvas.fps)
+            let butts = zip(segs, handled).filter { abs($0.sourceIn - $1.sourceIn) > 1e-9 }.count
             let replace = args.bool("replace", default: false)
             var made = try p.assemble(segs, trackId: args.optString("track") ?? "V1", at: try args.optTime("at") ?? (replace ? 0 : nil), replaceTrack: replace)
             if let fit = try args.enumValue("fit", FitMode.self) {
@@ -395,6 +399,7 @@ extension Toolbox {
             }
             return "Placed \(made.count) clips: " + made.map { "\($0.id) \(fmt2($0.start))–\(fmt2($0.end)) (src \(fmt2($0.sourceIn))–\(fmt2($0.sourceOut)))" }.joined(separator: ", ")
                 + (padded == 0 ? "" : "\nHandles: \(padded) segment(s) start \(fmt2(pad.before))s before their first word and end \(fmt2(pad.after))s after their last (stopping at neighbouring words), in whole frames; pad changes them")
+                + (butts == 0 ? "" : "\nContiguous takes of the same source share their edit (\(butts) edit(s)), so no frame plays twice")
         })
 
         addEdit(EditTool(name: "cut_silences", description: "Tighten talking footage: remove pauses longer than min_pause (leaving `keep` seconds of breathing room) and, by default, filler words (um, uh…). Works in source time on every clip of the media, rippling all tracks. Check the result with timeline_transcript.", schema: Schema.object([

@@ -36,6 +36,8 @@ public struct TimedTextOptions: Sendable {
     public var translation: String?
     /// Rows and columns of the cell grid font sizes are measured in.
     public var cellResolution = (columns: 32, rows: 15)
+    /// Delays every cue, e.g. by a leader, so times count from the file's first frame (as the .srt and .vtt do).
+    public var offset: Seconds = 0
 
     public init() {}
 }
@@ -99,8 +101,9 @@ extension Project {
             XMLElem("region", [("xml:id", top ? "top" : "bottom"), ("tts:origin", "10% 10%"), ("tts:extent", "80% 80%"), ("tts:displayAlign", top ? "before" : "after"), ("tts:writingMode", "lrtb")]),
         ]))
 
+        let shift = Self.ms(o.offset)
         let paragraphs: [XMLElem] = cues.enumerated().map { i, c in
-            var attrs = [("xml:id", "sub\(i + 1)"), ("begin", Self.ttmlTime(c.startMs)), ("end", Self.ttmlTime(c.endMs)), ("style", "paragraph")]
+            var attrs = [("xml:id", "sub\(i + 1)"), ("begin", Self.ttmlTime(c.startMs + shift)), ("end", Self.ttmlTime(c.endMs + shift)), ("style", "paragraph")]
             if !ebu, let s = cueSpeakers[i] { attrs.append(("ttm:agent", "agent_" + styleId(s))) }
             let style = cueSpeakers[i].map(styleId) ?? "text"
             var kids: [XMLElem] = []

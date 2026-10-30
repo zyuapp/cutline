@@ -262,6 +262,7 @@ extension Toolbox {
             .init("strength", .number, "0…1, default 0.8"),
             .init("allow_large", .bool, "Lift the lightness cap, default false"),
             .init("scope", .string, "shot (default): a clip that plays several shots (scene cuts) gets one LUT per shot, and a reference spanning several is measured in the shot at reference_at (else its middle); clip: one LUT per clip"),
+            .init("include_reference_shots", .bool, "Also match the reference clip's other shots; default false leaves the reference clip untouched"),
         ]),
         RecipeSpec(name: "grade_group", group: "Color", summary: "Adds one shared effect with that id to every clip (clips added to an existing group copy its settings). Change the group with param_set target \"group:<id>\" and fx.<id>.<param>; effect_add target \"group:<id>\" works too.", args: [
             .init("clips", .ids, "Clip ids"),

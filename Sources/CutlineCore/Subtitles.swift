@@ -27,7 +27,7 @@ public struct CaptionCue: Equatable, Sendable {
 
     public var start: Seconds { Double(startMs) / 1000 }
     public var end: Seconds { Double(endMs) / 1000 }
-    public var text: String { words.map(\.text).joined(separator: " ") }
+    public var text: String { Project.joinWords(words.map(\.text)) }
 }
 
 extension Project {
@@ -39,9 +39,12 @@ extension Project {
 
     /// The caption cues every output shares. Cues keep to broadcast rules: at most 2 lines of 42 characters,
     /// 1–7 s on screen, at least 0.1 s apart, breaking at sentence ends, clause punctuation and pauses. A sentence's
-    /// last word never sits alone when it can join the cue before it (or take a word from it).
+    /// last word never sits alone when it can join the cue before it (or take a word from it). Speech in Chinese,
+    /// Japanese or Korean script keeps to that language's line length (`SubtitleRules`).
     public func captionCues(transcripts: [String: Transcript]) -> [CaptionCue] {
-        let groups = Self.cueGroups(captionWords(transcripts: transcripts), maxChars: Self.cueCharsPerLine, maxLines: Self.cueLines)
+        let words = captionWords(transcripts: transcripts)
+        let width = SubtitleRules.forText(words.prefix(40).map(\.text).joined())?.columns ?? Self.cueCharsPerLine
+        let groups = Self.cueGroups(words, maxChars: width, maxLines: Self.cueLines)
         return zip(groups, Self.cueTimes(groups, durationMs: Self.ms(duration))).enumerated().map { i, pair in
             CaptionCue(id: i, startMs: pair.1.0, endMs: pair.1.1, words: pair.0)
         }
@@ -51,7 +54,7 @@ extension Project {
     /// With `range`, only cues inside it, clipped to it and timed from its start.
     /// `offset` delays every cue, e.g. by a leader before the program, so times count from the file's first frame.
     /// `language` picks a translation (`captions.translations`); nil is the spoken language.
-    public func subtitles(_ format: SubtitleFormat, transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil, offset: Seconds = 0, language: String? = nil) -> String {
+    public func subtitles(_ format: SubtitleFormat, transcripts: [String: Transcript], maxCharsPerLine: Int? = nil, maxLines: Int = 2, range: TimeRange? = nil, offset: Seconds = 0, language: String? = nil) -> String {
         let shift = Self.ms(offset)
         let cues = subtitleCues(transcripts: transcripts, maxCharsPerLine: maxCharsPerLine, maxLines: maxLines, range: range, language: language)
             .map { SubtitleCue(startMs: $0.startMs + shift, endMs: $0.endMs + shift, lines: $0.lines) }
@@ -72,18 +75,24 @@ extension Project {
     /// The shared `captionCues`, each wrapped to `maxCharsPerLine`. A cue that needs more than `maxLines` lines at that
     /// width is split into the fewest consecutive cues that fit, with their characters evened out; otherwise cue
     /// boundaries and timing are the shared ones. In a translation (`language`) the translated text is wrapped the
-    /// same way, and a cue too long for its lines is split within its own time.
-    public func subtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil, language: String? = nil) -> [SubtitleCue] {
-        let width = max(1, maxCharsPerLine), rows = max(1, maxLines)
+    /// same way, and a cue too long for its lines is split within its own time. `maxCharsPerLine` is in columns (a
+    /// full-width character takes two); nil uses the language's line length (`SubtitleRules`, 42 for most languages,
+    /// 13 full-width characters for Japanese), and Chinese and Japanese lines break between characters by `textUnits`.
+    public func subtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int? = nil, maxLines: Int = 2, range: TimeRange? = nil, language: String? = nil) -> [SubtitleCue] {
         let shared = captionCues(transcripts: transcripts, language: language)
+        let translated = language.map { captions.translations[Self.languageTag($0)] != nil } ?? false
+        let rules = translated ? SubtitleRules.forLanguage(language!) : SubtitleRules.forText(shared.prefix(20).map(\.text).joined()) ?? .standard
+        let width = max(1, maxCharsPerLine ?? rules.columns), rows = max(1, maxLines)
         var cues: [SubtitleCue]
-        if let language, captions.translations[Self.languageTag(language)] != nil {
+        if translated {
             cues = shared.flatMap { c -> [SubtitleCue] in
+                // A cue left untranslated keeps its own script's line length.
+                let width = rules.wide && maxCharsPerLine == nil && SubtitleRules.forText(c.text) == nil ? SubtitleRules.standard.columns : width
                 let parts = Self.splitToFit(c.words, width: width, lines: rows)
-                let total = Double(max(1, parts.reduce(0) { $0 + $1.map(\.text).joined(separator: " ").count }))
+                let total = Double(max(1, parts.reduce(0) { $0 + Self.columns(Self.joinWords($1.map(\.text))) }))
                 var at = Double(c.startMs)
                 return parts.map { g in
-                    let d = Double(c.endMs - c.startMs) * Double(g.map(\.text).joined(separator: " ").count) / total
+                    let d = Double(c.endMs - c.startMs) * Double(Self.columns(Self.joinWords(g.map(\.text)))) / total
                     defer { at += d }
                     return SubtitleCue(startMs: Int(at.rounded()), endMs: Int((at + d).rounded()), lines: Self.balancedLines(g.map(\.text), width: width), anchors: g.compactMap(\.anchor))
                 }
@@ -163,7 +172,7 @@ extension Project {
                 let hard = !fits(cur + [w]) || (w.end - cur[0].start) * 1000 > Double(cueMaxMs)
                 let soft = w.start - last.end >= cuePause
                     || endsSentence(last.text)
-                    || (endsClause(last.text) && cur.map(\.text).joined(separator: " ").count > maxChars)
+                    || (endsClause(last.text) && Self.columns(Self.joinWords(cur.map(\.text))) > maxChars)
                 if w.breakBefore || (soft && !last.joinNext) {
                     groups.append(cur)
                     cur = []
@@ -186,7 +195,7 @@ extension Project {
         }
         if !cur.isEmpty { groups.append(cur) }
 
-        func chars(_ ws: [CaptionWord]) -> Int { ws.map(\.text).joined(separator: " ").count }
+        func chars(_ ws: [CaptionWord]) -> Int { Self.columns(Self.joinWords(ws.map(\.text))) }
         // Where a length limit broke a sentence, even out the two cues so its end isn't left nearly alone;
         // a single last word joins the cue before it when they fit together.
         var i = 1
@@ -263,7 +272,12 @@ extension Project {
         }
         if !cur.isEmpty { greedy.append(cur) }
         let k = greedy.count
-        let sizes = words.map { $0.text.count + 1 }
+        if words.contains(where: { $0.text.contains(where: \.isUnspaced) }) {
+            let texts = words.map(\.text)
+            let parts = unspacedLines(texts, width: Int.max, count: k) { r in fits(Array(words[r]), width: width, lines: lines) }
+            return parts.map { Array(words[$0]) }
+        }
+        let sizes = words.map { Self.columns($0.text) + 1 }
         let total = Double(sizes.reduce(0, +))
         var parts: [[CaptionWord]] = []
         var from = 0, acc = 0
@@ -280,26 +294,19 @@ extension Project {
         return parts.allSatisfy({ fits($0, width: width, lines: lines) }) ? parts : greedy
     }
 
-    /// Greedy word wrap; a word longer than `width` gets a line of its own.
+    /// Greedy word wrap in columns (`columns`); a word longer than `width` gets a line of its own.
     static func wrap(_ words: [String], width: Int) -> [String] {
-        var lines: [String] = []
-        var line = ""
-        for w in words {
-            if line.isEmpty {
-                line = w
-            } else if line.count + 1 + w.count <= width {
-                line += " " + w
-            } else {
-                lines.append(line)
-                line = w
-            }
-        }
-        if !line.isEmpty { lines.append(line) }
-        return lines
+        let words = words.filter { !$0.isEmpty }
+        return greedyLines(words, width: width).map { joinWords(words[$0]) }
     }
 
-    /// The fewest lines that fit `width`, with their lengths evened out.
+    /// The fewest lines that fit `width`, with their lengths evened out; Chinese and Japanese lines also break at
+    /// punctuation and particles where they can (`unspacedLines`).
     static func balancedLines(_ words: [String], width: Int) -> [String] {
+        if words.contains(where: { $0.contains(where: \.isUnspaced) }) {
+            let units = words.filter { !$0.isEmpty }
+            return unspacedLines(units, width: width).map { joinWords(units[$0]) }
+        }
         let best = wrap(words, width: width)
         guard best.count > 1 else { return best }
         var lines = best
@@ -314,12 +321,12 @@ extension Project {
     }
 
     static func endsSentence(_ word: String) -> Bool {
-        let t = word.trimmingCharacters(in: CharacterSet(charactersIn: "\"')]”’"))
-        return t.last.map { ".?!…".contains($0) } ?? false
+        let t = word.trimmingCharacters(in: CharacterSet(charactersIn: "\"')]”’」』）"))
+        return t.last.map { ".?!…。？！".contains($0) } ?? false
     }
 
     static func endsClause(_ word: String) -> Bool {
-        endsSentence(word) || (word.last.map { ",;:—".contains($0) } ?? false)
+        endsSentence(word) || (word.last.map { ",;:—、，；：".contains($0) } ?? false)
     }
 
     static func subtitleTime(_ ms: Int, _ separator: String) -> String {

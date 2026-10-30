@@ -126,6 +126,32 @@ private func writePQ(_ url: URL) async throws {
     await writer.finishWriting()
 }
 
+@Test func anSDRVersionNeverReplacesTheHDRMaster() async throws {
+    let dir = try tempDir("hdr-names")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let movie = dir.appendingPathComponent("pq.mov")
+    try await writePQ(movie)
+    var p = Project(name: "PQ", canvas: Canvas(width: 128, height: 64, fps: 24, colorSpace: .rec2020_pq))
+    p.media = [try await MediaProbe.probe(movie, id: "m")]
+    p.tracks[0].clips = [Clip(id: "c", kind: .media, mediaId: "m", start: 0, duration: 1)]
+    let bundle = try ProjectBundle.create(at: dir.appendingPathComponent("p.cutline"), project: p)
+    let box = Toolbox()
+    _ = await box.call("project_open", ["path": .string(bundle.url.path)])
+
+    let hdr = dir.appendingPathComponent("hdr.mov")
+    let master = await box.call("export", ["path": .string(hdr.path), "preset": "prores_proxy"])
+    #expect(!master.isError, "\(master.plainText)")
+    let sdr = await box.call("export", ["path": .string(hdr.path), "preset": "prores_proxy", "sdr_from_hdr": true])
+    #expect(!sdr.isError && sdr.plainText.contains("hdr-sdr.mov"), "\(sdr.plainText)")
+    #expect(await HDRMetadata.isHDR(hdr) == true, "the HDR master is still there")
+    #expect(await HDRMetadata.isHDR(dir.appendingPathComponent("hdr-sdr.mov")) == false)
+
+    // An HDR render aimed at an existing SDR file keeps that file.
+    let again = await box.call("export", ["path": .string(dir.appendingPathComponent("hdr-sdr.mov").path), "preset": "prores_proxy"])
+    #expect(!again.isError && again.plainText.contains("hdr-sdr-2.mov") && again.plainText.contains("was kept"), "\(again.plainText)")
+    #expect(await HDRMetadata.isHDR(dir.appendingPathComponent("hdr-sdr.mov")) == false)
+}
+
 @Test func hdrTimelinesMeasureInNitsAndDeliverAnSDRVersion() async throws {
     let dir = try tempDir("hdr-tools")
     defer { try? FileManager.default.removeItem(at: dir) }

@@ -7,8 +7,10 @@ extension Clip {
     static let transformSpecs: [ParamSpec] = [
         ParamSpec("transform.fit", .choice(FitMode.allCases.map(\.rawValue)), .string("fit"), "fit letterboxes, fill covers the frame, stretch distorts"),
         ParamSpec("transform.scale", .number, .number(1), min: 0, max: 50, "1 is the size given by fit"),
-        ParamSpec("transform.x", .number, .number(0), min: -10, max: 10, unit: "of frame width", "Horizontal offset of the center; positive moves right"),
-        ParamSpec("transform.y", .number, .number(0), min: -10, max: 10, unit: "of frame height", "Vertical offset of the center; positive moves down"),
+        ParamSpec("transform.x", .number, .number(0), min: -10, max: 10, unit: "of frame width", "Offset of the clip's center from the frame's center; positive moves right (0.5 puts the center on the right edge)"),
+        ParamSpec("transform.y", .number, .number(0), min: -10, max: 10, unit: "of frame height", "Offset of the clip's center from the frame's center; positive moves down"),
+        ParamSpec("transform.pos_x", .number, .number(0.5), min: -9.5, max: 10.5, unit: "of frame width", "Where the clip's center sits, from the frame's left edge (0.5 centered, 0.85 near the right); transform.x + 0.5"),
+        ParamSpec("transform.pos_y", .number, .number(0.5), min: -9.5, max: 10.5, unit: "of frame height", "Where the clip's center sits, from the frame's top edge; transform.y + 0.5"),
         ParamSpec("transform.rotation", .number, .number(0), min: -36000, max: 36000, unit: "degrees", "Clockwise rotation"),
         ParamSpec("transform.opacity", .number, .number(1), min: 0, max: 1, "Opacity"),
         ParamSpec("transform.anchor_x", .number, .number(0.5), min: -2, max: 3, "Pivot for scale and rotation, 0 left to 1 right of the clip's frame"),
@@ -143,6 +145,8 @@ extension Clip {
         case "transform.scale": return .number(t.scale)
         case "transform.x": return .number(t.x)
         case "transform.y": return .number(t.y)
+        case "transform.pos_x": return .number(t.x + 0.5)
+        case "transform.pos_y": return .number(t.y + 0.5)
         case "transform.rotation": return .number(t.rotation)
         case "transform.opacity": return .number(t.opacity)
         case "transform.crop.left": return .number(t.crop.left)
@@ -206,7 +210,22 @@ extension Clip {
     /// The value at a time from the clip start, with animation applied.
     public func value(_ path: String, at local: Seconds) -> ParamValue? {
         let p = Clip.canonical(path)
+        if let (offset, stored) = Clip.positionAliases[p], let v = anim[stored]?.value(at: local)?.number { return .number(v + offset) }
         return anim[p]?.value(at: local) ?? staticValue(p)
+    }
+
+    /// Frame positions from the top left, kept as the center offsets they add to: (offset, stored path).
+    static let positionAliases: [String: (Double, String)] = ["transform.pos_x": (0.5, "transform.x"), "transform.pos_y": (0.5, "transform.y")]
+
+    /// The keys animating `path`, in its own units.
+    public func animationKeys(_ rawPath: String) -> [CurveKey]? {
+        let path = Clip.canonical(rawPath)
+        guard let (offset, stored) = Clip.positionAliases[path] else { return anim[path]?.keys }
+        return anim[stored]?.keys.map { k in
+            var k = k
+            if let n = k.v.number { k.v = .number(n + offset) }
+            return k
+        }
     }
 
     public func number(_ path: String, at local: Seconds, default d: Double = 0) -> Double {
@@ -237,6 +256,8 @@ extension Clip {
         case "transform.scale": transform.scale = n
         case "transform.x": transform.x = n
         case "transform.y": transform.y = n
+        case "transform.pos_x": transform.x = n - 0.5
+        case "transform.pos_y": transform.y = n - 0.5
         case "transform.rotation": transform.rotation = n
         case "transform.opacity": transform.opacity = n
         case "transform.anchor_x": transform.anchorX = n
@@ -316,14 +337,17 @@ extension Clip {
         let path = Clip.canonical(rawPath)
         let spec = try spec(path)
         guard spec.animatable else { throw EditError("\(path) can't be animated; set it with set instead") }
-        guard !keys.isEmpty else { anim[path] = nil; return }
+        let alias = Clip.positionAliases[path]
+        let stored = alias?.1 ?? path
+        guard !keys.isEmpty else { anim[stored] = nil; return }
         var checked: [CurveKey] = []
         for k in keys {
             var k = k
             k.v = try spec.validate(k.v, path: path)
+            if let alias, let n = k.v.number { k.v = .number(n - alias.0) }
             checked.append(k)
         }
-        anim[path] = Curve(keys: checked)
+        anim[stored] = Curve(keys: checked)
     }
 
     /// Text styling at a time from the clip start, with animated values applied.

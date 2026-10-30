@@ -403,6 +403,19 @@ extension Project {
         if !master.effects.isEmpty || master.loudnessTarget != nil { out.append("Master bus processing (\((master.effects.map(\.type) + (master.loudnessTarget != nil ? ["loudness target"] : [])).joined(separator: ", "))) → not carried") }
         if !buses.isEmpty { out.append("\(buses.count) audio bus(es) → not carried; track levels fold into the clips") }
         if edl, !markers.isEmpty, markers.contains(where: { $0.time < 0 }) { out.append("Markers before the program start → not in the EDL") }
+        if edl {
+            let list = canvas.timecodeFormat
+            let used = Set(flattenedSequences().tracks.flatMap(\.clips).filter { $0.kind == .media }.compactMap(\.mediaId))
+            let mixed = media.filter { m in
+                guard used.contains(m.id), !m.isImage, m.hasVideo || m.timecodeStart != nil else { return false }
+                let own = m.timecodeFormat(fallback: canvas.fps, dropFrame: canvas.dropFrame)
+                return own.frameNum * list.frameDen != list.frameNum * own.frameDen
+            }
+            if !mixed.isEmpty {
+                let rates = mixed.prefix(4).map { "\($0.id) \(String(format: "%g", ($0.timecodeFormat(fallback: canvas.fps).rate * 1000).rounded() / 1000)) fps" }.joined(separator: ", ")
+                out.append("Mixed-rate sources (\(rates)\(mixed.count > 4 ? ", …" : "")) → source timecode converted to the list's \(String(format: "%g", (list.rate * 1000).rounded() / 1000)) fps by time, so in and out points are approximate (to a frame); each event's * SOURCE TC comment gives the source's own. FCP7 XML, FCPXML and OTIO carry them exactly")
+            }
+        }
         return out
     }
 }

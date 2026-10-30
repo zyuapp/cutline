@@ -19,7 +19,7 @@ public final class MCPServer {
     7. comments_list at the start of each turn; address each note, then comment_reply to resolve it.
     8. export when the human is happy.
 
-    Times are seconds or anchors that survive later edits: "<media>.w12" (a transcript word), "<clip>.end", "marker:<label>", "start", "end", each with optional +/- seconds. Arguments that are positions inside a media file (source_in, assemble segments, source_cut ranges) take word anchors in source time, or the media's own source timecode as "<media>@01:00:12:10" (media_list shows each file's TC and reel). Lengths are fractions of the frame height; positions are fractions of the frame from the top left.
+    Times are seconds or anchors that survive later edits: "<media>.w12" (a transcript word), "<clip>.end", "marker:<label>", "start", "end", each with optional +/- seconds. Arguments that are positions inside a media file (source_in, assemble segments, source_cut ranges) take word anchors in source time, or the media's own source timecode as "<media>@01:00:12:10" (media_list shows each file's TC and reel). Lengths are fractions of the frame height. Positions (text_x/text_y, text.x/y, generator x/y, transform.pos_x/pos_y) are fractions of the frame from the top left; transform.x/y are offsets of the clip's center from the frame center in frame widths/heights (0 centered, 0.5 on the right edge), so a corner logo is transform.pos_x 0.85, pos_y 0.15 (= transform.x 0.35, y -0.35).
     """
 
     public init() {}
