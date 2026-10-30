@@ -27,7 +27,14 @@ extension Session {
         if (want.contains(.shots) || want.contains(.speakers)), media.hasVideo, !media.isImage,
            let speakers = b.analysis(SpeakerAnalysis.self, media.id, "speakers"), let shots = b.analysis(ShotAnalysis.self, media.id, "shots"), !shots.faces.isEmpty,
            let transcript = b.transcript(media.id) {
-            let active = try await ActiveSpeakerDetector.analyze(url: media.url, transcript: transcript, speakers: speakers, shots: shots)
+            var active = try await ActiveSpeakerDetector.analyze(url: media.url, transcript: transcript, speakers: speakers, shots: shots)
+            // Faces talking together are two people, and one face talking is one: label the voices again with that.
+            let refined = try await Diarizer.analyze(url: media.url, transcript: transcript, faces: active, faceTracks: shots.faces)
+            if refined.wordSpeakers != speakers.wordSpeakers {
+                try b.saveAnalysis(refined, media.id, "speakers")
+                active = ActiveSpeakerDetector.relabel(active, with: refined, transcript: transcript)
+                notes.append("speakers with face evidence: \(refined.speakers.count) (\(refined.speakers.joined(separator: ", ")))")
+            }
             try b.saveAnalysis(active, media.id, "activespeakers")
             if !active.speakerFaces.isEmpty {
                 notes.append("on-screen speakers: " + active.speakerFaces.sorted { $0.key < $1.key }.map { "\($0.key)=face\($0.value)" }.joined(separator: ", "))
@@ -116,7 +123,8 @@ extension Toolbox {
                         let t = b.transcript(id)
                         for seg in s.segments where seg.end > lo && seg.start < hi {
                             let words = t?.words.filter { $0.start >= seg.start - 0.01 && $0.end <= seg.end + 0.01 }.map(\.text) ?? []
-                            lines.append("  \(fmt2(seg.start))–\(fmt2(seg.end)) \(seg.speaker): " + words.prefix(14).joined(separator: " ") + (words.count > 14 ? " …" : ""))
+                            let sure = seg.confidence.map { " (confidence \(fmt2($0)))" } ?? ""
+                            lines.append("  \(fmt2(seg.start))–\(fmt2(seg.end)) \(seg.speaker)\(sure): " + words.prefix(14).joined(separator: " ") + (words.count > 14 ? " …" : ""))
                         }
                     }
                 } else if what == "speakers" { lines.append("No speaker analysis; run media_analyze features:[\"speakers\"].") }

@@ -143,3 +143,47 @@ public struct GeneratorSpec: Codable, Equatable, Hashable, Sendable {
         self.type = type
     }
 }
+
+/// Words a graphic puts on screen, for the checks titles get.
+public struct GeneratorText: Equatable, Sendable {
+    public var text: String
+    /// Vertical center and font size, as fractions of the frame height.
+    public var y: Double
+    public var size: Double
+    public var color: RGBA
+    /// The panel or pill drawn behind the words, if any.
+    public var background: RGBA?
+}
+
+extension Clip {
+    /// A generator parameter's value at `local` seconds into the clip.
+    public func generatorValue(_ name: String, at local: Seconds) -> ParamValue? {
+        guard kind == .generator, let gen = effects.first(where: { GeneratorCatalog.type($0.type) != nil }) else { return nil }
+        return anim["fx.\(gen.id).\(name)"]?.value(at: local) ?? gen.params[name] ?? GeneratorCatalog.type(gen.type)?.spec(name)?.defaultValue
+    }
+
+    /// The words a lower third, callout or counter shows at `local`; nil for graphics without text or with none showing.
+    public func generatorText(at local: Seconds) -> GeneratorText? {
+        guard kind == .generator, let type = effects.first(where: { GeneratorCatalog.type($0.type) != nil })?.type else { return nil }
+        func str(_ k: String) -> String { generatorValue(k, at: local)?.string ?? "" }
+        func num(_ k: String) -> Double { generatorValue(k, at: local)?.number ?? 0 }
+        func color(_ k: String) -> RGBA { generatorValue(k, at: local)?.color ?? RGBA(r: 1, g: 1, b: 1, a: 1) }
+        switch type {
+        case "lower_third":
+            let text = [str("title"), str("subtitle")].filter { !$0.isEmpty }.joined(separator: " — ")
+            guard !text.isEmpty, num("progress") > 0 else { return nil }
+            let fg = color("text_color")
+            let light = 0.299 * fg.r + 0.587 * fg.g + 0.114 * fg.b > 0.5
+            let panel = str("style") == "box" ? (light ? RGBA(r: 0.06, g: 0.06, b: 0.08, a: 0.72) : RGBA(r: 1, g: 1, b: 1, a: 0.88)) : nil
+            return GeneratorText(text: text, y: num("y"), size: num("size"), color: fg, background: panel)
+        case "callout":
+            guard !str("label").isEmpty else { return nil }
+            return GeneratorText(text: str("label"), y: num("label_y"), size: num("size"), color: color("text_color"), background: color("color"))
+        case "counter":
+            let n = num("from") + (num("to") - num("from")) * min(max(num("progress"), 0), 1)
+            return GeneratorText(text: str("prefix") + String(format: "%.\(Int(num("decimals")))f", n) + str("suffix"), y: num("y"), size: num("size"), color: color("color"), background: nil)
+        default:
+            return nil
+        }
+    }
+}

@@ -46,13 +46,18 @@ public struct MulticamOptions: Sendable {
     public var wide: String? = nil
     public var wideAfter: Seconds = 12
     public var wideLength: Seconds = 3
+    /// No shot is longer than this: a longer one gets cutaways to the wide angle, else the listener or another angle;
+    /// nil for no limit.
+    public var maxShot: Seconds? = 8
+    /// Every angle, for cutaways when no one else has spoken yet.
+    public var angles: [String] = []
 
     public init() {}
 }
 
 /// Plans multicam edits from who is speaking: one shot per speaker turn, cut in the pause before the new speaker
 /// (never inside a word), turns shorter than the minimum shot folded into their neighbours, optional listener
-/// reactions and wide shots in long turns.
+/// reactions and wide shots in long turns, and cutaways so no shot outlasts the maximum.
 public enum MulticamPlan {
     public static func shots(words raw: [MulticamWord], range: TimeRange, first: String, options o: MulticamOptions = MulticamOptions()) -> [MulticamShot] {
         let words = raw.filter { $0.end > range.start && $0.start < range.end }.sorted { $0.start < $1.start }
@@ -120,7 +125,32 @@ public enum MulticamPlan {
             }
             shots.append(MulticamShot(start: cursor, end: e, angle: t.angle))
         }
-        return shots
+        guard let maxShot = o.maxShot, maxShot > 0 else { return shots }
+
+        // Shots past the limit get cutaways at word gaps, holding the speaker as long as allowed and preferring pauses.
+        var limited: [MulticamShot] = []
+        for (k, shot) in shots.enumerated() {
+            let neighbours = [k > 0 ? shots[k - 1].angle : nil, k + 1 < shots.count ? shots[k + 1].angle : nil].compactMap { $0 }
+            let alt = o.wide.flatMap { $0 == shot.angle ? nil : $0 } ?? neighbours.first { $0 != shot.angle } ?? (o.angles + words.compactMap(\.angle)).first { $0 != shot.angle }
+            guard shot.duration > maxShot, shot.kind == "speaker", let alt else { limited.append(shot); continue }
+            let kind = alt == o.wide ? "wide" : "reaction"
+            let length = min(kind == "wide" ? o.wideLength : o.reactionLength, maxShot)
+            let inside = words.indices.filter { words[$0].start >= shot.start && words[$0].end <= shot.end }
+            let gaps = zip(inside, inside.dropFirst()).map { (at: cut(before: $0.1), pause: words[$0.1].start - words[$0.0].end) }
+            var cursor = shot.start
+            while shot.end - cursor > maxShot {
+                let lo = cursor + o.minShot, hi = min(cursor + maxShot, shot.end - length - o.minShot)
+                guard hi > lo else { break }
+                func score(_ g: (at: Seconds, pause: Seconds)) -> Double { min(g.pause, 0.5) * 4 + (g.at - lo) / (hi - lo) }
+                let start = gaps.filter { $0.at >= lo && $0.at <= hi }.max { score($0) < score($1) }?.at ?? hi
+                let end = gaps.first { $0.at >= start + length && $0.at <= start + 2 * length && shot.end - $0.at >= o.minShot }?.at ?? start + length
+                limited.append(MulticamShot(start: cursor, end: start, angle: shot.angle, kind: shot.kind))
+                limited.append(MulticamShot(start: start, end: end, angle: alt, kind: kind))
+                cursor = end
+            }
+            limited.append(MulticamShot(start: cursor, end: shot.end, angle: shot.angle, kind: shot.kind))
+        }
+        return limited
     }
 
     /// A cutaway starting at the word gap nearest the middle of `s…e` (preferring longer pauses), ending at the first
@@ -131,6 +161,29 @@ public enum MulticamPlan {
         guard let start = starts.min(by: { abs($0.at - mid) - $0.pause * 2 < abs($1.at - mid) - $1.pause * 2 }) else { return [] }
         guard let end = gaps.first(where: { $0.at >= start.at + length && e - $0.at >= minShot }) else { return [] }
         return [MulticamShot(start: start.at, end: end.at, angle: angle, kind: kind)]
+    }
+
+    /// The angle that shows each speaker: the one whose confidently talking faces (`talking`, per angle, in the
+    /// reference recording's time) overlap that speaker's turns most, by at least a third of their talk time and half
+    /// again as much as any other angle. Speakers without such an angle are left out.
+    public static func anglesBySpeaker(turns: [SpeakerSegment], talking: [String: [TimeRange]]) -> [String: String] {
+        var out: [String: String] = [:]
+        for speaker in Set(turns.map(\.speaker)) {
+            let mine = turns.filter { $0.speaker == speaker }
+            let total = mine.map { $0.end - $0.start }.reduce(0, +)
+            var scores: [(angle: String, overlap: Seconds)] = []
+            for (angle, spans) in talking {
+                var overlap: Seconds = 0
+                for t in mine { for s in spans { overlap += max(0, min(s.end, t.end) - max(s.start, t.start)) } }
+                scores.append((angle, overlap))
+            }
+            scores.sort { $0.overlap > $1.overlap || ($0.overlap == $1.overlap && $0.angle < $1.angle) }
+            guard let best = scores.first, total > 0, best.overlap >= total / 3 else { continue }
+            let runnerUp = scores.count > 1 ? scores[1].overlap : 0
+            guard best.overlap >= 1.5 * runnerUp else { continue }
+            out[speaker] = best.angle
+        }
+        return out
     }
 
     /// Who is speaking by whose microphone is loudest. `levels` holds, per angle and word, the dB levels of short

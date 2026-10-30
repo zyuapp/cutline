@@ -63,6 +63,7 @@ extension SpeakerAnalysis {
 
     /// Turns from consecutive words with one speaker, keeping speakers in order of first appearance.
     public mutating func rebuildSegments(_ transcript: Transcript) {
+        let old = segments
         var segs: [SpeakerSegment] = []
         for (i, w) in transcript.words.enumerated() {
             guard i < wordSpeakers.count, let who = wordSpeakers[i] else { continue }
@@ -72,6 +73,11 @@ extension SpeakerAnalysis {
                 if let last = segs.last, last.end > w.start { segs[segs.count - 1].end = w.start }
                 segs.append(SpeakerSegment(start: w.start, end: w.end, speaker: who))
             }
+        }
+        // A rebuilt turn is as certain as the least certain scored turn it overlaps.
+        for i in segs.indices {
+            let scores = old.filter { $0.end > segs[i].start && $0.start < segs[i].end }.compactMap(\.confidence)
+            segs[i].confidence = scores.min()
         }
         segments = segs
         var order: [String] = []

@@ -55,21 +55,42 @@ public enum ActiveSpeakerDetector {
                         mouths[id, default: []].append(opening)
                     }
                 }
-                var best: (id: Int, activity: Double)?
+                var scored: [(id: Int, activity: Double)] = []
                 for (id, values) in mouths where values.count >= 3 {
                     let mean = values.reduce(0, +) / Double(values.count)
                     let sd = (values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(values.count)).squareRoot()
-                    if best == nil || sd > best!.activity { best = (id, sd) }
+                    scored.append((id, sd))
                 }
+                scored.sort { $0.activity > $1.activity }
+                let best = scored.first
                 let face = best.flatMap { $0.activity >= minActivity ? $0.id : nil }
-                out.append(.init(start: turn.start, end: turn.end, speaker: turn.speaker, face: face, activity: best?.activity ?? 0))
+                let margin = scored.count > 1 ? best!.activity / max(scored[1].activity, 1e-6) : nil
+                out.append(.init(start: turn.start, end: turn.end, speaker: turn.speaker, face: face, activity: best?.activity ?? 0, margin: margin))
             }
             return out
         }
+        return ActiveSpeakers(mediaId: speakers.mediaId, spans: spans, speakerFaces: faces(of: spans))
+    }
+
+    /// The face each speaker most often has.
+    static func faces(of spans: [ActiveSpeakers.Span]) -> [String: Int] {
         var votes: [String: [Int: Double]] = [:]
         for s in spans { if let f = s.face { votes[s.speaker, default: [:]][f, default: 0] += s.end - s.start } }
-        let speakerFaces = votes.compactMapValues { $0.max { $0.value < $1.value }?.key }
-        return ActiveSpeakers(mediaId: speakers.mediaId, spans: spans, speakerFaces: speakerFaces)
+        return votes.compactMapValues { $0.max { $0.value < $1.value }?.key }
+    }
+
+    /// `active` with each span's speaker taken from `speakers` (the voice heard most in it).
+    public static func relabel(_ active: ActiveSpeakers, with speakers: SpeakerAnalysis, transcript: Transcript) -> ActiveSpeakers {
+        var out = active
+        for i in out.spans.indices {
+            var votes: [String: Int] = [:]
+            for (k, w) in transcript.words.enumerated() where w.start >= out.spans[i].start - 0.01 && w.end <= out.spans[i].end + 0.01 {
+                if speakers.wordSpeakers.indices.contains(k), let s = speakers.wordSpeakers[k] { votes[s, default: 0] += 1 }
+            }
+            if let best = votes.max(by: { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) }) { out.spans[i].speaker = best.key }
+        }
+        out.speakerFaces = faces(of: out.spans)
+        return out
     }
 
     static func nearestTrack(_ tracks: [FaceTrack], at t: Seconds, center: (x: Double, y: Double)) -> Int? {

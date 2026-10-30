@@ -46,6 +46,12 @@ extension Project {
                         out.append("\(c.id) “\(spec.text.prefix(20))” sits on the captions (y \(fmt2(spec.y)) vs captions \(fmt2(band))); move it with text.y")
                     }
                 }
+                for c in t.clips where c.kind == .generator {
+                    guard let g = c.generatorText(at: c.duration / 2), abs(g.y - band) < g.size + captions.style.size else { continue }
+                    if words.contains(where: { $0.end > c.start && $0.start < c.end }) {
+                        out.append("\(c.id) “\(g.text.prefix(20))” sits on the captions (y \(fmt2(g.y)) vs captions \(fmt2(band))); move it with fx.gen.y or captions_set y")
+                    }
+                }
             }
         }
         // Music that stops dead at the end of the edit.

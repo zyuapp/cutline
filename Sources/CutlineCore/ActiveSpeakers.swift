@@ -10,14 +10,20 @@ public struct ActiveSpeakers: Codable, Equatable, Sendable {
         public var face: Int?
         /// Lip movement of that face during the span, relative to its size.
         public var activity: Double
+        /// `activity` over the next most active face's; nil when only one face was measured.
+        public var margin: Double?
 
-        public init(start: Seconds, end: Seconds, speaker: String, face: Int?, activity: Double) {
+        public init(start: Seconds, end: Seconds, speaker: String, face: Int?, activity: Double, margin: Double? = nil) {
             self.start = start
             self.end = end
             self.speaker = speaker
             self.face = face
             self.activity = activity
+            self.margin = margin
         }
+
+        /// The lips clearly moved and clearly more than any other face's.
+        public var isConfident: Bool { face != nil && activity >= 0.02 && (margin ?? 2) >= 1.5 }
     }
 
     public var mediaId: String

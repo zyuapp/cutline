@@ -9,6 +9,8 @@ public struct SubtitleCue: Equatable, Sendable {
     public var startMs: Int
     public var endMs: Int
     public var lines: [String]
+    /// The transcript words shown, as "<mediaId>.w<index>".
+    public var anchors: [String] = []
 
     public var start: Seconds { Double(startMs) / 1000 }
     public var end: Seconds { Double(endMs) / 1000 }
@@ -71,18 +73,18 @@ extension Project {
         let shared = captionCues(transcripts: transcripts)
         var cues: [SubtitleCue]
         if shared.allSatisfy({ Self.fits($0.words, width: width, lines: rows) }) {
-            cues = shared.map { SubtitleCue(startMs: $0.startMs, endMs: $0.endMs, lines: Self.balancedLines($0.words.map(\.text), width: width)) }
+            cues = shared.map { SubtitleCue(startMs: $0.startMs, endMs: $0.endMs, lines: Self.balancedLines($0.words.map(\.text), width: width), anchors: $0.words.compactMap(\.anchor)) }
         } else {
             let groups = shared.flatMap { Self.splitToFit($0.words, width: width, lines: rows) }
             cues = zip(groups, Self.cueTimes(groups, durationMs: Self.ms(duration))).map { g, t in
-                SubtitleCue(startMs: t.0, endMs: t.1, lines: Self.balancedLines(g.map(\.text), width: width))
+                SubtitleCue(startMs: t.0, endMs: t.1, lines: Self.balancedLines(g.map(\.text), width: width), anchors: g.compactMap(\.anchor))
             }
         }
         guard let range else { return cues }
         let lo = Self.ms(range.start), hi = Self.ms(range.end)
         return cues.compactMap { c in
             let s = max(c.startMs, lo), e = min(c.endMs, hi)
-            return e > s ? SubtitleCue(startMs: s - lo, endMs: e - lo, lines: c.lines) : nil
+            return e > s ? SubtitleCue(startMs: s - lo, endMs: e - lo, lines: c.lines, anchors: c.anchors) : nil
         }
     }
 

@@ -4,84 +4,104 @@ import CutlineCore
 import Foundation
 
 /// Speaker diarization and word emphasis from audio plus a word-level transcript.
+///
+/// Turns change only between sentences, or at a pause of at least `turnPause` inside one when the voices differ
+/// clearly; unpunctuated transcripts fall back to word-level turns that change most cheaply at pauses.
 public enum Diarizer {
     static let decodeRate = 16_000.0
     static let maxSegmentGap = 0.3
     static let maxSegmentDuration = 2.0
 
-    /// Decodes the first audio track to 16 kHz mono and analyzes it.
-    public static func analyze(url: URL, transcript: Transcript) async throws -> SpeakerAnalysis {
+    /// Decodes the first audio track to 16 kHz mono and analyzes it. With `faces` (active-speaker analysis of the same
+    /// media) and their `faceTracks`, two faces on screen together are never one speaker and turns by the same talking
+    /// face join more readily.
+    public static func analyze(url: URL, transcript: Transcript, faces: ActiveSpeakers? = nil, faceTracks: [FaceTrack] = []) async throws -> SpeakerAnalysis {
         let samples = try await decodeMono(url: url)
-        return analyze(samples: samples, sampleRate: decodeRate, transcript: transcript)
+        return analyze(samples: samples, sampleRate: decodeRate, transcript: transcript, faces: faces, faceTracks: faceTracks)
     }
 
     /// Labels speakers and scores emphasis for `transcript` over mono `samples`.
-    public static func analyze(samples: [Float], sampleRate: Double, transcript: Transcript, maxSpeakers: Int = 6) -> SpeakerAnalysis {
+    public static func analyze(samples: [Float], sampleRate: Double, transcript: Transcript, maxSpeakers: Int = 6, faces: ActiveSpeakers? = nil, faceTracks: [FaceTrack] = []) -> SpeakerAnalysis {
         let words = transcript.words
         let features = FrameFeatures(samples: samples, sampleRate: sampleRate)
         let emphasis = emphasisScores(words: words, features: features)
-        let segments = speechSegments(words)
-        guard !segments.isEmpty, features.count > 0 else {
+        let order = words.indices.sorted { words[$0].start < words[$1].start }
+        guard !order.isEmpty, features.count > 0 else {
             return SpeakerAnalysis(mediaId: transcript.mediaId, speakers: [], segments: [], wordSpeakers: words.map { _ in nil }, emphasis: emphasis)
         }
-
-        var embedded: [Int] = []
-        var seeds: [GaussStats] = []
-        for (i, s) in segments.enumerated() {
-            let frames = segmentFrames(features, s, words)
-            guard frames.count >= minSeedFrames else { continue }
-            embedded.append(i)
-            seeds.append(stats(features, frames: frames))
+        let v = VoiceFrames(features)
+        let bySentence = isPunctuated(words)
+        let units = bySentence ? sentenceUnits(words, order: order) : order.map { Segment(start: words[$0].start, end: max(words[$0].start, words[$0].end), words: [$0]) }
+        let costs = units.indices.map { u -> Double in
+            guard u > 0 else { return 0 }
+            let a = words[units[u - 1].words.last!], b = words[units[u].words[0]]
+            return bySentence ? unitSwitchCost(a, b) : switchCost(a, b)
         }
+        let wordFrames = units.map { $0.words.map { v.frames(words[$0]) } }
+        let unitFrames = wordFrames.map { $0.flatMap { $0 } }
+        let (faceOf, cannot) = faceLinks(faces, tracks: faceTracks, units: units)
 
-        var clusterOf = [Int](repeating: 0, count: segments.count)
-        if embedded.count >= 2 {
-            let labels = bicClusters(seeds, maxSpeakers: max(1, maxSpeakers))
-            var known = [Int?](repeating: nil, count: segments.count)
-            for (k, i) in embedded.enumerated() { known[i] = labels[k] }
-            for i in segments.indices {
-                if let l = known[i] { clusterOf[i] = l; continue }
-                var best = Double.infinity
-                for j in embedded {
-                    let gap = max(segments[j].start - segments[i].end, segments[i].start - segments[j].end, 0)
-                    if gap < best { best = gap; clusterOf[i] = known[j]! }
+        // Seeds for clustering: each sentence, or short runs of words when there are no sentences.
+        var seedUnits: [[Int]]
+        if bySentence {
+            seedUnits = units.indices.map { [$0] }
+        } else {
+            var unitOfWord: [Int: Int] = [:]
+            for (u, unit) in units.enumerated() { unitOfWord[unit.words[0]] = u }
+            seedUnits = speechSegments(words).map { $0.words.compactMap { unitOfWord[$0] } }
+        }
+        seedUnits = seedUnits.filter { $0.reduce(0) { $0 + unitFrames[$1].count } >= minSeedFrames }
+
+        var labels = [Int](repeating: 0, count: units.count)
+        if seedUnits.count >= 2 {
+            var seedCannot = Set<Pair>()
+            if !cannot.isEmpty {
+                for i in seedUnits.indices {
+                    for j in (i + 1)..<seedUnits.count where seedUnits[i].contains(where: { a in seedUnits[j].contains { cannot.contains(Pair(a, $0)) } }) {
+                        seedCannot.insert(Pair(i, j))
+                    }
+                }
+            }
+            let seedLabels = bicClusters(seedUnits.map { v.stats($0.flatMap { unitFrames[$0] }) }, maxSpeakers: max(1, maxSpeakers), cannot: seedCannot)
+            var known = [Int?](repeating: nil, count: units.count)
+            for (s, us) in seedUnits.enumerated() { for u in us { known[u] = seedLabels[s] } }
+            let seeded = units.indices.filter { known[$0] != nil }
+            for u in units.indices {
+                if let l = known[u] { labels[u] = l; continue }
+                let nearest = seeded.min { abs(units[$0].start - units[u].start) < abs(units[$1].start - units[u].start) }!
+                labels[u] = known[nearest]!
+            }
+            if Set(labels).count > 1 {
+                labels = resegment(unitFrames, costs: costs, labels: labels, v: v)
+                let merged = mergeSimilarSpeakers(wordFrames, labels: labels, v: v, cannot: cannot, faceOf: faceOf)
+                if merged != labels {
+                    labels = Set(merged).count > 1 ? resegment(unitFrames, costs: costs, labels: merged, v: v) : merged
                 }
             }
         }
+        labels = renumber(labels)
 
-        let order = segments.flatMap(\.words)
-        var wordCluster = segments.indices.flatMap { i in segments[i].words.map { _ in clusterOf[i] } }
-        if Set(wordCluster).count > 1 {
-            wordCluster = resegmentFrames(words: words, order: order, labels: wordCluster, features: features)
-            let merged = mergeSimilarSpeakers(words: words, order: order, labels: wordCluster, features: features)
-            if merged != wordCluster {
-                wordCluster = Set(merged).count > 1 ? resegmentFrames(words: words, order: order, labels: merged, features: features) : merged
-            }
-        }
-
-        var names: [Int: String] = [:]
+        var speakerStats = [GaussStats](repeating: GaussStats(dims: v.dims), count: (labels.max() ?? 0) + 1)
+        for (u, fr) in unitFrames.enumerated() { speakerStats[labels[u]] = speakerStats[labels[u]] + v.stats(fr) }
         var speakers: [String] = []
-        var spans: [SpeakerSegment] = []
+        var segments: [SpeakerSegment] = []
         var wordSpeakers = [String?](repeating: nil, count: words.count)
-        for (k, i) in order.enumerated() {
-            let name: String
-            if let n = names[wordCluster[k]] {
-                name = n
-            } else {
-                name = "S\(speakers.count + 1)"
-                names[wordCluster[k]] = name
-                speakers.append(name)
-            }
-            wordSpeakers[i] = name
-            let w = words[i]
-            if let last = spans.last, last.speaker == name {
-                spans[spans.count - 1].end = max(last.end, w.end)
-            } else {
-                if let last = spans.last { spans[spans.count - 1].end = min(last.end, w.start) }
-                spans.append(SpeakerSegment(start: w.start, end: max(w.start, w.end), speaker: name))
-            }
+        var u = 0
+        while u < units.count {
+            var e = u
+            while e + 1 < units.count, labels[e + 1] == labels[u] { e += 1 }
+            let name = "S\(labels[u] + 1)"
+            if !speakers.contains(name) { speakers.append(name) }
+            let turnWords = units[u...e].flatMap(\.words)
+            for i in turnWords { wordSpeakers[i] = name }
+            let confidence = turnConfidence(Array(unitFrames[u...e].joined()), label: labels[u], stats: speakerStats, v: v)
+            let start = words[turnWords[0]].start
+            let end = turnWords.map { max(words[$0].start, words[$0].end) }.max()!
+            if let last = segments.last, last.end > start { segments[segments.count - 1].end = start }
+            segments.append(SpeakerSegment(start: start, end: end, speaker: name, confidence: (confidence * 100).rounded() / 100))
+            u = e + 1
         }
-        return SpeakerAnalysis(mediaId: transcript.mediaId, speakers: speakers, segments: spans, wordSpeakers: wordSpeakers, emphasis: emphasis)
+        return SpeakerAnalysis(mediaId: transcript.mediaId, speakers: speakers, segments: segments, wordSpeakers: wordSpeakers, emphasis: emphasis)
     }
 
     // MARK: Segments
@@ -90,6 +110,28 @@ public enum Diarizer {
         var start: Double
         var end: Double
         var words: [Int]
+    }
+
+    /// Whether the transcript marks sentence ends often enough to trust them as the only places turns change.
+    static func isPunctuated(_ words: [Word]) -> Bool {
+        words.filter { endsSentence($0.text) }.count * 40 >= words.count
+    }
+
+    /// Sentences, split further at pauses of at least `turnPause`.
+    static func sentenceUnits(_ words: [Word], order: [Int]) -> [Segment] {
+        var out: [Segment] = []
+        for i in order {
+            let w = words[i]
+            let end = max(w.start, w.end)
+            if var cur = out.last, !endsSentence(words[cur.words.last!].text), w.start - cur.end < turnPause {
+                cur.end = max(cur.end, end)
+                cur.words.append(i)
+                out[out.count - 1] = cur
+            } else {
+                out.append(Segment(start: w.start, end: end, words: [i]))
+            }
+        }
+        return out
     }
 
     /// Groups consecutive words, splitting at pauses, sentence ends, short breaks and at roughly `maxSegmentDuration`,
@@ -109,6 +151,31 @@ public enum Diarizer {
             }
         }
         return out
+    }
+
+    /// The face confidently talking in each unit, and pairs of units whose talking faces were on screen together
+    /// (so two people).
+    static func faceLinks(_ faces: ActiveSpeakers?, tracks: [FaceTrack], units: [Segment]) -> (faceOf: [Int?], cannot: Set<Pair>) {
+        guard let faces, !faces.spans.isEmpty else { return ([], []) }
+        let faceOf: [Int?] = units.map { unit in
+            var best: (overlap: Double, span: ActiveSpeakers.Span)?
+            for s in faces.spans {
+                let o = min(s.end, unit.end) - max(s.start, unit.start)
+                if o > 0, o > (best?.overlap ?? 0) { best = (o, s) }
+            }
+            guard let best, best.overlap >= 0.5 * (unit.end - unit.start), best.span.isConfident else { return nil }
+            return best.span.face
+        }
+        let ranges = Dictionary(tracks.map { ($0.id, ($0.start, $0.end)) }, uniquingKeysWith: { a, _ in a })
+        var cannot = Set<Pair>()
+        let talking = units.indices.filter { faceOf[$0] != nil }
+        for (i, a) in talking.enumerated() {
+            for b in talking[(i + 1)...] {
+                guard let fa = faceOf[a], let fb = faceOf[b], fa != fb, let ra = ranges[fa], let rb = ranges[fb] else { continue }
+                if min(ra.1, rb.1) - max(ra.0, rb.0) > 0.5 { cannot.insert(Pair(a, b)) }
+            }
+        }
+        return (faceOf, cannot)
     }
 
     // MARK: Emphasis

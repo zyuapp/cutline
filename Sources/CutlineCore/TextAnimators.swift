@@ -163,3 +163,19 @@ public struct TextAnimator: Codable, Equatable, Hashable, Sendable {
         }
     }
 }
+
+extension TextSpec {
+    /// Span styling that won't show as asked: spans that match nothing, and span colors that keep their characters
+    /// out of a highlight animator's accent.
+    public var spanWarnings: [String] {
+        guard let spans, !spans.isEmpty else { return [] }
+        var out: [String] = []
+        for s in spans where s.ranges(in: text).isEmpty {
+            out.append("span \(s.match.map { "“\($0)”" } ?? "\(s.from ?? 0)…\(s.to.map(String.init) ?? "end")") matches nothing in the text")
+        }
+        if let a = animator, a.preset == .highlight, spans.contains(where: { $0.color != nil }) {
+            out.append("span colors stay on their characters, so the highlight animator's accent only colors the rest")
+        }
+        return out
+    }
+}

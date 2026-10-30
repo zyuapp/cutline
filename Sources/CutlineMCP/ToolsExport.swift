@@ -22,7 +22,10 @@ extension Toolbox {
                        ]],
             "start": Schema.time("Export from this timeline time"),
             "end": Schema.time("Export until this timeline time"),
-            "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (.srt and .vtt) or both", values: ["none", "embed", "sidecar", "both"]),
+            "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (subtitle_formats, default .srt and .vtt) or both; ttml, imsc or ebu-tt-d writes just that sidecar", values: ["none", "embed", "sidecar", "both"] + TimedTextFormat.allCases.map(\.rawValue)),
+            "subtitle_formats": Schema.strings("Sidecar formats, from srt, vtt, ttml (TTML 2), imsc (IMSC 1.1 Text profile, e.g. Netflix) and ebu-tt-d (EBU-TT-D broadcast); default [\"srt\", \"vtt\"]. All share the same cues"),
+            "subtitle_position": Schema.string("TTML-family sidecars: region at the bottom (default) or top of the title-safe area", values: ["bottom", "top"]),
+            "subtitle_speakers": Schema.bool("TTML-family sidecars: color each speaker's lines (from speaker analysis) and name them as agents; default false"),
             "interlaced": Schema.string("Interlaced master (1080i broadcast): tff (HD) or bff; renders at the field rate and weaves. ProRes, DNxHR and XDCAM presets; ffmpeg's DNxHR is progressive only, so interlaced DNx is written as DNxHD 1080i (1920×1080 at 25 or 29.97 fps, tff only: hq → DNxHD 220/185, hqx → 220x/185x, sq → 145/120; lb has no interlaced tier)", values: ["tff", "bff"]),
             "closed_captions": Schema.bool("Embed CEA-608 closed captions (broadcast, Apple TV, platform ingest) and write an .scc file beside the video, from the transcripts"),
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
@@ -120,10 +123,8 @@ extension Toolbox {
                 if cues.isEmpty { report.append("No transcribed speech on the timeline, so no subtitles.") }
                 let overlaps = p.overlappingSpeech(transcripts: transcripts)
                 if !overlaps.isEmpty { report.append("Overlapping speech at " + overlaps.prefix(5).map { "\(fmt2($0.start))s" }.joined(separator: ", ") + " interleaves two voices in the subtitles; see captions_list.") }
-                if subs == "sidecar" || subs == "both" {
-                    try p.subtitles(.srt, transcripts: transcripts, range: range).write(to: base.appendingPathExtension("srt"), atomically: true, encoding: .utf8)
-                    try p.subtitles(.vtt, transcripts: transcripts, range: range).write(to: base.appendingPathExtension("vtt"), atomically: true, encoding: .utf8)
-                    report.append("Subtitles: \(base.lastPathComponent).srt and .vtt (\(p.subtitleCues(transcripts: transcripts, range: range).count) cues)")
+                if subs != "embed" {
+                    report += try writeSubtitleSidecars(p, args, transcripts: transcripts, range: range, base: base, bundle: b)
                 }
             }
             var closed: [TimedText] = []
@@ -377,5 +378,41 @@ extension Toolbox {
         default:
             throw EditError("deliver is video, audio, stems, stills, image_sequence, gif or archive")
         }
+    }
+}
+
+extension Toolbox {
+    /// Writes the subtitle sidecars an export asks for; returns report lines.
+    func writeSubtitleSidecars(_ p: Project, _ args: Args, transcripts: [String: Transcript], range: TimeRange?, base: URL, bundle b: ProjectBundle) throws -> [String] {
+        let subs = args.optString("subtitles") ?? "sidecar"
+        let formats = TimedTextFormat(rawValue: subs).map { [$0.rawValue] } ?? args.strings("subtitle_formats") ?? ["srt", "vtt"]
+        var options = TimedTextOptions()
+        if let pos = args.optString("subtitle_position") { options.position = pos }
+        options.speakerColors = args.bool("subtitle_speakers", default: false)
+        var analyses: [String: SpeakerAnalysis] = [:]
+        let speaker: (String) -> String? = { anchor in
+            guard let (media, word) = Project.parseWordAnchor(anchor) else { return nil }
+            if analyses[media] == nil { analyses[media] = b.analysis(SpeakerAnalysis.self, media, "speakers") }
+            guard let a = analyses[media], a.wordSpeakers.indices.contains(word), let s = a.wordSpeakers[word] else { return nil }
+            return media + " " + s
+        }
+        var files: [String] = []
+        var notes: [String] = []
+        for f in formats {
+            switch f {
+            case "srt", "vtt":
+                try p.subtitles(f == "srt" ? .srt : .vtt, transcripts: transcripts, range: range).write(to: base.appendingPathExtension(f), atomically: true, encoding: .utf8)
+                files.append(base.lastPathComponent + "." + f)
+            default:
+                guard let format = TimedTextFormat(rawValue: f) else { throw EditError("subtitle_formats are srt, vtt, \(TimedTextFormat.allCases.map(\.rawValue).joined(separator: ", "))") }
+                let xml = p.timedText(format, transcripts: transcripts, range: range, options: options, speaker: speaker)
+                let problems = Project.timedTextProblems(xml, format: format)
+                if !problems.isEmpty { notes.append("\(f) check: " + problems.prefix(3).joined(separator: "; ")) }
+                try xml.write(to: base.appendingPathExtension(format.fileSuffix), atomically: true, encoding: .utf8)
+                files.append(base.lastPathComponent + "." + format.fileSuffix)
+            }
+        }
+        let count = p.subtitleCues(transcripts: transcripts, range: range).count
+        return ["Subtitles: " + files.joined(separator: ", ") + " (\(count) cues)"] + notes
     }
 }

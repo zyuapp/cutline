@@ -112,3 +112,43 @@ private func expectCutsBetweenWords(_ shots: [MulticamShot], _ words: [MulticamW
     try p.validate()
     #expect(throws: EditError.self) { try p.switchAngles([(at: 50, angle: "camB")], trackId: "V1") }
 }
+
+@Test func longTurnsNeverHoldPastTheMaximum() {
+    // B talks for 18 s between two short A lines.
+    let words = dialogue([4, 60, 4], gap: 0.3)
+    let range = TimeRange(0, words.last!.end + 0.3)
+    let shots = MulticamPlan.shots(words: words, range: range, first: "A")
+    #expect(shots.allSatisfy { $0.duration <= 8 + 1e-9 && $0.duration >= 1.0 })
+    #expect(shots.contains { $0.kind == "reaction" && $0.angle == "A" })
+    for (a, b) in zip(shots, shots.dropFirst()) { #expect(a.end == b.start) }
+    expectCutsBetweenWords(shots, words)
+    // Speaker changes still cut: the first B shot starts in the pause before B's first word, the last A line is on A.
+    let firstB = words[4], lastA = words[64]
+    #expect(shots.contains { $0.angle == "B" && $0.start >= words[3].end && $0.start <= firstB.start })
+    #expect(shots.last?.angle == "A" && shots.last!.start <= lastA.start)
+
+    var wide = MulticamOptions()
+    wide.wide = "W"
+    wide.wideAfter = 100
+    #expect(MulticamPlan.shots(words: words, range: range, first: "A", options: wide).filter { $0.kind == "wide" }.allSatisfy { $0.angle == "W" })
+    #expect(MulticamPlan.shots(words: words, range: range, first: "A", options: wide).contains { $0.kind == "wide" })
+
+    // One person talking alone cuts away to another angle.
+    let solo = dialogue([70])
+    var o = MulticamOptions()
+    o.angles = ["A", "B"]
+    let soloShots = MulticamPlan.shots(words: solo, range: TimeRange(0, solo.last!.end), first: "A", options: o)
+    #expect(soloShots.allSatisfy { $0.duration <= 8 + 1e-9 } && soloShots.contains { $0.angle == "B" })
+    o.maxShot = nil
+    #expect(MulticamPlan.shots(words: solo, range: TimeRange(0, solo.last!.end), first: "A", options: o).count == 1)
+}
+
+@Test func speakersGoToTheAngleWhereTheirFaceTalks() {
+    let turns = [
+        SpeakerSegment(start: 0, end: 3, speaker: "S1"), SpeakerSegment(start: 3, end: 6, speaker: "S2"),
+        SpeakerSegment(start: 6, end: 9, speaker: "S1"), SpeakerSegment(start: 9, end: 10, speaker: "S3"),
+    ]
+    let talking = ["camL": [TimeRange(3.2, 5.8)], "camR": [TimeRange(0.1, 2.9), TimeRange(6, 8.5), TimeRange(9, 9.2)]]
+    let map = MulticamPlan.anglesBySpeaker(turns: turns, talking: talking)
+    #expect(map == ["S1": "camR", "S2": "camL"])
+}

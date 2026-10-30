@@ -137,15 +137,27 @@ public enum AnimatedText {
         return ctx
     }
 
-    /// Applies the fonts and sizes of a title's spans.
-    static func withSpanFonts(_ text: NSAttributedString, _ spec: TextSpec, font: NSFont) -> NSAttributedString {
+    static let underlineKey = NSAttributedString.Key("CutlineUnderline")
+    static let fromContextKey = NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String)
+
+    /// Applies a title's span fonts and sizes and, for the fill, their colors, highlights and underlines. Span colors
+    /// are fixed; the rest of the text takes its color from the context, so animators can tint it.
+    static func withSpanStyles(_ text: NSAttributedString, _ spec: TextSpec, font: NSFont, fill: Bool) -> NSAttributedString {
         guard spec.spans?.isEmpty == false else { return text }
         let out = NSMutableAttributedString(attributedString: text)
         var at = 0
         for run in TextRenderer.runs(spec, font: font) {
-            let len = (run.text as NSString).length
-            if let f = run.font { out.addAttribute(.font, value: f, range: NSRange(location: at, length: len)) }
-            at += len
+            let r = NSRange(location: at, length: (run.text as NSString).length)
+            at += r.length
+            guard r.location + r.length <= out.length else { break }
+            if let f = run.font { out.addAttribute(.font, value: f, range: r) }
+            guard fill else { continue }
+            if run.color != spec.color {
+                out.removeAttribute(fromContextKey, range: r)
+                out.addAttribute(.foregroundColor, value: run.color.cgColor, range: r)
+            }
+            if let h = run.highlight { out.addAttribute(TextRenderer.highlightKey, value: h.cgColor, range: r) }
+            if run.underline { out.addAttribute(underlineKey, value: true, range: r) }
         }
         return out
     }
@@ -166,8 +178,8 @@ public enum AnimatedText {
         // Ligatures would merge characters that must animate apart.
         if unit == .char { base[NSAttributedString.Key(kCTLigatureAttributeName as String)] = 0 }
         var fillAttrs = base
-        fillAttrs[NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String)] = true
-        let fillText = withSpanFonts(NSAttributedString(string: spec.text, attributes: fillAttrs), spec, font: font)
+        fillAttrs[fromContextKey] = true
+        let fillText = withSpanStyles(NSAttributedString(string: spec.text, attributes: fillAttrs), spec, font: font, fill: true)
         let framesetter = CTFramesetterCreateWithAttributedString(fillText)
         let maxWidth = spec.maxWidth * canvasWidth
         let suggested = CTFramesetterSuggestFrameSizeWithConstraints(framesetter, CFRange(location: 0, length: 0), nil, CGSize(width: maxWidth, height: .greatestFiniteMagnitude), nil)
@@ -194,7 +206,7 @@ public enum AnimatedText {
             attrs[.foregroundColor] = CGColor.clear
             attrs[.strokeColor] = s.with(alpha: spec.color.a * s.a).cgColor
             attrs[.strokeWidth] = spec.strokeWidth * 200
-            stroke = lines(withSpanFonts(NSAttributedString(string: spec.text, attributes: attrs), spec, font: font))
+            stroke = lines(withSpanStyles(NSAttributedString(string: spec.text, attributes: attrs), spec, font: font, fill: false))
         }
 
         let ranges = unitRanges(text, unit: unit, lines: fill.map { CTLineGetStringRange($0.0) })
@@ -296,8 +308,53 @@ public enum AnimatedText {
             ctx.endTransparencyLayer()
             ctx.restoreGState()
         }
+        decorate(pieces, layout.fill, in: ctx, color: color, fontSize: fs, underline: false)
         if let stroke = layout.stroke { draw(stroke, shadowed: spec.shadow && spec.background == nil) }
         draw(layout.fill, shadowed: spec.shadow && layout.stroke == nil && spec.background == nil)
+        decorate(pieces, layout.fill, in: ctx, color: color, fontSize: fs, underline: true)
         return ctx.makeImage()
+    }
+
+    /// Span highlights (behind the glyphs) or underlines (over them) for a unit's pieces of the fill runs. An underline
+    /// takes its span's color, else the unit's.
+    static func decorate(_ pieces: [Piece], _ lines: [(CTLine, [CTRun], CGPoint)], in ctx: CGContext, color: RGBA, fontSize fs: CGFloat, underline: Bool) {
+        for p in pieces {
+            let (_, runs, origin) = lines[p.line]
+            let run = runs[p.run]
+            let attrs = CTRunGetAttributes(run) as NSDictionary
+            let fill: CGColor
+            if underline {
+                guard attrs[underlineKey] != nil else { continue }
+                fill = attrs[NSAttributedString.Key.foregroundColor.rawValue].map { $0 as! CGColor } ?? color.cgColor
+            } else {
+                guard let h = attrs[TextRenderer.highlightKey.rawValue] else { continue }
+                fill = h as! CGColor
+            }
+            let n = p.glyphs.length
+            var pos = [CGPoint](repeating: .zero, count: n)
+            var adv = [CGSize](repeating: .zero, count: n)
+            CTRunGetPositions(run, p.glyphs, &pos)
+            CTRunGetAdvances(run, p.glyphs, &adv)
+            guard let first = pos.first else { continue }
+            let x0 = origin.x + first.x, x1 = origin.x + zip(pos, adv).map { $0.x + $1.width }.max()!
+            let font = attrs[kCTFontAttributeName as String].map { $0 as! CTFont }
+            var ascent: CGFloat = 0, descent: CGFloat = 0
+            _ = CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), &ascent, &descent, nil)
+            ctx.saveGState()
+            ctx.setShadow(offset: .zero, blur: 0, color: nil)
+            ctx.setFillColor(fill)
+            if underline {
+                let size = font.map { CTFontGetSize($0) } ?? fs
+                let thickness = max(font.map { CTFontGetUnderlineThickness($0) * 2 } ?? 0, size * 0.05)
+                let y = origin.y + first.y + (font.map { CTFontGetUnderlinePosition($0) } ?? -size * 0.1) - thickness / 2
+                ctx.fill(CGRect(x: x0, y: y, width: x1 - x0, height: thickness))
+            } else {
+                let padX = (ascent + descent) * 0.12
+                let rect = CGRect(x: x0 - padX, y: origin.y + first.y - descent * 1.1, width: x1 - x0 + 2 * padX, height: (ascent + descent) * 1.05)
+                ctx.addPath(CGPath(roundedRect: rect, cornerWidth: rect.height * 0.15, cornerHeight: rect.height * 0.15, transform: nil))
+                ctx.fillPath()
+            }
+            ctx.restoreGState()
+        }
     }
 }
