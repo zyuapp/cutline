@@ -133,6 +133,28 @@ extension Toolbox {
             .init("camera_channel", .string, "The same for the camera"),
             .init("play", .string, "Routing the placed sound plays, e.g. \"ch2\"; default as recorded"),
         ]),
+        RecipeSpec(name: "clip_gain_ride", group: "Sound", summary: "Clip-gain rides like an editor's: measures each phrase (transcript phrases, else the sound's own pauses) as the clip plays without its volume keys and writes audio.volume keys that hold every line at the target, changing level in the pauses. Prints each phrase's loudness and gain. For hands-off leveling use effect audio.leveler.", args: [
+            .init("clips", .ids, "Clips to ride"),
+            .init("track", .string, "Or every sound clip on this track"),
+            .init("target_lufs", .number, "Loudness per phrase, −40…−10, default −23 (dialogue in a DME mix)"),
+            .init("max_db", .number, "Largest boost or cut, default 10"),
+            .init("ramp", .number, "Seconds each level change takes, default 0.2 (shorter in tight pauses)"),
+        ]),
+        RecipeSpec(name: "match_eq", group: "Sound", summary: "Match EQ (lav to boom, pickup to production): learns the reference clip's long-term spectrum from its speech frames and gives each clip an audio.match_eq curve (third-octave, smoothed, level-neutral, no boost where the clip has no content) toward it. Reports the spectral distance before and after.", args: [
+            .init("clips", .ids, "Clips to match"),
+            .init("reference", .string, "Clip whose tone to match"),
+            .init("amount", .number, "0…1, default 1"),
+            .init("max_db", .number, "Largest boost or cut per band, 1…12, default 12"),
+        ]),
+        RecipeSpec(name: "spectral_repair", group: "Sound", summary: "Removes a cough, bump, click, beep or phone ring by rebuilding a time range and band from the sound around it (audio.spectral_repair). Without at it lists candidate clicks, thumps and tones it detects; fix_all repairs them all.", args: [
+            .init("clip", .string, "Clip id"),
+            .init("at", .time, "Start of the sound to remove (timeline time); omit to list candidates"),
+            .init("duration", .number, "Seconds, default 0.2"),
+            .init("band", .any, "Frequency band \"low-high\" in Hz (\"900-1100\") or [low, high]; default full band"),
+            .init("mode", .string, "interpolate (default) or attenuate"),
+            .init("reduction", .number, "attenuate: dB, default 30"),
+            .init("fix_all", .bool, "Without at: repair every candidate found"),
+        ]),
         RecipeSpec(name: "speed_ramp", group: "Time", summary: "Ramps a clip into slow motion and back.", args: [
             .init("clip", .string, "Clip id"),
             .init("at", .time, "Center of the ramp; default the clip's middle"),
@@ -351,7 +373,7 @@ extension Toolbox {
     }
 
     static var recipeDescription: String {
-        "Common multi-step edits as one undoable step that reports what it changed (dry_run:true previews). \(recipeGroups). catalog recipe=<name> lists a recipe's arguments; unknown arguments are refused."
+        "Multi-step edits as one undoable step reporting what changed (dry_run:true previews). \(recipeGroups). catalog recipe=<name> lists its arguments; unknown ones are refused."
     }
 
     /// Problems with a recipe call's `args`: unknown names (with the closest declared ones) and values of the wrong kind.

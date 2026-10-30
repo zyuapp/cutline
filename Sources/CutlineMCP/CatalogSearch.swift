@@ -58,6 +58,8 @@ enum CatalogSearch {
         ["speaker", "voice", "who", "diarize", "diarization", "talker", "speakers"],
         ["music", "song", "soundtrack", "score"],
         ["duck", "ducking", "dip", "under"],
+        ["reverb", "echo", "dereverb", "echoey", "roomy", "reverberant"],
+        ["leveler", "leveller", "autolevel", "rides", "ride"],
         ["skin", "beauty", "smooth", "retouch", "complexion"],
         ["bright", "brighten", "exposure", "dark", "darken", "light", "relight"],
         ["translate", "translation", "language", "foreign"],

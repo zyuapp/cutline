@@ -115,6 +115,8 @@ extension Toolbox {
                 return try await trackMask(a, dry: dry)
             case "dme_buses":
                 return try await dmeBuses(a, dry: dry)
+            case "clip_gain_ride", "match_eq", "spectral_repair":
+                return try await dialogueRecipe(try args.string("name"), a, dry: dry)
             default:
                 return try await moreRecipes(try args.string("name"), a, dry: dry)
             }

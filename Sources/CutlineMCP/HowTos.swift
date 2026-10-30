@@ -120,6 +120,20 @@ extension Toolbox {
         HowTo(title: "Tame harsh s sounds", keywords: "de-ess, sibilance", summary: "audio.deess.", calls: [
             ("effect_add", #"{"target":"<clip>","type":"audio.deess"}"#),
         ]),
+        HowTo(title: "Even out dialogue levels", keywords: "auto level, dialogue leveler, auto match, clip gain rides, ride levels, uneven dialogue, quiet and loud lines, volume automation per line", summary: "recipe clip_gain_ride writes editable audio.volume keys holding each phrase at −23 LUFS; audio.leveler does it automatically, holding gain through pauses.", calls: [
+            ("recipe", #"{"name":"clip_gain_ride","args":{"track":"<audio track>","target_lufs":-23}}"#),
+            ("effect_add", #"{"target":"<clip>","type":"audio.leveler","params":{"target":-23}}"#),
+        ]),
+        HowTo(title: "Match the tone of two mics", keywords: "match eq, eq match, lav to boom, lavalier boom, match mic, pickup, adr match, sounds different", summary: "recipe match_eq gives clips the reference clip's long-term speech spectrum (audio.match_eq curve, ±12 dB).", calls: [
+            ("recipe", #"{"name":"match_eq","args":{"clips":["<lav clip>"],"reference":"<boom clip>"}}"#),
+        ]),
+        HowTo(title: "Reduce room echo", keywords: "dereverb, de-reverb, reverb removal, echoey room, roomy, boomy, reverberant", summary: "audio.dereverb subtracts the late reverb predicted from the room's measured decay.", calls: [
+            ("effect_add", #"{"target":"<clip>","type":"audio.dereverb","params":{"strength":0.6}}"#),
+        ]),
+        HowTo(title: "Remove a cough, bump, click or beep", keywords: "spectral repair, cough, sneeze, mic bump, thump, handling noise, phone ring, beep, ringtone, mouth click, plosive, p pop, chair squeak", summary: "recipe spectral_repair without at lists clicks, thumps (bumps, plosives) and tones; with at, duration and band it rebuilds that patch from the sound around it.", calls: [
+            ("recipe", #"{"name":"spectral_repair","args":{"clip":"<clip>"}}"#),
+            ("recipe", #"{"name":"spectral_repair","args":{"clip":"<clip>","at":12.4,"duration":0.3,"band":"900-1100"}}"#),
+        ]),
         HowTo(title: "Fade in or out", keywords: "fade from black, fade to black, fade picture, fade audio", summary: "Picture fades with fade.in/out, sound with audio.fade_in/out.", calls: [
             ("param_set", #"{"target":"<clip>","set":{"fade.in":0.5,"fade.out":1.0,"audio.fade_in":0.5,"audio.fade_out":1.0}}"#),
         ]),

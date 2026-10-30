@@ -204,7 +204,8 @@ public final class AudioStems: @unchecked Sendable {
             defer { try? FileManager.default.removeItem(at: dry) }
             let built = try await TimelineBuilder.build(project, transcripts: transcripts, library: library, renderScale: 1, stems: self, dryTrack: track.id, masterStage: false)
             let frames = try await AudioIO.mixdown(built, range: nil, to: dry)
-            try await AudioChain.process(dry: dry, frames: frames, effects: track.effects.filter { EffectCatalog.isAudio($0.type) && $0.enabled }, to: tmp)
+            let origin = track.id.hasPrefix("clip-") && track.clips.count == 1 ? track.clips[0].start : 0
+            try await AudioChain.process(dry: dry, frames: frames, effects: track.effects.filter { EffectCatalog.isAudio($0.type) && $0.enabled }, origin: origin, to: tmp)
         }
         return dest
     }
@@ -319,8 +320,9 @@ enum AudioChain {
     static let tail: Double = 2
 
     /// Runs dry sound through an effect chain: Cutline's DSP effects in code, built-in and third-party
-    /// Audio Units through offline manual rendering, in stack order. Writes ALAC at the stem rate.
-    static func process(dry: URL, frames: AVAudioFramePosition, effects: [Effect], to url: URL) async throws {
+    /// Audio Units through offline manual rendering, in stack order. Writes ALAC at the stem rate. `origin` is the
+    /// dry sound's time of the clip's start for a clip stem, 0 otherwise.
+    static func process(dry: URL, frames: AVAudioFramePosition, effects: [Effect], origin: Double = 0, to url: URL) async throws {
         var plugins: [String: AVAudioUnit] = [:]
         for e in effects where ProAudioCatalog.isPlugin(e.type) {
             var numeric: [String: Double] = [:]
@@ -335,7 +337,7 @@ enum AudioChain {
             if x.count == 1 { x.append(x[0]) }
             var i = 0
             while i < effects.count {
-                if let processed = AudioDSP.apply(effects[i], to: x, sampleRate: rate) {
+                if let processed = AudioDSP.apply(effects[i], to: x, sampleRate: rate, origin: origin) {
                     x = processed
                     i += 1
                     continue

@@ -159,7 +159,7 @@ private func amplitude(_ x: [Float], _ f: Double, _ range: Range<Int>) -> Double
 }
 
 @Test func proCatalogEffectsRender() {
-    #expect(ProAudioCatalog.all.map(\.id) == ["audio.denoise", "audio.deess", "audio.dehum", "audio.declick", "audio.pan", "audio.width"])
+    #expect(ProAudioCatalog.all.map(\.id) == ["audio.denoise", "audio.deess", "audio.dehum", "audio.declick", "audio.leveler", "audio.match_eq", "audio.dereverb", "audio.spectral_repair", "audio.pan", "audio.width"])
     #expect(ProAudioCatalog.all.allSatisfy { EffectCatalog.isAudio($0.id) && $0.category == "audio" })
     #expect(ProAudioCatalog.isPlugin("au.appl.dely.aufx"))
     let x = [sine(300, 0.5, 4800), sine(300, 0.5, 4800)]

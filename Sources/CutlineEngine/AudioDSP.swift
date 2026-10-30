@@ -290,8 +290,8 @@ public enum AudioDSP {
     static func handles(_ type: String) -> Bool { ProAudioCatalog.type(type) != nil || type == AudioStems.channelMapType || type == "audio.limiter" }
 
     /// Renders one `ProAudioCatalog` effect (or a clip stem's channel routing), blended with the input by `effect.mix`;
-    /// nil for other types.
-    public static func apply(_ e: Effect, to x: [[Float]], sampleRate: Double) -> [[Float]]? {
+    /// nil for other types. `origin` is the buffer time (seconds) of the clip's start, which clip-local params count from.
+    public static func apply(_ e: Effect, to x: [[Float]], sampleRate: Double, origin: Double = 0) -> [[Float]]? {
         func p(_ name: String) -> Double { e.params[name]?.number ?? (ProAudioCatalog.type(e.type) ?? EffectCatalog.type(e.type))?.spec(name)?.defaultValue.number ?? 0 }
         if e.type == AudioStems.channelMapType {
             return route(x, ChannelRouting(rawValue: e.params["channels"]?.string ?? "") ?? .stereo)
@@ -305,6 +305,12 @@ public enum AudioDSP {
         case "audio.pan": wet = pan(x, pan: p("pan"))
         case "audio.width": wet = stereoWidth(x, width: p("width"))
         case "audio.limiter": wet = limit(x, sampleRate: sampleRate, ceilingDb: p("ceiling"), inputGainDb: p("input_gain"), releaseMs: p("release_ms"))
+        case "audio.leveler": wet = level(x, sampleRate: sampleRate, target: p("target"), maxBoost: p("max_boost"), maxCut: p("max_cut"), speed: p("speed"), floor: p("floor"))
+        case "audio.match_eq": wet = matchEQ(x, sampleRate: sampleRate, curve: EQCurve(text: e.params["curve"]?.string ?? "") ?? EQCurve(points: []), amount: p("amount"))
+        case "audio.dereverb": wet = dereverb(x, sampleRate: sampleRate, strength: p("strength"), reduction: p("reduction"), rt60: p("rt60"))
+        case "audio.spectral_repair":
+            let mode = RepairMode(rawValue: e.params["mode"]?.string ?? "") ?? .interpolate
+            wet = spectralRepair(x, sampleRate: sampleRate, from: origin + p("start"), to: origin + p("end"), low: p("freq_low"), high: p("freq_high"), mode: mode, reduction: p("reduction"))
         default: return nil
         }
         let mix = Float(min(max(e.mix, 0), 1))
@@ -418,7 +424,7 @@ final class Spectrum {
     }
 }
 
-/// Short-time Fourier transform with a Hann window at 75% overlap, ~43 ms frames.
+/// Short-time Fourier transform with a Hann window at 75% overlap, ~43 ms frames unless given `seconds`.
 final class STFT {
     let size, half, bins, hop: Int
     let log2n: vDSP_Length
@@ -426,8 +432,8 @@ final class STFT {
     let window: [Float]
     private var frame: [Float]
 
-    init(sampleRate: Double) {
-        let target = max(256, min(16_384, sampleRate * 0.043))
+    init(sampleRate: Double, seconds: Double = 0.043) {
+        let target = max(256, min(16_384, sampleRate * seconds))
         log2n = vDSP_Length(log2(target).rounded())
         size = 1 << Int(log2n)
         half = size / 2
