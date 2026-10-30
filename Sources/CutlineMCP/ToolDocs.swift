@@ -70,8 +70,16 @@ extension Toolbox {
         ]),
         "timeline_frames": ToolBrief(text: "Render timeline frames exactly as export will, with the clip visible at each time.", args: [
             "times": "Timeline times", "count": "Default 6, max 24", "start": "", "end": "", "size": "large for detail",
-            "view": "matte: white where clip's effect acts (keys, masks, qualifiers)", "clip": "For matte", "effect": "For matte",
+            "view": "matte: white where clip's effect acts (keys, masks, qualifiers)", "clip": "For matte/multicam", "effect": "For matte",
+            "multicam": "Angle grid",
         ]),
+        "multicam_create": ToolBrief(text: "Build a multicam clip of synced angles playing one live angle per range.", args: [
+            "angles": "Camera media", "audio": "Sound media", "sync": "audio, timecode, marker, in_points", "name": "",
+        ], hide: ["at", "channel", "names", "points", "place", "track", "audio_follows_video"]),
+        "multicam_angles": ToolBrief(text: "A multicam clip's angles and live angle per range.", args: ["clip": "", "at": ""]),
+        "multicam_cut": ToolBrief(text: "Switch a multicam clip's angle from at, or for from–to.", args: [
+            "clip": "", "at": "", "from": "", "to": "", "angle": "", "audio": "",
+        ], hide: ["audio_follows_video"]),
         "timeline_transcript": ToolBrief(text: "What the edit says in TIMELINE time, per clip, from the dialogue tracks; pauses ≥0.4 s and fillers marked.", args: [
             "start": "", "end": "", "all_tracks": "Include music, effects and ambience tracks",
         ]),
@@ -224,7 +232,7 @@ extension Toolbox {
             "start": "", "end": "", "language": "Show this translation",
         ]),
         "captions_translate": ToolBrief(text: "Translate caption cues (on-device, or your cues/.srt) for subtitles in other languages; follows edits.", args: [
-            "language": "e.g. fr", "languages": "Several at once", "cues": "[{id, text}] your own", "cues[].id": "", "cues[].text": "", "file": ".srt/.vtt to import", "clear": "",
+            "language": "e.g. fr", "languages": "", "cues": "[{id, text}] your own", "cues[].id": "", "cues[].text": "", "file": ".srt/.vtt to import", "clear": "",
         ]),
         "caption_edit": ToolBrief(text: "Fix one caption cue (by at or from/to words): text, timing, hide, break_before, merge with the next, or clear edits.", args: [
             "at": "Time inside the cue", "from": "\"<media>.wN\"", "to": "Default from", "text": "", "start_offset": "", "end_offset": "",

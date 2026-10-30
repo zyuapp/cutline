@@ -80,7 +80,7 @@ public enum ProcessedPicture {
         for track in project.tracks where track.kind == .video {
             for c in track.clips {
                 var clips: [Clip] = []
-                if c.kind == .sequence, let seq = c.mediaId.flatMap({ project.sequence($0) }) {
+                if c.kind == .sequence, let seq = project.contents(of: c) {
                     for w in project.inside(seq).transitionWindows where w.transition.hasVideo {
                         if let id = w.transition.from { tails["\(c.id)/\(id)"] = w.tail }
                         if let id = w.transition.to { heads["\(c.id)/\(id)"] = w.head }

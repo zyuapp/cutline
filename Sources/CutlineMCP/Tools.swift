@@ -53,6 +53,7 @@ final class Toolbox {
         registerPatchTool()
         registerTemplateTool()
         registerNestTool()
+        registerMulticamTools()
         registerTrackTool()
         registerAnalysisTools()
         registerExportTools()
@@ -294,6 +295,10 @@ enum Describe {
         case .solid: s += "solid \(c.color?.hex ?? "")"
         case .adjustment: s += "adjustment layer"
         case .generator: s += "generator " + (c.effects.first.map(\.type) ?? "?")
+        case .sequence where p.multicamSetup(c) != nil:
+            let setup = p.multicamSetup(c)!
+            let ranges = p.visibleAngleRanges(c)
+            s += "multicam \"\(c.mediaId.flatMap { p.sequence($0)?.name } ?? "?")\" [\(setup.angles.count) angles: " + setup.angles.map(\.name).joined(separator: ", ") + "; \(ranges.count) range(s), starts on \(ranges.first?.angle ?? "?")]"
         case .sequence:
             let seq = c.mediaId.flatMap { p.sequence($0) }
             s += "nested \"\(seq?.name ?? "?")\" [\(fmt(c.sourceIn))–\(fmt(c.sourceIn + c.duration)) of \(fmt(seq?.duration ?? 0))s, \(seq?.tracks.flatMap(\.clips).count ?? 0) clips]"

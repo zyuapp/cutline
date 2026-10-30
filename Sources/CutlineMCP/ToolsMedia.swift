@@ -199,10 +199,12 @@ extension Toolbox {
             "end": Schema.time("Range end for count"),
             "size": Schema.string("small (default) or large for detail checks such as text legibility", values: ["small", "large"]),
             "view": Schema.string("picture (default), or matte: white where one clip effect acts and black where it doesn't (its limit window and/or qualifier, mask, chroma key or person/subject/object mask), to check a key or secondary; needs clip, and effect unless the clip has one masked effect", values: ["picture", "matte"]),
-            "clip": Schema.string("For view matte: the clip whose effect to show"),
+            "clip": Schema.string("For view matte: the clip whose effect to show; for multicam: the multicam clip"),
             "effect": Schema.string("For view matte: the effect id on that clip"),
+            "multicam": Schema.bool("Angle viewer: every angle of the multicam clip at each time (default one frame at the clip's middle), the live angle outlined in red"),
         ])) { [unowned self] args in
             if args.optString("view") == "matte" { return try await self.matteFrames(args) }
+            if args.bool("multicam", default: false) { return try await self.multicamFrames(args) }
             let built = try await session.timeline()
             let p = built.scene.project
             guard p.duration > 0 else { throw EditError("The timeline is empty") }
@@ -220,7 +222,8 @@ extension Toolbox {
                         return "\(t.id):\(w.transition.id) \(w.transition.type) \(Int((w.progress(at: f.time) * 100).rounded()))% \(w.transition.from ?? "∅")→\(w.transition.to ?? "∅")"
                     }
                     guard let c = t.clip(at: f.time) else { return nil }
-                    return "\(t.id):\(c.id)" + (c.kind == .media ? "@\(fmt2(c.sourceTime(atTimeline: f.time)))" : "")
+                    let angle = p.visibleAngleRanges(c).last { $0.range.start <= f.time + 1e-6 }.map { " angle \($0.angle)" } ?? ""
+                    return "\(t.id):\(c.id)" + (c.kind == .media ? "@\(fmt2(c.sourceTime(atTimeline: f.time)))" : angle)
                 }
                 lines.append("\(fmt2(f.time))s  " + (visible.isEmpty ? "(background)" : visible.joined(separator: "  ")))
             }

@@ -141,7 +141,7 @@ extension Project {
     /// The project as `format` is written: generators become baked graphics, titles, or offline placeholders
     /// (OTIO keeps them, with all their settings in Cutline metadata, unless baked).
     func prepared(for format: InterchangeFormat, options: InterchangeOptions) -> (Project, InterchangeContext) {
-        var p = self
+        var p = flatteningMulticam()
         var ctx = InterchangeContext(luts: options.luts)
         var added: [MediaAsset] = []
         func graphicAsset(_ c: Clip, path: String) -> String {
@@ -299,7 +299,9 @@ extension Project {
                 out.append("\(name) adjustment layer" + (fx.isEmpty ? "" : " (\(fx.joined(separator: ", ")))") + " → " + (otio ? "a gap with its effects in Cutline metadata; other apps don't apply them" : "not carried; its effects don't reach the clips below"))
                 return
             case .sequence:
-                if edl { out.append("\(name) nested sequence → flattened into the events it plays") }
+                if let setup = scope.multicamSetup(c) {
+                    out.append("\(name) multicam clip (\(setup.angles.count) angles) → " + (edl ? "the events of its active angles" : "a compound clip of its active angles and sound") + "; the other angles and the switching aren't carried")
+                } else if edl { out.append("\(name) nested sequence → flattened into the events it plays") }
             case .media:
                 break
             }
