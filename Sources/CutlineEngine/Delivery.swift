@@ -377,3 +377,19 @@ public enum Delivery {
         func set(_ e: Error) { lock.withLock { if stored == nil { stored = e } } }
     }
 }
+
+extension BuiltTimeline {
+    /// The picture scaled into `width`×`height` without distortion and centered on black (letterbox or pillarbox).
+    public func fitted(width: Int, height: Int) -> BuiltTimeline {
+        let s = RenderScene(project: scene.project, captions: scene.captions, trackIDs: scene.trackIDs, orientations: scene.orientations, images: scene.images)
+        s.sdrTrim = scene.sdrTrim
+        s.matteView = scene.matteView
+        s.fitsOutput = true
+        let vc = videoComposition.mutableCopy() as! AVMutableVideoComposition
+        vc.renderSize = CGSize(width: width, height: height)
+        vc.instructions = vc.instructions.map { CutlineInstruction(timeRange: $0.timeRange, scene: s) }
+        var built = BuiltTimeline(composition: composition, videoComposition: vc, audioMix: audioMix, scene: s, duration: duration, missingStems: missingStems, layout: layout, surround: surround)
+        built.missingPictures = missingPictures
+        return built
+    }
+}

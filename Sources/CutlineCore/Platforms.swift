@@ -1,6 +1,44 @@
 import CoreGraphics
 import Foundation
 
+/// The changes a conformed deliverable makes to meet a platform, applied to a copy of the project at export.
+public struct DeliveryConform: Sendable {
+    /// Frame size the picture is scaled into (without distortion) and padded to.
+    public var size: (width: Int, height: Int)?
+    /// Output frame rate; frames are the timeline at each output frame's time.
+    public var fps: Double?
+    /// Master loudness target (LUFS) and true-peak ceiling (dBTP) the mix is conformed to.
+    public var loudness: Double?
+    public var ceiling: Double?
+    public var timecodeStart: String?
+    /// One line per change, for the export report.
+    public var steps: [String] = []
+
+    public init() {}
+
+    public var isEmpty: Bool { steps.isEmpty }
+
+    /// `p` as rendered: the frame rate, loudness target and ceiling changed, the edit's times left alone.
+    public func rendered(_ p: Project) -> Project {
+        var out = p
+        if let fps { out.canvas.fps = fps }
+        if let loudness { out.master.loudnessTarget = loudness }
+        if let ceiling { out.master.truePeakCeiling = ceiling }
+        if let timecodeStart { out.canvas.timecodeStart = timecodeStart }
+        return out
+    }
+
+    /// `p` as delivered, for platform checks: `rendered` at the conformed frame size.
+    public func delivered(_ p: Project) -> Project {
+        var out = rendered(p)
+        if let size {
+            out.canvas.width = size.width
+            out.canvas.height = size.height
+        }
+        return out
+    }
+}
+
 /// Delivery targets: shape, length and loudness limits, and where the app's own UI covers the picture.
 /// Broadcast targets also fix the frame size, frame rate and mastering codec.
 public struct Platform: Sendable {
@@ -68,6 +106,8 @@ public struct Platform: Sendable {
 
     public static func named(_ id: String) -> Platform? { all.first { $0.id == id } }
 
+    private func fmt1(_ v: Double) -> String { String(format: "%.1f", v) }
+
     /// The regional variant for generic `broadcast` at the project's frame rate.
     public func resolved(for p: Project) -> Platform {
         if id == "netflix_master", p.master.layout.isSurround {
@@ -131,6 +171,42 @@ public struct Platform: Sendable {
             out.append("\(name) programs start at \(tc); this one starts at \(start). Export with timecode_start:\"\(tc)\" (or canvas_set timecode_start).")
         }
         return out
+    }
+
+    /// Broadcast and mastering targets (fixed frame size): exports refuse to render past failed checks by default.
+    public var isMastering: Bool { frameSize != nil || frameSizes != nil }
+
+    /// What a conformed deliverable changes so `p` meets this platform's frame size, frame rate, loudness, true peak
+    /// and start timecode, without editing the project.
+    public func conformPlan(_ p: Project, timecodeStart: String? = nil) -> DeliveryConform {
+        var plan = DeliveryConform()
+        let sizes = frameSizes ?? frameSize.map { [$0] } ?? []
+        if let first = sizes.first, !sizes.contains(where: { $0.width == p.canvas.width && $0.height == p.canvas.height }) {
+            let aspect = Double(p.canvas.width) / Double(max(1, p.canvas.height))
+            let target = sizes.first { abs(Double($0.width) / Double($0.height) - aspect) < 0.02 && $0.width >= p.canvas.width } ?? first
+            plan.size = target
+            let s = min(Double(target.width) / Double(p.canvas.width), Double(target.height) / Double(p.canvas.height))
+            let w = Int((Double(p.canvas.width) * s / 2).rounded()) * 2, h = Int((Double(p.canvas.height) * s / 2).rounded()) * 2
+            plan.steps.append("picture \(p.canvas.width)×\(p.canvas.height) scaled \(fmt2(s))× to \(w)×\(h)" + (w == target.width && h == target.height ? "" : " and \(w < target.width ? "pillarboxed" : "letterboxed") in black to \(target.width)×\(target.height)"))
+        }
+        if let rates = frameRates, !rates.contains(where: { abs($0 - p.canvas.fps) < 0.001 }) {
+            let rate = rates.min { abs($0 - p.canvas.fps) < abs($1 - p.canvas.fps) }!
+            plan.fps = rate
+            plan.steps.append("frame rate \(Platform.fpsName(p.canvas.fps)) → \(Platform.fpsName(rate)) fps by nearest frame (each output frame shows the timeline at its own time; no blending, so motion may judder)")
+        }
+        if p.master.loudnessTarget.map({ abs($0 - loudness) > loudnessTolerance }) ?? true {
+            plan.loudness = loudness
+            plan.steps.append("loudness to \(fmt1(loudness)) LUFS integrated\(dialogueGated ? " dialogue-gated" : "")")
+        }
+        if p.master.ceiling > truePeak || plan.loudness != nil {
+            plan.ceiling = min(p.master.ceiling, truePeak)
+            plan.steps.append("true-peak limiting at \(fmt1(plan.ceiling!)) dBTP")
+        }
+        if let tc = startTimecode, (timecodeStart ?? p.canvas.startTimecode) != tc {
+            plan.timecodeStart = tc
+            plan.steps.append("program start timecode \(tc)")
+        }
+        return plan
     }
 
     static func ratioName(_ r: Double) -> String {

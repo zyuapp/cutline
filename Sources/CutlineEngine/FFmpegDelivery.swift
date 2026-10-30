@@ -87,7 +87,9 @@ public enum FFmpegDelivery {
     public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)? = nil) async throws -> LoudnessConform? {
         let preset = options.preset
         guard let tools = FFmpeg.tools() else { throw EditError(missing(preset)) }
-        let p = built.scene.project
+        var p = built.scene.project
+        p.canvas.width = Int(built.videoComposition.renderSize.width)
+        p.canvas.height = Int(built.videoComposition.renderSize.height)
         let container = url.pathExtension.lowercased()
         if let why = check(p, preset: preset, container: container, fields: options.interlaced) { throw EditError(why) }
         let caps = try await FFmpeg.encoders(tools.ffmpeg, pixelFormatsOf: preset.isX264 ? ["libx264"] : preset == .av1 ? ["libsvtav1", "libaom-av1"] : [])
@@ -114,7 +116,9 @@ public enum FFmpegDelivery {
                 channels.append(Int(asbd.pointee.mChannelsPerFrame))
             }
         }
-        let duration = try await asset.load(.duration).seconds
+        let picture = try await asset.loadTracks(withMediaType: .video).first
+        var duration = try await asset.load(.duration).seconds
+        if let picture { duration = try await picture.load(.timeRange).duration.seconds }
         let timecode = options.timecode ? try await TimecodeTrack.read(tmp) : nil
         var names: [String] = []
         if !specs.isEmpty {
@@ -158,13 +162,15 @@ public enum FFmpegDelivery {
             maps = ["-map", "[v]"]
         }
         var streams = 0
+        // Every audio stream runs the picture's full length: short sound is padded with silence.
+        let pad = "apad=whole_dur=" + String(format: "%.6f", duration)
         if mxf || silent > 0 {
             // MXF tracks are one channel each, as broadcast ingest expects.
             for (t, n) in channels.enumerated() where n > 0 {
                 let labels = (0..<n).map { "[t\(t)c\($0)]" }.joined()
                 var chain = n == 1 ? "[0:a:\(t)]anull[t\(t)c0]" : "[0:a:\(t)]asplit=\(n)\(labels)"
                 for c in 0..<n {
-                    if n > 1 { chain += ";[t\(t)c\(c)]pan=mono|c0=c\(c)[a\(streams)]" } else { chain += ";[t\(t)c0]anull[a\(streams)]" }
+                    if n > 1 { chain += ";[t\(t)c\(c)]pan=mono|c0=c\(c),\(pad)[a\(streams)]" } else { chain += ";[t\(t)c0]\(pad)[a\(streams)]" }
                     maps += ["-map", "[a\(streams)]"]
                     streams += 1
                 }
@@ -181,6 +187,7 @@ public enum FFmpegDelivery {
                 maps += ["-map", "0:a:\(t)"]
                 streams += 1
             }
+            if streams > 0 { a += ["-filter:a", pad] }
         }
         if !filters.isEmpty { a += ["-filter_complex", filters.joined(separator: ";")] }
         a += maps
@@ -245,7 +252,7 @@ public enum FFmpegDelivery {
             a += ["-timecode", timecode]
             if container == "mp4" { a += ["-write_tmcd", "1"] }
         }
-        a += ["-progress", "pipe:1", "-nostats", "-f", mxf ? "mxf" : container == "mp4" ? "mp4" : "mov", output.path]
+        a += ["-t", String(format: "%.6f", duration), "-progress", "pipe:1", "-nostats", "-f", mxf ? "mxf" : container == "mp4" ? "mp4" : "mov", output.path]
         return a
     }
 }

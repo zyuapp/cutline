@@ -135,6 +135,33 @@ public final class ProjectBundle: @unchecked Sendable {
         return (try checkout(entry.id), entry)
     }
 
+    /// Runs `body`, then puts the project and its history back exactly as they were: entries `body` committed are
+    /// dropped with their snapshots, and redo entries a commit in `body` cut off come back.
+    public func preservingHistory<T>(_ body: () async throws -> T) async throws -> T {
+        let fm = FileManager.default
+        let saved = loadHistory()
+        let projectData = try Data(contentsOf: projectURL)
+        let keep = cacheURL.appendingPathComponent("history-kept-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: keep, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: keep) }
+        for e in saved.entries where fm.fileExists(atPath: snapshotURL(e.id).path) {
+            let copy = keep.appendingPathComponent("\(e.id).json")
+            if (try? fm.linkItem(at: snapshotURL(e.id), to: copy)) == nil { try fm.copyItem(at: snapshotURL(e.id), to: copy) }
+        }
+        let outcome: Result<T, Error>
+        do { outcome = .success(try await body()) } catch { outcome = .failure(error) }
+        let ids = Set(saved.entries.map(\.id))
+        for url in (try? fm.contentsOfDirectory(at: snapshotsURL, includingPropertiesForKeys: nil)) ?? [] where url.pathExtension == "json" {
+            if !ids.contains(url.deletingPathExtension().lastPathComponent) { try? fm.removeItem(at: url) }
+        }
+        for e in saved.entries where !fm.fileExists(atPath: snapshotURL(e.id).path) {
+            try? fm.moveItem(at: keep.appendingPathComponent("\(e.id).json"), to: snapshotURL(e.id))
+        }
+        try write(saved, to: historyURL)
+        try projectData.write(to: projectURL, options: .atomic)
+        return try outcome.get()
+    }
+
     public func snapshot(_ id: String) throws -> Project {
         try read(Project.self, from: snapshotURL(id))
     }
