@@ -62,7 +62,7 @@ extension Project {
         func frames(_ t: Seconds, _ g: FrameGrid) -> Int {
             // Times a hair apart (one side of a cut computed as start + duration) count as the same.
             let x = (t * g.rate * 1e6).rounded() / 1e6
-            return Int(x.rounded())
+            return Int(saturating: x.rounded())
         }
         func seconds(_ n: Int) -> Seconds { Double(n * newGrid.num) / Double(newGrid.den) }
         var moved = Set<Int64>()

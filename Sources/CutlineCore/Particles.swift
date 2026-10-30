@@ -96,11 +96,11 @@ public enum ParticleSystem {
     /// `value(name, t)` reads a parameter at `t` seconds into the clip; emitter position, direction, spread and speed
     /// are read when each particle is born, everything else at `time`.
     public static func particles(at time: Double, width: Double, height: Double, value: (String, Double) -> ParamValue) -> [Particle] {
-        func num(_ k: String, _ t: Double = time) -> Double { value(k, t).number ?? 0 }
+        func num(_ k: String, _ t: Double = time) -> Double { (value(k, t).number ?? 0).finite(or: 0) }
         let H = height
-        let seed = UInt64(max(0, num("seed")))
-        let rate = max(0, num("rate"))
-        let burst = Int(max(0, num("burst")).rounded())
+        let seed = UInt64(min(max(0, num("seed")), 1e15))
+        let rate = min(max(0, num("rate")), 10_000)
+        let burst = Int(saturating: max(0, num("burst")).rounded())
         let life = max(0.05, num("lifetime"))
         let lifeRand = min(max(num("lifetime_random"), 0), 1)
         let maxLife = life * (1 + lifeRand)
@@ -191,8 +191,8 @@ public enum ParticleSystem {
         }
         for j in 0..<min(burst, 5000) { spawn(-1 - Int64(j), born: prewarm) }
         if rate > 0 {
-            let first = max(0, Int64(((clock - maxLife) * rate).rounded(.down)))
-            let last = Int64((clock * rate).rounded(.down))
+            let last = Int64(Int(saturating: (clock * rate).rounded(.down)))
+            let first = max(0, Int64(Int(saturating: ((clock - maxLife) * rate).rounded(.down))), last - 50_000)
             if last >= first {
                 for i in first...last {
                     let born = (Double(i) + StableRandom.unit(seed, i, 0) * 0.999) / rate

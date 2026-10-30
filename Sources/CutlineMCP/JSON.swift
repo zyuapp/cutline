@@ -41,8 +41,23 @@ public enum JSON: Codable, Equatable, Sendable {
     public var double: Double? {
         switch self {
         case .number(let n): return n
-        case .string(let s): return Double(s)
+        case .string(let s): return Double(s).flatMap { JSON.usable($0) ? $0 : nil }
         default: return nil
+        }
+    }
+
+    /// Largest magnitude a number argument may have; beyond it sample and frame counts overflow.
+    public static let numberLimit = 1e12
+
+    static func usable(_ n: Double) -> Bool { n.isFinite && abs(n) <= numberLimit }
+
+    /// Paths of numbers that are infinite, NaN or past `numberLimit`.
+    func unusableNumbers(_ path: String = "") -> [String] {
+        switch self {
+        case .number(let n): return JSON.usable(n) ? [] : [path.isEmpty ? "value" : path]
+        case .array(let a): return a.enumerated().flatMap { $0.element.unusableNumbers("\(path)[\($0.offset)]") }
+        case .object(let o): return o.sorted { $0.key < $1.key }.flatMap { $0.value.unusableNumbers(path.isEmpty ? $0.key : path + "." + $0.key) }
+        default: return []
         }
     }
     public var bool: Bool? { if case .bool(let b) = self { return b }; return nil }
@@ -108,7 +123,7 @@ public struct Args {
     public func optString(_ k: String) -> String? {
         guard let v = value(k) else { return nil }
         if let s = v.string { return s }
-        if let d = v.double { return d.rounded() == d ? String(Int(d)) : String(d) }
+        if let d = v.double { return d.rounded() == d && abs(d) < 1e15 ? String(Int(d)) : String(d) }
         return nil
     }
 
@@ -139,12 +154,18 @@ public struct Args {
     }
 
     static func parseTime(_ v: JSON, name: String) throws -> Seconds {
+        let t = try parseAnyTime(v, name: name)
+        guard JSON.usable(t) else { throw EditError("'\(name)' must be a finite time, got \(v.encoded())") }
+        return t
+    }
+
+    private static func parseAnyTime(_ v: JSON, name: String) throws -> Seconds {
         if case .number(let n) = v { return n }
         if let s = v.string {
             if let d = Double(s) { return d }
-            let parts = s.split(separator: ":").map { Double($0) }
-            if !parts.isEmpty, parts.allSatisfy({ $0 != nil }) {
-                return parts.reduce(0.0) { $0 * 60 + $1! }
+            let parts = s.split(separator: ":").compactMap { Double($0) }
+            if !parts.isEmpty, parts.count == s.split(separator: ":").count {
+                return parts.reduce(0.0) { $0 * 60 + $1 }
             }
             if let r = timelineResolver { return try r(s) }
         }
@@ -152,7 +173,11 @@ public struct Args {
     }
 
     static func parseSourceTime(_ v: JSON, name: String) throws -> Seconds {
-        if let s = v.string, Double(s) == nil, !s.contains(":") || s.contains("@"), let r = sourceResolver { return try r(s) }
+        if let s = v.string, Double(s) == nil, !s.contains(":") || s.contains("@"), let r = sourceResolver {
+            let t = try r(s)
+            guard JSON.usable(t) else { throw EditError("'\(name)' must be a finite time, got \(v.encoded())") }
+            return t
+        }
         let saved = timelineResolver
         timelineResolver = nil
         defer { timelineResolver = saved }
@@ -176,7 +201,7 @@ public struct Args {
     }
 
     public func optDouble(_ k: String) -> Double? { value(k)?.double }
-    public func optInt(_ k: String) -> Int? { optDouble(k).map { Int($0) } }
+    public func optInt(_ k: String) -> Int? { optDouble(k).map { Int(saturating: $0) } }
     public func optBool(_ k: String) -> Bool? {
         guard let v = value(k) else { return nil }
         if let b = v.bool { return b }

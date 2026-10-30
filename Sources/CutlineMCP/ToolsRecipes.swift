@@ -154,8 +154,9 @@ extension Toolbox {
             }
         case "reframe":
             let parts = (a.optString("aspect") ?? "9:16").split(separator: ":").compactMap { Double($0) }
-            guard parts.count == 2, parts[0] > 0, parts[1] > 0 else { throw EditError("aspect is like \"9:16\"") }
+            guard parts.count == 2, parts[0] > 0, parts[1] > 0, (0.1...10).contains(parts[0] / parts[1]) else { throw EditError("aspect is like \"9:16\", between 1:10 and 10:1") }
             let longSide = Double(a.optInt("height") ?? max(current.canvas.width, current.canvas.height))
+            guard (16...8192).contains(longSide) else { throw EditError("height must be between 16 and 8192 pixels") }
             let (w, h): (Double, Double) = parts[0] >= parts[1] ? (longSide, longSide * parts[1] / parts[0]) : (longSide * parts[0] / parts[1], longSide)
             let shots = Toolbox.shotIndex(b, current)
             return try runEdit("Reframe to \(a.optString("aspect") ?? "9:16")", dry: dry) { p in

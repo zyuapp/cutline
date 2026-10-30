@@ -176,6 +176,8 @@ extension Toolbox {
             }
         }
         if !problems.isEmpty { throw EditError("\(tool) doesn't take " + problems.joined(separator: "; ") + ".") }
+        let unusable = args?.unusableNumbers() ?? []
+        if !unusable.isEmpty { throw EditError("\(unusable.joined(separator: ", ")) must be a finite number within ±\(Int(JSON.numberLimit))") }
         var invalid = Toolbox.invalidValues(args ?? [:], schema: schema, path: "", name: "")
         if tool == "batch", let ops = args?["operations"]?.array {
             for (i, op) in ops.enumerated() {

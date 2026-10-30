@@ -178,7 +178,7 @@ extension Toolbox {
             lines.append("  Luma \(ch(s.parade.luma)); R \(ch(s.parade.red)); G \(ch(s.parade.green)); B \(ch(s.parade.blue))")
             lines.append("  Clipped \(fmt1(s.clipped * 100))%, crushed \(fmt1(s.crushed * 100))%")
             let v = s.vectorscope
-            lines.append("  Vectorscope: hue \(Int(v.hue))°, centroid saturation \(fmt2(v.saturation)), average \(fmt2(v.meanSaturation))" + (v.skinToneOffset.map { ", \(fmt1($0))° off the skin-tone line" } ?? ""))
+            lines.append("  Vectorscope: hue \(Int(saturating: v.hue))°, centroid saturation \(fmt2(v.saturation)), average \(fmt2(v.meanSaturation))" + (v.skinToneOffset.map { ", \(fmt1($0))° off the skin-tone line" } ?? ""))
             let spread = [s.parade.red.median, s.parade.green.median, s.parade.blue.median]
             if (spread.max()! - spread.min()!) > 0.06 { lines.append("  Channel medians differ by \(fmt2(spread.max()! - spread.min()!)): a color cast; balance with color.adjust temperature/tint or color.grade") }
         }

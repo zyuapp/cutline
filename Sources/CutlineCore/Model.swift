@@ -561,7 +561,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public func sourceOffset(atLocal t: Seconds) -> Seconds {
         guard let c = anim["time.speed"] else { return t * speed }
         guard t > 0 else { return t * max(0, c.value(at: 0)?.number ?? speed) }
-        let steps = max(8, Int(t * 240))
+        let steps = max(8, min(2_000_000, Int(saturating: t * 240)))
         let h = t / Double(steps)
         var sum = 0.0
         var prev = speed(atLocal: 0)

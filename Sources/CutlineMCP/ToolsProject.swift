@@ -171,7 +171,7 @@ extension Toolbox {
                 return .text(lines.isEmpty ? "No differences from \(id)." : "Changes since \(id):\n" + lines.map { "  " + $0 }.joined(separator: "\n"))
             default:
                 let h = b.loadHistory()
-                let limit = args.optInt("limit") ?? 20
+                let limit = max(0, args.optInt("limit") ?? 20)
                 let lines = h.entries.enumerated().suffix(limit).map { i, e in
                     (i == h.cursor ? "→ " : "  ") + "\(e.id)  \(e.label)  \(ISO8601DateFormatter().string(from: e.createdAt))"
                 }

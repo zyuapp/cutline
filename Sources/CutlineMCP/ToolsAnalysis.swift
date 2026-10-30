@@ -190,11 +190,12 @@ extension Toolbox {
 
     /// Spans where the music is quiet, building or loud, from per-beat energy.
     static func energySections(_ b: BeatAnalysis) -> String {
-        guard b.beats.count >= 8 else { return "too short" }
+        let energy = Array(b.energy.prefix(b.beats.count))
+        guard b.beats.count >= 8, !energy.isEmpty else { return "too short" }
         var out: [String] = []
         var startIdx = 0
         func level(_ e: Float) -> String { e < 0.45 ? "quiet" : e < 0.75 ? "medium" : "loud" }
-        let smooth = b.energy.indices.map { i in b.energy[max(0, i - 4)...min(b.energy.count - 1, i + 4)].reduce(0, +) / Float(min(b.energy.count - 1, i + 4) - max(0, i - 4) + 1) }
+        let smooth = energy.indices.map { i in energy[max(0, i - 4)...min(energy.count - 1, i + 4)].reduce(0, +) / Float(min(energy.count - 1, i + 4) - max(0, i - 4) + 1) }
         for i in 1...smooth.count where i == smooth.count || level(smooth[i]) != level(smooth[startIdx]) {
             if i - startIdx >= 4 || i == smooth.count { out.append("\(level(smooth[startIdx])) \(fmt1(b.beats[startIdx]))–\(fmt1(i < b.beats.count ? b.beats[i] : b.beats.last!))") }
             startIdx = i

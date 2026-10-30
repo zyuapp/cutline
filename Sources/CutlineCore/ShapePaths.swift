@@ -174,7 +174,7 @@ extension ShapePath {
                 else { break }
                 i += 1
             }
-            guard let v = Double(s) else { throw EditError("SVG path: expected a number near character \(i) of \"\(d.prefix(60))\"") }
+            guard let v = Double(s), v.isFinite else { throw EditError("SVG path: expected a number near character \(i) of \"\(d.prefix(60))\"") }
             return v
         }
         func flag() throws -> Bool {
@@ -296,6 +296,7 @@ extension ShapePath {
         let theta = angle(1, 0, (x1 - cxp) / rx, (y1 - cyp) / ry)
         var delta = angle((x1 - cxp) / rx, (y1 - cyp) / ry, (-x1 - cxp) / rx, (-y1 - cyp) / ry)
         if !sweep && delta > 0 { delta -= 2 * .pi } else if sweep && delta < 0 { delta += 2 * .pi }
+        guard delta.isFinite else { return [.line(p1)] }
         let n = max(1, Int((abs(delta) / (.pi / 2)).rounded(.up)))
         let step = delta / Double(n)
         let k = 4.0 / 3 * tan(step / 4)

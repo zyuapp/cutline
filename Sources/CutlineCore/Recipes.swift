@@ -55,7 +55,7 @@ extension Project {
         else { throw EditError("No video clip at \(fmt2(t))s") }
         let shortest = canvas.frameDuration * Double(Project.freezeMinimumPiece) - eps
         let frame = canvas.frameDuration
-        let frames = { (s: Seconds) in Int((s / frame).rounded()) }
+        let frames = { (s: Seconds) in Int(saturating: (s / frame).rounded()) }
         var notes: [String] = []
         if t - c.start > eps, t - c.start < shortest {
             notes.append("starts at \(c.id)'s first frame (\(fmt2(c.start))s) so no \(frames(t - c.start))-frame piece flashes before it")

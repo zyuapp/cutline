@@ -46,6 +46,7 @@ public enum MusicFit {
         for i in bars.indices {
             for j in (i + 1)..<bars.count {
                 let section = bars[j] - bars[i]
+                guard section > 1e-3 else { continue }
                 let repeats = max(1, Int((extra / section).rounded(.up)))
                 guard repeats <= 16 else { continue }
                 let score = (Double(repeats) * section - extra) + 0.5 * Double(repeats - 1) + 0.02 * abs(bars[i] - middle)

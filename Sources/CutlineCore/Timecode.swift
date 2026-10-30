@@ -46,9 +46,9 @@ public struct TimecodeFormat: Equatable, Sendable {
     public static func isDropLabel(_ label: String) -> Bool { label.contains(";") || label.contains(".") }
 
     /// Whole frames in `seconds` at this rate.
-    public func frameCount(_ seconds: Seconds) -> Int { Int((seconds * Double(frameDen) / Double(frameNum)).rounded()) }
+    public func frameCount(_ seconds: Seconds) -> Int { Int(saturating: (seconds * Double(frameDen) / Double(frameNum)).rounded()) }
 
-    public func seconds(_ frames: Int) -> Seconds { Double(frames * frameNum) / Double(frameDen) }
+    public func seconds(_ frames: Int) -> Seconds { Double(frames) * Double(frameNum) / Double(frameDen) }
 
     /// Exact frames per second, e.g. 30000/1001.
     public var rate: Double { Double(frameDen) / Double(frameNum) }

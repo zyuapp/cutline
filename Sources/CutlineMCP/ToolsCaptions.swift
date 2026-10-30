@@ -102,7 +102,7 @@ extension Toolbox {
             } else {
                 throw EditError("Pass at, or from (and to)")
             }
-            guard let t = transcripts[media], last < t.words.count else { throw EditError("No word \(media).w\(last)") }
+            guard let t = transcripts[media], first >= 0, last < t.words.count else { throw EditError("No word \(media).w\(first < 0 ? first : last)") }
             let clearing = args.bool("clear", default: false)
             p.captions.edits.removeAll { $0.mediaId == media && $0.fromWord <= last && $0.toWord >= first && (clearing || !$0.isMergeOnly) }
             if clearing { return "Cleared caption edits on \(media).w\(first)–w\(last)" }
@@ -258,6 +258,7 @@ extension Toolbox {
             if let ins = args.raw["insert"]?.object {
                 let sub = Args(.object(ins))
                 let text = try sub.string("text")
+                guard !text.allSatisfy(\.isWhitespace) else { throw EditError("insert needs text with at least one word") }
                 guard let s = try sub.optTime("start"), let e = try sub.optTime("end"), e > s else { throw EditError("insert needs start < end") }
                 let r = t.insertWords(text, start: s, end: e)
                 speakers?.spliceWords(r.lowerBound..<r.lowerBound, count: r.count)

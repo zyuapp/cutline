@@ -222,12 +222,12 @@ extension Project {
         var level: ((Seconds) -> Float)?
         if !direct, let cl = channelLevels, let played, !played.isEmpty {
             level = { t in
-                let i = Int(t * cl.rate)
+                let i = Int(saturating: t * cl.rate)
                 return played.map { ch in ch - 1 < cl.levels.count && i >= 0 && i < cl.levels[ch - 1].count ? cl.levels[ch - 1][i] : -80 }.max() ?? -80
             }
         } else if let a = analyzed, direct || channelLevels == nil {
             level = { t in
-                let i = Int(t * a.levelRate)
+                let i = Int(saturating: t * a.levelRate)
                 return i >= 0 && i < a.levels.count ? a.levels[i] : -80
             }
         }

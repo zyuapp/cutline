@@ -105,9 +105,11 @@ public struct Curve: Codable, Equatable, Hashable, Sendable {
         self.keys = out.map(\.key)
     }
 
+    /// The value at `t`; nil when an expression or key evaluates to NaN or infinity.
     public func value(at t: Seconds) -> ParamValue? {
-        guard let x = expression else { return keyed(at: t) }
-        return x.apply(self, at: t)
+        let v = expression.map { $0.apply(self, at: t) } ?? keyed(at: t)
+        if case .number(let n)? = v, !n.isFinite { return nil }
+        return v
     }
 
     /// The value from the keys alone.

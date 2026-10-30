@@ -72,7 +72,7 @@ extension Toolbox {
             values = times.map { local in
                 let t = c.start + local
                 guard let host = p.tracks.flatMap(\.clips).first(where: { $0.mediaId == mid && t >= $0.start && t < $0.end }) else { return nil }
-                let i = Int(host.sourceTime(atTimeline: t) * levels.levelRate)
+                let i = Int(saturating: host.sourceTime(atTimeline: t) * levels.levelRate)
                 guard levels.levels.indices.contains(i) else { return nil }
                 return mapped(Double(levels.levels[i]), [-40, 0, 0, 1])
             }
@@ -144,7 +144,7 @@ extension Toolbox {
         }
         var filled = values
         if smooth > 0 {
-            let w = max(1, Int(smooth * rate))
+            let w = max(1, min(values.count, Int(saturating: smooth * rate)))
             filled = values.indices.map { i in
                 let window = values[max(0, i - w)...min(values.count - 1, i + w)].compactMap { $0 }
                 return values[i] == nil || window.isEmpty ? values[i] : window.reduce(0, +) / Double(window.count)

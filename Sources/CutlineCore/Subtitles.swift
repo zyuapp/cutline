@@ -155,7 +155,7 @@ extension Project {
         return "Merged \"\(cue.text)\" with \"\(next.text)\": [\(fmt2(merged.start))–\(fmt2(merged.end))] \(merged.text)"
     }
 
-    static func ms(_ t: Seconds) -> Int { Int((t * 1000).rounded()) }
+    static func ms(_ t: Seconds) -> Int { Int(saturating: (t * 1000).rounded()) }
 
     static func fits(_ ws: [CaptionWord], width: Int, lines: Int) -> Bool {
         wrap(ws.map(\.text), width: width).count <= lines

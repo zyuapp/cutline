@@ -23,7 +23,7 @@ extension AudioAnalysis {
     /// `maxLength` seconds. Nil when no stretch reaches `minLength`.
     public func roomToneSpan(words: [Word] = [], events: [SoundEvent] = [], exclude: [TimeRange] = [], within: TimeRange? = nil,
                              minLength: Seconds = 0.5, maxLength: Seconds = 6, quietDb: Double = 6, pad: Seconds = 0.2) -> RoomToneSpan? {
-        guard levelRate > 0, !levels.isEmpty else { return nil }
+        guard levelRate > 0, levelRate.isFinite, !levels.isEmpty else { return nil }
         let sorted = levels.map(Double.init).sorted()
         let live = sorted.filter { $0 > -79 }
         guard !live.isEmpty else { return nil }
@@ -31,8 +31,8 @@ extension AudioAnalysis {
         let busy = TimeRange.merged((words.map { TimeRange($0.start - pad, $0.end + pad) }
             + events.filter { !AudioAnalysis.isBackgroundLabel($0.label) }.map { TimeRange($0.start - pad, $0.end + pad) }
             + exclude).sorted { $0.start < $1.start })
-        let lo = within.map { max(0, Int(($0.start * levelRate).rounded(.up))) } ?? 0
-        let hi = within.map { min(levels.count, Int(($0.end * levelRate).rounded(.down))) } ?? levels.count
+        let lo = within.map { max(0, Int(saturating: ($0.start * levelRate).rounded(.up))) } ?? 0
+        let hi = within.map { min(levels.count, Int(saturating: ($0.end * levelRate).rounded(.down))) } ?? levels.count
         guard hi > lo else { return nil }
         var runs: [Range<Int>] = []
         var start: Int?
@@ -49,8 +49,8 @@ extension AudioAnalysis {
         }
         // A short click inside a quiet stretch is part of it; the edges lose a tenth of a second each.
         let margin = Int((0.1 * levelRate).rounded())
-        let minCount = Int((minLength * levelRate).rounded())
-        let maxCount = max(minCount, Int((maxLength * levelRate).rounded()))
+        let minCount = max(1, Int(saturating: (minLength * levelRate).rounded()))
+        let maxCount = max(minCount, Int(saturating: (maxLength * levelRate).rounded()))
         func stats(_ r: Range<Int>) -> (median: Double, spread: Double) {
             let v = levels[r].map(Double.init).sorted()
             return (v[v.count / 2], v[min(v.count - 1, v.count * 9 / 10)] - v[v.count / 10])
@@ -58,8 +58,9 @@ extension AudioAnalysis {
         var best: (range: Range<Int>, score: Double, median: Double, spread: Double)?
         var candidates = 0
         for run in runs {
-            let r = (run.lowerBound + (run.lowerBound > lo ? margin : 0))..<(run.upperBound - (run.upperBound < hi ? margin : 0))
-            guard r.count >= minCount else { continue }
+            let a = run.lowerBound + (run.lowerBound > lo ? margin : 0), z = run.upperBound - (run.upperBound < hi ? margin : 0)
+            guard z - a >= minCount else { continue }
+            let r = a..<z
             candidates += 1
             var pick = r
             var s = stats(r)

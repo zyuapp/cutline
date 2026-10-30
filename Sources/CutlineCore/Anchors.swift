@@ -100,20 +100,22 @@ extension Project {
     public static func timecode(_ s: String, fps: Double) -> Seconds? {
         let parts = s.split(whereSeparator: { $0 == ":" || $0 == ";" }).compactMap { Int($0) }
         guard parts.count == 4, fps > 0 else { return nil }
-        let nominal = Int(fps.rounded())
-        var frames = ((parts[0] * 60 + parts[1]) * 60 + parts[2]) * nominal + parts[3]
+        guard fps.isFinite, parts.allSatisfy({ abs($0) < 1_000_000 }) else { return nil }
+        let nominal = Double(Int(fps.rounded()))
+        let p = parts.map(Double.init)
+        var frames = ((p[0] * 60 + p[1]) * 60 + p[2]) * nominal + p[3]
         if s.contains(";"), nominal == 30 || nominal == 60 {
-            let drop = nominal / 15
-            let minutes = parts[0] * 60 + parts[1]
-            frames -= drop * (minutes - minutes / 10)
+            let drop = (nominal / 15).rounded(.down)
+            let minutes = Int(p[0]) * 60 + Int(p[1])
+            frames -= drop * Double(minutes - minutes / 10)
         }
-        return Double(frames) / fps
+        return frames / fps
     }
 
     /// Seconds → "HH:MM:SS:FF" at a nominal frame rate.
     public static func timecodeString(_ t: Seconds, fps: Double) -> String {
         let nominal = max(1, Int(fps.rounded()))
-        let total = Int((t * fps).rounded())
+        let total = Int(saturating: (t * fps).rounded())
         let f = total % nominal, s = total / nominal
         return String(format: "%02d:%02d:%02d:%02d", s / 3600, s / 60 % 60, s % 60, f)
     }

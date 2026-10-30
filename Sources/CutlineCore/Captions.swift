@@ -216,8 +216,8 @@ extension Project {
     /// and closed captions keep it as one cue.
     public func captionSegments(transcripts: [String: Transcript]) -> [CaptionSegment] {
         let style = captions.style
-        let perLine = max(1, style.maxWordsPerLine)
-        let perPage = perLine * max(1, style.maxLines)
+        let perLine = min(max(1, style.maxWordsPerLine), 10_000)
+        let perPage = perLine * min(max(1, style.maxLines), 100)
         let cues = captionCues(transcripts: transcripts, language: captions.language)
         // Chinese, Japanese and Korean lines keep to the language's line length in characters, not a word count.
         let translated = captions.language.map { captions.translations[Self.languageTag($0)] != nil } ?? false

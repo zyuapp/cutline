@@ -146,7 +146,8 @@ extension Project {
         }
         guard range.duration >= canvas.frameDuration - eps else { return [] }
         let piece = usable >= 1.5 ? usable * 0.6 : usable
-        let n = max(1, Int((range.duration / piece - 1e-9).rounded(.up)))
+        let n = max(1, Int(saturating: (range.duration / piece - 1e-9).rounded(.up)))
+        guard n <= 20_000 else { throw EditError("Filling \(fmt2(range.duration))s takes \(n) room-tone pieces; fill a shorter range or use a longer quiet span") }
         var bounds = (0...n).map { canvas.snap(range.start + range.duration * Double($0) / Double(n)) }
         bounds[0] = range.start
         bounds[n] = range.end
@@ -213,7 +214,7 @@ extension Project {
     public func loopPieces(start: Seconds, duration: Seconds, source: TimeRange, speed: Double = 1) throws -> [SoundPiece] {
         let length = source.duration / speed
         guard length >= canvas.frameDuration else { throw EditError("The source range to loop is shorter than a frame") }
-        let n = max(1, Int((duration / length - 1e-6).rounded(.up)))
+        let n = max(1, Int(saturating: (duration / length - 1e-6).rounded(.up)))
         guard n <= 2_000 else { throw EditError("That would take \(n) repeats; loop a longer source range") }
         var out: [SoundPiece] = []
         for i in 0..<n {
