@@ -237,4 +237,11 @@ extension Clip {
         guard !allow, media.hasAudio, !media.hasVideo, !media.isImage, speed < 0.25 else { return }
         throw EditError("That would slow \(media.id)'s sound to \(fmt2(speed))×. To fill time with ambience or room tone pass loop:true (or use recipe room_tone); pass allow_stretch:true to stretch anyway")
     }
+
+    /// Refuses a constant speed that isn't a positive playback rate.
+    public static func checkSpeed(_ speed: Double) throws {
+        guard speed.isFinite else { throw EditError("speed must be a number") }
+        if speed < 0 { throw EditError("speed \(fmt2(speed)) is negative; speed is a positive rate. For backwards playback use time.reverse (param_set time.reverse true) with speed \(fmt2(-speed))") }
+        if speed < 0.01 { throw EditError("A constant speed must be at least 0.01; animate time.speed to 0 to hold a frame, or use recipe freeze_frame") }
+    }
 }

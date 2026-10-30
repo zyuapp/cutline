@@ -50,7 +50,7 @@ private func openProject(fps: Double = 30, _ body: (inout Project) -> Void = { _
     let noPlatform = await box.call("export", ["strict": true])
     #expect(noPlatform.isError && noPlatform.plainText.contains("strict needs a platform"), "\(noPlatform.plainText)")
 
-    let loose = await box.call("export", ["platform": "broadcast_eu", "path": .string(out.path)])
+    let loose = await box.call("export", ["platform": "broadcast_eu", "strict": false, "path": .string(out.path)])
     #expect(!loose.isError, "\(loose.plainText)")
     let first = loose.plainText.components(separatedBy: "\n").first ?? ""
     #expect(first.contains("check:") && first.contains("exported anyway"), "\(loose.plainText)")

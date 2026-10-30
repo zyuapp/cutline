@@ -74,6 +74,7 @@ extension Toolbox {
                 guard let m = p.mediaAsset(mid) else { throw EditError("No media \(mid). Known: \(p.media.map(\.id).joined(separator: ", "))") }
                 let sIn = try args.optSourceTime("source_in") ?? 0
                 var speed = args.optDouble("speed") ?? 1
+                if args.has("speed") { try Clip.checkSpeed(speed) }
                 var dur: Seconds
                 if m.isImage {
                     dur = try span ?? args.optTime("duration") ?? 5
@@ -281,6 +282,7 @@ extension Toolbox {
             }
             var warning: String?
             if let v = args.optDouble("speed") {
+                try Clip.checkSpeed(v)
                 let src = c.duration * c.speed
                 c.speed = v
                 c.duration = src / v

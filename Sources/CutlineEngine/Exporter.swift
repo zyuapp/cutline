@@ -214,13 +214,17 @@ public struct ExportOptions: Sendable {
 /// Renders a timeline with AVAssetReader → AVAssetWriter: the same compositor as preview,
 /// with codec, bitrate, Rec. 709 color tags, and optional subtitle, chapter and closed caption tracks.
 public enum Exporter {
-    /// Writes the timeline to `url`. A failed export deletes whatever it wrote there. Returns the loudness
-    /// conform when the master has a loudness target.
+    /// Writes the timeline to `url`, then reads it back (`ExportVerifier`): a file whose picture or sound came out
+    /// shorter than the range, or without a promised audio channel, fails the export. A failed export deletes
+    /// whatever it wrote there. Returns the loudness conform when the master has a loudness target.
     @discardableResult
     public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)? = nil) async throws -> LoudnessConform? {
         try await removingOnFailure(url) {
-            if options.preset.needsFFmpeg { return try await FFmpegDelivery.export(built, to: url, options: options, progress: progress) }
-            return try await write(built, to: url, options: options, progress: progress)
+            let conform = options.preset.needsFFmpeg
+                ? try await FFmpegDelivery.export(built, to: url, options: options, progress: progress)
+                : try await write(built, to: url, options: options, progress: progress)
+            try await ExportVerifier.verify(url, ExportExpectation(built, options: options))
+            return conform
         }
     }
 
@@ -262,10 +266,8 @@ public enum Exporter {
         // Sound is mixed to a file first and read by its own reader: one reader feeding both writer inputs
         // can stall when the writer holds one stream back to interleave with the other.
         // Mono and surround timelines write their rendered layout mix instead.
-        let audioTracks = try await comp.loadTracks(withMediaType: .audio)
         var audioOut: AVAssetReaderTrackOutput?
         var audioReader: AVAssetReader?
-        var audioOffset = CMTime.zero
         let layout = built.layout
         let mixFile = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-mix-\(UUID().uuidString).caf")
         let conformedFile = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-loudness-\(UUID().uuidString).caf")
@@ -286,19 +288,19 @@ public enum Exporter {
             conform = rendered.first { $0.spec.content == .mix }?.conform
             trackGroups = try AudioTracks.writerTracks(rendered, packing: options.audioPacking, scratch: tracksDir.appendingPathComponent("packed.caf"))
         } else if layout != .stereo {
-            guard var source = built.surround else { throw EditError("The \(layout.title) mix isn't rendered yet; render the project's stems (AudioStems.renderMissing) before exporting") }
-            var span = CMTimeRange(start: CMTime(seconds: range.start.seconds, preferredTimescale: 48_000), end: CMTime(seconds: range.end.seconds, preferredTimescale: 48_000))
+            guard let surround = built.surround else { throw EditError("The \(layout.title) mix isn't rendered yet; render the project's stems (AudioStems.renderMissing) before exporting") }
+            let from = Int64((range.start.seconds * 48_000).rounded())
+            let count = Int64((range.duration.seconds * 48_000).rounded())
+            // Conformed or not, the range is copied out padded with silence to the picture's length.
             if let target = master.loudnessTarget {
-                let from = Int64((range.start.seconds * 48_000).rounded())
-                let count = Int64((range.duration.seconds * 48_000).rounded())
-                conform = try await LoudnessConform.run(source, layout: layout, frames: from..<(from + count), target: target, ceiling: master.ceiling, dialogue: options.loudnessGate, to: conformedFile)
-                source = conformedFile
-                span = CMTimeRange(start: .zero, duration: CMTime(value: count, timescale: 48_000))
+                conform = try await LoudnessConform.run(surround, layout: layout, frames: from..<(from + count), target: target, ceiling: master.ceiling, dialogue: options.loudnessGate, to: conformedFile)
+            } else {
+                let n = layout.channelCount
+                try AudioIO.convert(surround, matrix: (0..<n).map { o in (0..<n).map { $0 == o ? 1.0 : 0 } }, layout: layout, frames: from..<(from + count), to: conformedFile)
             }
-            let asset = AVURLAsset(url: source)
+            let asset = AVURLAsset(url: conformedFile)
             if let track = try await asset.loadTracks(withMediaType: .audio).first {
                 let r = try AVAssetReader(asset: asset)
-                r.timeRange = span
                 let out = AVAssetReaderTrackOutput(track: track, outputSettings: [
                     AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: layout.channelCount,
                     AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
@@ -307,19 +309,21 @@ public enum Exporter {
                 r.add(out)
                 audioReader = r
                 audioOut = out
-                audioOffset = conform == nil ? r.timeRange.start : .zero
             }
-        } else if !audioTracks.isEmpty {
-            let frames = try await AudioIO.mixdown(built, range: TimeRange(range.start.seconds, range.end.seconds), to: mixFile)
+        } else {
+            // A timeline without sound, or whose sound ends early, still gets a mix as long as the picture.
+            let count = Int64((range.duration.seconds * 48_000).rounded())
+            _ = try await AudioIO.mixdown(built, range: TimeRange(range.start.seconds, range.end.seconds), to: mixFile, length: count)
             var mixed = mixFile
             if let target = master.loudnessTarget {
                 let gate = options.loudnessGate?.map { TimeRange($0.start - range.start.seconds, $0.end - range.start.seconds) }
-                conform = try await LoudnessConform.run(mixFile, layout: .stereo, frames: 0..<Int64(frames), target: target, ceiling: master.ceiling, dialogue: gate, to: conformedFile)
+                conform = try await LoudnessConform.run(mixFile, layout: .stereo, frames: 0..<count, target: target, ceiling: master.ceiling, dialogue: gate, to: conformedFile)
                 mixed = conformedFile
             }
             let mixAsset = AVURLAsset(url: mixed)
             if let track = try await mixAsset.loadTracks(withMediaType: .audio).first {
                 let r = try AVAssetReader(asset: mixAsset)
+                r.timeRange = CMTimeRange(start: .zero, duration: CMTime(value: count, timescale: 48_000))
                 let out = AVAssetReaderTrackOutput(track: track, outputSettings: [
                     AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2,
                     AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
@@ -475,7 +479,7 @@ public enum Exporter {
         writer.startSession(atSourceTime: .zero)
 
         let total = range.duration.seconds
-        let audioStart = audioOffset - leaderTime
+        let audioStart = CMTime.zero - leaderTime
         async let video: Void = pump(videoOut, into: videoIn, offset: offset - leaderTime, first: leaderVideo, weave: weave) { t in progress?(min(1, max(0, t - lead) / max(total, 0.001))) }
         async let audio: Void = {
             if let audioIn { try await pump(audioOut, into: audioIn, offset: audioStart, first: leaderAudio, report: nil) }

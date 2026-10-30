@@ -40,14 +40,29 @@ extension Project {
         return "Warning: \(off.count) spoken word(s) on \(id) play \(rate) at \(fmt2(first.0.start))–\(fmt2(last.0.end))s (\"\(quote)\"), which sounds unnatural. Mute this clip's sound (param_set audio.volume 0) and keep the dialogue from a linked or separate clip, or ramp where nobody speaks."
     }
 
+    /// Fewest frames of the frozen clip a freeze leaves on either side of it.
+    public static let freezeMinimumPiece = 3
+
     /// Holds the frame at `time` for `duration`, pushing everything after it later on every track.
     /// Clips on `pauseTracks` (such as dialogue) split so they pause with the picture; others play on.
+    /// No piece of the clip shorter than `freezeMinimumPiece` frames is left beside the freeze: a short head moves
+    /// the freeze to the clip's first frame, a short tail becomes part of the hold.
     public mutating func freezeFrame(at time: Seconds, trackId: String?, duration: Seconds, zoom: Double, pauseTracks: Set<String> = []) throws -> String {
-        let t = canvas.snap(time)
+        var t = canvas.snap(time)
         let candidates = tracks.indices.filter { trackId == nil ? tracks[$0].kind == .video : tracks[$0].id == trackId }
         guard let ti = candidates.reversed().first(where: { i in tracks[i].clips.contains { $0.kind == .media && t >= $0.start - eps && t < $0.end - eps } }),
               let c = tracks[ti].clips.first(where: { $0.kind == .media && t >= $0.start - eps && t < $0.end - eps })
         else { throw EditError("No video clip at \(fmt2(t))s") }
+        let shortest = canvas.frameDuration * Double(Project.freezeMinimumPiece) - eps
+        let frame = canvas.frameDuration
+        let frames = { (s: Seconds) in Int((s / frame).rounded()) }
+        var notes: [String] = []
+        if t - c.start > eps, t - c.start < shortest {
+            notes.append("starts at \(c.id)'s first frame (\(fmt2(c.start))s) so no \(frames(t - c.start))-frame piece flashes before it")
+            t = c.start
+        }
+        let tail = c.end - t
+        let absorb = t - c.start > eps && tail > eps && tail < shortest
         var frozen = c
         frozen.id = Project.newClipId()
         frozen.start = t
@@ -69,9 +84,17 @@ extension Project {
         for i in tracks.indices where pauseTracks.contains(tracks[i].id) && i != ti {
             if let s = tracks[i].clips.first(where: { t > $0.start + eps && t < $0.end - eps }) { _ = try? splitClip(s.id, at: t) }
         }
-        rippleInsert(at: t, duration: frozen.duration, splitTrack: ti)
+        let hold = frozen.duration
+        rippleInsert(at: t, duration: hold, splitTrack: ti)
+        if absorb, let rest = tracks[ti].clips.first(where: { $0.id != c.id && $0.mediaId == c.mediaId && abs($0.start - (t + hold)) < eps }) {
+            tracks[ti].clips.removeAll { $0.id == rest.id }
+            for i in transitions.indices where transitions[i].from == rest.id { transitions[i].from = frozen.id }
+            frozen.duration = canvas.snap(hold + rest.duration)
+            if zoom != 1 { frozen.anim["transform.scale"] = keys([(0, frozen.transform.scale, .linear), (frozen.duration, frozen.transform.scale * zoom, .easeOut)]) }
+            notes.append("also holds over \(c.id)'s last \(frames(rest.duration)) frame(s), so no flash frame is left after it")
+        }
         try addClip(frozen, trackId: tracks[ti].id, mode: .place)
-        return "Froze \(c.id) at \(fmt2(t))s for \(fmt2(frozen.duration))s as \(frozen.id); everything after moved \(fmt2(frozen.duration))s later."
+        return "Froze \(c.id) at \(fmt2(t))s for \(fmt2(frozen.duration))s as \(frozen.id); everything after moved \(fmt2(hold))s later." + (notes.isEmpty ? "" : " The freeze " + notes.joined(separator: "; ") + ".")
     }
 
     // MARK: Framing

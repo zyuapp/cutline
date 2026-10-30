@@ -48,7 +48,8 @@ extension Toolbox {
             "render_graphics": Schema.bool("With interchange or a timeline file path: render each generator clip (shapes, particles, lower thirds, title presets) to <name>_graphics/<clip>.mov, ProRes 4444 with alpha, full frame, and reference it as media in the timeline file, as finishing houses take baked graphics. Without it, title presets become titles with their text and other graphics offline placeholders with that file name; Cutline reads either back as the original generator"),
             "bake_luts": Schema.bool("With interchange or a timeline file path: write each graded clip's whole color stack (CDL, wheels, curves, HSL, looks, LUTs, qualified corrections) as a 33³ .cube in <name>_luts/ and name it in the clip's note or comment (GRADE LUT <path>) for a colorist to load; Cutline reads it back as color.lut"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
-            "strict": Schema.bool("With platform: refuse to export when the platform check finds issues, listing them; default false exports anyway and leads the report with them"),
+            "strict": Schema.bool("With platform: refuse to export when the platform check finds issues, listing them (and what auto_conform would change). Default true for broadcast and mastering platforms (broadcast*, netflix_master, broadcast_uk_dpp), false for social ones, which export anyway and lead the report with the issues"),
+            "auto_conform": Schema.bool("With platform: render a conformed deliverable without changing the project: the mix gained to the platform's loudness with true-peak limiting at its ceiling, the picture scaled (no distortion) and letterboxed or pillarboxed to its frame size, its frame rate by nearest frame (each output frame is the timeline at that time; no blending), and its start timecode. The report lists each step; default false"),
             "reveal": Schema.bool("Show the file in Finder when done, default false"),
             "deliver": Schema.string("What to make: video (default); audio (mix only, see audio_format); stems (one audio file per role: dialogue, music, effects and clip subroles, in the master layout; stems:\"buses\" for one per bus plus M&E); stills (frames at `times`); image_sequence; gif; archive (copy the project and its media, trimmed with trim:true, to path)", values: ["video", "audio", "stems", "stills", "image_sequence", "gif", "archive"]),
             "audio_format": Schema.string("For audio and stems, default wav24", values: Delivery.AudioFormat.allCases.map(\.rawValue)),
@@ -75,8 +76,13 @@ extension Toolbox {
             }
             if let name = args.optString("preset"), let why = ExportPreset.unavailable(name) { throw EditError(why) }
             let saved = try session.project()
-            let p0 = saved.placingCaptions(for: platformChoice)
-            let platform = platformChoice.map { $0.resolved(for: p0) }
+            let placed = saved.placingCaptions(for: platformChoice)
+            let platform = platformChoice.map { $0.resolved(for: placed) }
+            let autoConform = args.bool("auto_conform", default: false)
+            let plan = platform?.conformPlan(placed, timecodeStart: args.optString("timecode_start")) ?? DeliveryConform()
+            // auto_conform renders a copy at the platform's rate, loudness and frame size; the project stays as it is.
+            let p0 = autoConform ? plan.rendered(placed) : placed
+            let checked = autoConform ? plan.delivered(placed) : placed
             let preset = try args.enumValue("preset", ExportPreset.self) ?? platform.flatMap { ExportPreset(rawValue: $0.preset) } ?? .hevc
             guard p0.duration > 0 else { throw EditError("The timeline is empty") }
             var range: TimeRange?
@@ -89,7 +95,7 @@ extension Toolbox {
             var lead = 0
             var loudness: LoudnessReport?
             if let platform {
-                var warnings = platform.check(p0, preset: args.has("preset") ? preset.rawValue : nil)
+                var warnings = platform.check(checked, preset: args.has("preset") ? preset.rawValue : nil)
                 let mix = try await LoudnessMeter.measure(try await session.timeline(for: p0), range: range, dialogue: dialogueGate)
                 loudness = mix
                 if range == nil, dialogueGate == nil { session.measuredMix[try session.stems().masterKey(for: p0)] = mix }
@@ -101,25 +107,28 @@ extension Toolbox {
                     warnings.append((p0.master.loudnessTarget == nil ? "Loudness is \(fmt1(mix.gatedIntegrated)) LUFS\(gated)" : "The master loudness target is \(fmt1(delivered)) LUFS") + "; \(platform.name) needs \(fmt1(platform.loudness)) ±\(fmt1(platform.loudnessTolerance))\(platform.dialogueGated ? " dialogue-gated" : ""). Run recipe loudness_normalize target_lufs:\(Int(platform.loudness)).")
                 }
                 if peak > platform.truePeak + 0.1 { warnings.append("True peak \(fmt1(peak)) dBTP is above \(fmt1(platform.truePeak)); add a limiter (recipe loudness_normalize ceiling_db:\(fmt1(platform.truePeak - 0.5))).") }
-                warnings += platform.deliveryCheck(p0, audioTracks: audioSpecs, subtitleFormats: Toolbox.sidecarFormats(args, platform: platform), timecodeStart: args.optString("timecode_start"))
+                warnings += platform.deliveryCheck(checked, audioTracks: audioSpecs, subtitleFormats: Toolbox.sidecarFormats(args, platform: platform), timecodeStart: args.optString("timecode_start"))
                 if let dialogueGate {
                     report.append(mix.dialogue == nil ? "Dialogue-gated loudness: no dialogue found (no transcribed speech or dialogue-role clips), so the whole program was measured." : "Dialogue-gated loudness \(fmt1(mix.gatedIntegrated)) LUFS over \(fmt1(mix.dialogueSeconds))s of dialogue in \(dialogueGate.count) span(s); \(fmt1(mix.integrated)) LUFS overall.")
                 }
                 let text = try await measureText(p0, range: range, platform: platform)
                 warnings += text.filter { $0.contains("outside") || $0.contains("hard to read") }.map { $0.trimmingCharacters(in: .whitespaces) }
                 let checkOnly = args.bool("check_only", default: false)
-                if args.bool("strict", default: false), !checkOnly, !warnings.isEmpty {
-                    throw EditError("Not exported: the \(platform.name) check found \(warnings.count) issue(s):\n" + warnings.map { "  - " + $0 }.joined(separator: "\n") + "\nFix them, or export without strict to render anyway.")
+                let offer = autoConform || plan.isEmpty || warnings.isEmpty ? "" : "\nauto_conform:true renders a conformed copy in one call, leaving the project as it is: " + plan.steps.joined(separator: "; ") + "."
+                if args.bool("strict", default: platform.isMastering), !checkOnly, !warnings.isEmpty {
+                    throw EditError("Not exported: the \(platform.name) check found \(warnings.count) issue(s):\n" + warnings.map { "  - " + $0 }.joined(separator: "\n") + offer + "\nOr fix them in the project, or export with strict:false to render anyway.")
                 }
+                if autoConform { report.append("Auto-conform (the project is unchanged): " + (plan.isEmpty ? "nothing to change." : plan.steps.joined(separator: "; ") + ".")) }
                 report.append("\(platform.name) check: " + (warnings.isEmpty ? "ready." : "\(warnings.count) issue(s)" + (checkOnly ? "" : ", exported anyway (strict:true refuses)")))
                 report += warnings.map { "  - " + $0 }
+                if !offer.isEmpty { report.append(String(offer.dropFirst())) }
                 if !platform.notes.isEmpty { report.append("  Note: " + platform.notes) }
                 if p0.captionStyle != saved.captionStyle { report.append("  Captions kept inside \(platform.name)'s UI-free area for this export (y \(fmt2(p0.captionStyle.y)), max_width \(fmt2(p0.captionStyle.maxWidth))); captions_set platform:\"\(platform.id)\" shows that in preview too.") }
                 if let d = p0.master.drift(integrated: mix.integrated, truePeak: mix.truePeakDb) { report.append("Master loudness target: " + d) }
                 if checkOnly { return .text(report.joined(separator: "\n")) }
                 if !warnings.isEmpty { lead = report.count }
-            } else if args.bool("check_only", default: false) || args.bool("strict", default: false) {
-                throw EditError("\(args.bool("check_only", default: false) ? "check_only" : "strict") needs a platform")
+            } else if let flag = ["check_only", "strict", "auto_conform"].first(where: { args.bool($0, default: false) }) {
+                throw EditError("\(flag) needs a platform")
             }
 
             if let target = args.optString("path").map({ session.resolve($0) }), ["otio", "fcpxml", "edl", "xml", "aaf"].contains(target.pathExtension.lowercased()) {
@@ -132,12 +141,17 @@ extension Toolbox {
                 return .text("Wrote \(target.path) (timeline \(p.currentTimelineName), \(p.tracks.flatMap(\.clips).count) clips, \(fmt2(p.duration))s); no video rendered.\n" + notes.joined(separator: "\n"))
             }
             var built = try await session.timeline(for: p0)
-            let p = built.scene.project
+            var p = built.scene.project
             let trim = try Toolbox.sdrTrim(args.raw["sdr_from_hdr"], p)
             if let trim {
                 guard !preset.needsFFmpeg else { throw EditError("sdr_from_hdr renders through AVFoundation; use an hevc, h264 or prores preset") }
                 built = built.sdrVersion(trim) ?? built
                 report.append("SDR version of the \(p.canvas.colorSpace.rawValue) timeline: Rec. 709, \(trim.method.rawValue) tone mapping, HDR reference white (203 cd/m²) at SDR white \(Toolbox.nits(trim.targetNits)) cd/m², highlights up to \(Toolbox.nits(trim.sourcePeakNits)) cd/m² compressed into it.")
+            }
+            if autoConform, let size = plan.size {
+                built = built.fitted(width: size.width, height: size.height)
+                p.canvas.width = size.width
+                p.canvas.height = size.height
             }
             let container = try args.enumValue("container", Container.self)
             if let c = container, !preset.containers.contains(c.rawValue), !preset.isProRes { throw EditError("container \(c.rawValue) isn't for \(preset.rawValue); it goes in \(preset.containers.joined(separator: " or "))") }
@@ -317,10 +331,11 @@ extension Toolbox {
                 report.append("Warning: true peak \(fmt1(delivered.truePeakDb)) dBTP is over \(fmt1(peakLimit)) dBTP" + (platform.map { " (\($0.name)'s limit)" } ?? "") + "; inter-sample overs distort once encoded. Add effect_add audio.limiter to the master (ceiling −1 dBTP) or run recipe loudness_normalize.")
             }
             report += try audioTracksSummary(options, url: url, base: base)
-            if range == nil, audioSpecs.isEmpty, dialogueGate == nil, let conform { session.measuredMix[try session.stems().masterKey(for: p)] = conform.before }
+            if range == nil, audioSpecs.isEmpty, dialogueGate == nil, !autoConform, let conform { session.measuredMix[try session.stems().masterKey(for: p)] = conform.before }
             try? session.sendPreview(["action": "export", "state": "finished", "path": url.path])
             if preset.needsFFmpeg {
                 report.insert(try await Toolbox.describeFFmpegExport(url, preset: preset, took: Date().timeIntervalSince(started)), at: lead)
+                if let line = await ExportVerifier.summary(url, ExportExpectation(built, options: options)) { report.insert(line, at: lead + 1) }
                 return .text(report.joined(separator: "\n"))
             }
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
@@ -339,6 +354,7 @@ extension Toolbox {
                 report.append("HDR10: \(hdr.primaries.rawValue) mastering display \(fmt1(hdr.maxLuminance))/\(hdr.minLuminance) cd/m², MaxCLL \(hdr.maxCLL ?? 0), MaxFALL \(hdr.maxFALL ?? 0)" + (options.hdr?.maxCLL == nil ? " (measured)" : ""))
             }
             report.insert(timecode.map { "Timecode track starts at \($0)" + (tcFormat.dropFrame ? " (drop frame)" : "") } ?? "No timecode track: MP4 can't carry one; export with container:\"mov\" for a timecode track.", at: lead + 1)
+            if let line = await ExportVerifier.summary(url, ExportExpectation(built, options: options)) { report.insert(line, at: lead + 2) }
             return .text(report.joined(separator: "\n"))
         })
     }
@@ -442,7 +458,6 @@ extension Toolbox {
         guard let start = b.loadHistory().current?.id else { throw EditError("The project has no history yet") }
         guard let exporter = tools["export"] else { throw EditError("export is unavailable") }
         var report: [String] = []
-        defer { _ = try? b.checkout(start) }
         var folders = [b.exportsURL]
         for v in [JSON.object(base.raw)] + variants {
             if let path = v["path"]?.string { folders.append(session.resolve(path).deletingLastPathComponent()) }
@@ -455,49 +470,52 @@ extension Toolbox {
             if r.isError { throw EditError("Base export: \(r.plainText)") }
             report.append("base: " + r.plainText.replacingOccurrences(of: "\n", with: "\n  "))
         }
-        for (i, v) in variants.enumerated() {
-            guard case .object(var o) = v else { throw EditError("variants[\(i)] must be an object") }
-            let name = o["name"]?.string ?? "variant\(i + 1)"
-            let unchanged = try session.project()
-            var issues: [String] = []
-            for (j, op) in (o["ops"]?.array ?? []).enumerated() {
-                guard let tool = op["tool"]?.string, let t = tools[tool], tool != "export" else { throw EditError("variants[\(i)].ops[\(j)]: unknown tool") }
-                try checkArguments(tool, op["args"], schema: t.schema)
-                installResolvers(try? session.project())
-                let r = try await t.run(Args(op["args"] ?? [:]))
-                if r.isError { throw EditError("\(name), op \(j + 1) (\(tool)): \(r.plainText)") }
-                for line in r.plainText.components(separatedBy: "\n") {
-                    let l = line.trimmingCharacters(in: .whitespaces)
-                    if l.hasPrefix("Check: ") { issues += l.dropFirst(7).components(separatedBy: "; ").map { "\(tool): \($0)" } }
-                    if l.hasPrefix("Warning") { issues.append("\(tool): \(l)") }
+        // Variant edits run on a scratch history: afterwards the project, its undo and its redo are as they were.
+        try await b.preservingHistory {
+            for (i, v) in variants.enumerated() {
+                guard case .object(var o) = v else { throw EditError("variants[\(i)] must be an object") }
+                let name = o["name"]?.string ?? "variant\(i + 1)"
+                let unchanged = try session.project()
+                var issues: [String] = []
+                for (j, op) in (o["ops"]?.array ?? []).enumerated() {
+                    guard let tool = op["tool"]?.string, let t = tools[tool], tool != "export" else { throw EditError("variants[\(i)].ops[\(j)]: unknown tool") }
+                    try checkArguments(tool, op["args"], schema: t.schema)
+                    installResolvers(try? session.project())
+                    let r = try await t.run(Args(op["args"] ?? [:]))
+                    if r.isError { throw EditError("\(name), op \(j + 1) (\(tool)): \(r.plainText)") }
+                    for line in r.plainText.components(separatedBy: "\n") {
+                        let l = line.trimmingCharacters(in: .whitespaces)
+                        if l.hasPrefix("Check: ") { issues += l.dropFirst(7).components(separatedBy: "; ").map { "\(tool): \($0)" } }
+                        if l.hasPrefix("Warning") { issues.append("\(tool): \(l)") }
+                    }
                 }
+                if let changed = try? session.project(), let bundle = session.bundle {
+                    let fresh = Set(changed.qualityIssues(transcripts: bundle.transcripts(for: changed))).subtracting(unchanged.qualityIssues(transcripts: bundle.transcripts(for: unchanged)))
+                    issues += fresh.sorted().filter { f in !issues.contains { $0.hasSuffix(f) } }
+                }
+                let strict = o["strict"]?.bool ?? base.bool("strict", default: false)
+                if strict, !issues.isEmpty {
+                    throw EditError("Not exported: variant \(name) has \(issues.count) issue(s) after its ops:\n" + issues.map { "  - " + $0 }.joined(separator: "\n") + (report.isEmpty ? "" : "\nAlready exported:\n" + report.joined(separator: "\n")) + "\nFix the ops, or export without strict to render anyway.")
+                }
+                o["ops"] = nil
+                o["name"] = nil
+                // The variant's own path extension picks its container unless the variant names one.
+                let ownExtension = o["path"]?.string.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } ?? ""
+                if o["path"] == nil {
+                    let p = try session.project()
+                    let preset = (o["preset"]?.string ?? base.optString("preset")).flatMap(ExportPreset.init(rawValue:))
+                    let container = o["container"]?.string ?? base.optString("container")
+                    let ext = preset?.isProRes == true ? "mov" : container ?? preset?.fileExtension ?? "mp4"
+                    o["path"] = .string(b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + "-" + Toolbox.safeName(name)).appendingPathExtension(ext).path)
+                }
+                for (k, val) in shared where o[k] == nil && !(k == "container" && !ownExtension.isEmpty) { o[k] = val }
+                // strict without a platform is checked above, on the variant's issues.
+                if o["platform"] == nil { o["strict"] = nil }
+                installResolvers(try? session.project())
+                let r = try await exporter.run(Args(.object(o)))
+                report.append("\(name): " + r.plainText.replacingOccurrences(of: "\n", with: "\n  ") + (issues.isEmpty ? "" : "\n  Issues after its ops (strict:true refuses):" + issues.map { "\n    - " + $0 }.joined()))
+                _ = try b.checkout(start)
             }
-            if let changed = try? session.project(), let bundle = session.bundle {
-                let fresh = Set(changed.qualityIssues(transcripts: bundle.transcripts(for: changed))).subtracting(unchanged.qualityIssues(transcripts: bundle.transcripts(for: unchanged)))
-                issues += fresh.sorted().filter { f in !issues.contains { $0.hasSuffix(f) } }
-            }
-            let strict = o["strict"]?.bool ?? base.bool("strict", default: false)
-            if strict, !issues.isEmpty {
-                throw EditError("Not exported: variant \(name) has \(issues.count) issue(s) after its ops:\n" + issues.map { "  - " + $0 }.joined(separator: "\n") + (report.isEmpty ? "" : "\nAlready exported:\n" + report.joined(separator: "\n")) + "\nFix the ops, or export without strict to render anyway.")
-            }
-            o["ops"] = nil
-            o["name"] = nil
-            // The variant's own path extension picks its container unless the variant names one.
-            let ownExtension = o["path"]?.string.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } ?? ""
-            if o["path"] == nil {
-                let p = try session.project()
-                let preset = (o["preset"]?.string ?? base.optString("preset")).flatMap(ExportPreset.init(rawValue:))
-                let container = o["container"]?.string ?? base.optString("container")
-                let ext = preset?.isProRes == true ? "mov" : container ?? preset?.fileExtension ?? "mp4"
-                o["path"] = .string(b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + "-" + Toolbox.safeName(name)).appendingPathExtension(ext).path)
-            }
-            for (k, val) in shared where o[k] == nil && !(k == "container" && !ownExtension.isEmpty) { o[k] = val }
-            // strict without a platform is checked above, on the variant's issues.
-            if o["platform"] == nil { o["strict"] = nil }
-            installResolvers(try? session.project())
-            let r = try await exporter.run(Args(.object(o)))
-            report.append("\(name): " + r.plainText.replacingOccurrences(of: "\n", with: "\n  ") + (issues.isEmpty ? "" : "\n  Issues after its ops (strict:true refuses):" + issues.map { "\n    - " + $0 }.joined()))
-            _ = try b.checkout(start)
         }
         let written = Toolbox.fileDates(in: folders).filter { before[$0.key] != $0.value }.keys.sorted()
         report.append("Files written (\(written.count)):" + written.map { "\n  " + $0 }.joined())

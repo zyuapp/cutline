@@ -208,6 +208,8 @@ public struct ProbeInfo: Sendable {
         public var isAttachedPicture: Bool
         /// The stream's title tag, e.g. a track name from the recorder or editor.
         public var title: String? = nil
+        /// Stream length in seconds, when the container states one.
+        public var duration: Seconds? = nil
     }
 
     public var formatName: String
@@ -252,6 +254,7 @@ public struct ProbeInfo: Sendable {
                           colorPrimaries: known("color_primaries"), colorTransfer: known("color_transfer"), colorSpace: known("color_space"), colorRange: known("color_range"),
                           isAttachedPicture: ((s["disposition"] as? [String: Any])?["attached_pic"] as? NSNumber)?.intValue == 1)
             stream.title = (tags["title"] as? String).flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+            stream.duration = num(s["duration"])
             return stream
         }
     }

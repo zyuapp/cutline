@@ -46,6 +46,8 @@ public final class RenderScene: @unchecked Sendable {
     public var matteView: MatteView?
     /// HDR canvases: frames leave the compositor tone-mapped to Rec. 709 (see `BuiltTimeline.sdrVersion`).
     var sdrTrim: SDRTrim?
+    /// Frames are scaled into the render size without distortion and centered on black (see `BuiltTimeline.fitted`).
+    var fitsOutput = false
 
     /// Draws the frame at a timeline time. `source` returns the decoded frame of a clip.
     func render(at t: Seconds, background: Bool = true, source: (String) -> CVPixelBuffer?) -> CIImage {
@@ -587,9 +589,19 @@ public class CutlineCompositor: NSObject, AVVideoCompositing, @unchecked Sendabl
                 })
                 let w = CVPixelBufferGetWidth(out), h = CVPixelBufferGetHeight(out)
                 let canvas = scene.canvasRect
-                let fitted = canvas.width == CGFloat(w) && canvas.height == CGFloat(h)
-                    ? image
-                    : image.transformed(by: CGAffineTransform(scaleX: CGFloat(w) / canvas.width, y: CGFloat(h) / canvas.height))
+                let fitted: CIImage
+                if canvas.width == CGFloat(w) && canvas.height == CGFloat(h) {
+                    fitted = image
+                } else if scene.fitsOutput {
+                    let s = min(CGFloat(w) / canvas.width, CGFloat(h) / canvas.height)
+                    let pw = (canvas.width * s / 2).rounded() * 2, ph = (canvas.height * s / 2).rounded() * 2
+                    fitted = image.cropped(to: canvas)
+                        .transformed(by: CGAffineTransform(scaleX: pw / canvas.width, y: ph / canvas.height))
+                        .transformed(by: CGAffineTransform(translationX: ((CGFloat(w) - pw) / 2).rounded(), y: ((CGFloat(h) - ph) / 2).rounded()))
+                        .composited(over: CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0, width: w, height: h)))
+                } else {
+                    fitted = image.transformed(by: CGAffineTransform(scaleX: CGFloat(w) / canvas.width, y: CGFloat(h) / canvas.height))
+                }
                 ColorManagement.tag(out, Self.space)
                 context.render(fitted, to: out, bounds: CGRect(x: 0, y: 0, width: w, height: h), colorSpace: output)
                 request.finish(withComposedVideoFrame: out)

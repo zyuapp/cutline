@@ -276,8 +276,9 @@ enum AudioIO {
         }
     }
 
-    /// Writes a timeline's mixed sound to a float CAF file and returns its length in frames.
-    static func mixdown(_ built: BuiltTimeline, range: TimeRange?, to url: URL) async throws -> AVAudioFramePosition {
+    /// Writes a timeline's mixed sound to a float CAF file and returns its length in frames. With `length`, silence
+    /// pads it to at least that many frames (sound that ends before the range does).
+    static func mixdown(_ built: BuiltTimeline, range: TimeRange?, to url: URL, length: AVAudioFramePosition? = nil) async throws -> AVAudioFramePosition {
         let file = try AVAudioFile(forWriting: url, settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
         var total: AVAudioFramePosition = 0
         try await read(built, range: range) { samples, frames in
@@ -290,6 +291,17 @@ enum AudioIO {
             }
             try file.write(from: buf)
             total += AVAudioFramePosition(frames)
+        }
+        if let length, total < length {
+            let chunk: AVAudioFrameCount = 48_000
+            let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunk)!
+            while total < length {
+                let n = AVAudioFrameCount(min(AVAudioFramePosition(chunk), length - total))
+                buf.frameLength = n
+                for c in 0..<Int(format.channelCount) { buf.floatChannelData![c].update(repeating: 0, count: Int(n)) }
+                try file.write(from: buf)
+                total += AVAudioFramePosition(n)
+            }
         }
         if total == 0 {
             // Silence keeps the stem valid when every clip on the track is muted.
