@@ -175,37 +175,40 @@ extension Toolbox {
         return (url, line, warning)
     }
 
-    /// timeline_measure compare: each shot's graded color against a reference shot.
+    /// timeline_measure compare: each shot of the main picture, graded, against a reference shot. Shots split at clip
+    /// edges and scene cuts like match_color's; titles, graphics and captions over the picture are left out.
     func measureCompare(_ p: Project, reference: String?, referenceTime: Seconds?, range: TimeRange?) async throws -> [String] {
         let scale = min(1, 360 / Double(max(p.canvas.width, p.canvas.height)))
-        let built = try await session.timeline(for: p, renderScale: scale)
-        var cuts = Set<Double>([0, p.duration])
-        for t in p.tracks where t.kind == .video && !t.hidden { for c in t.clips where c.kind == .media { cuts.insert(c.start); cuts.insert(c.end) } }
-        let bounds = cuts.sorted()
-        var shots: [(start: Seconds, end: Seconds, clip: Clip, stats: ColorMatch.Stats)] = []
-        for (lo, hi) in zip(bounds, bounds.dropFirst()) where hi - lo > 0.3 {
-            if let range, hi <= range.start || lo >= range.end { continue }
-            guard let main = Toolbox.pictureClip(at: (lo + hi) / 2, p) else { continue }
-            let frames = try await Frames.timeline(built, times: [0.25, 0.5, 0.75].map { lo + (hi - lo) * $0 }, maxSize: CGSize(width: 320, height: 320))
-            let bg = SIMD3(Float(p.canvas.background.r), Float(p.canvas.background.g), Float(p.canvas.background.b))
+        let picture = p.pictureOnly()
+        let built = try await session.timeline(for: picture, renderScale: scale, shared: false)
+        let bg = SIMD3(Float(p.canvas.background.r), Float(p.canvas.background.g), Float(p.canvas.background.b))
+        var shots: [(start: Seconds, end: Seconds, clip: Clip, label: String, stats: ColorMatch.Stats)] = []
+        for s in picture.mainPictureShots(shots: { clipShots($0, p) }) {
+            if let range, s.range.end <= range.start || s.range.start >= range.end { continue }
+            let (lo, hi) = (s.range.start, s.range.end)
+            let frames = try await Frames.timeline(built, times: [0.1, 0.3, 0.5, 0.7, 0.9].map { lo + (hi - lo) * $0 }, maxSize: CGSize(width: 320, height: 320))
             let pixels = frames.flatMap { ShotColor.pictureSamples($0.image, background: bg) }
             guard !pixels.isEmpty else { continue }
-            shots.append((lo, hi, main, ColorMatch.stats(pixels)))
+            let label = s.shots > 1 ? "\(s.clip.id) shot \(s.shot + 1)/\(s.shots)" : s.clip.id
+            shots.append((lo, hi, s.clip, label, ColorMatch.stats(pixels)))
         }
         guard !shots.isEmpty else { return ["Compare: no shots with media in range"] }
         var ri = 0
         if let reference {
-            guard let i = shots.firstIndex(where: { $0.clip.id == reference }) else { throw EditError("reference \(reference) is not a shot in range; shots: " + shots.map(\.clip.id).joined(separator: ", ")) }
-            ri = i
+            let mine = shots.indices.filter { shots[$0].clip.id == reference }
+            guard let first = mine.first, let c = p.clip(reference) else { throw EditError("reference \(reference) is not a shot in range; shots: " + Array(Set(shots.map(\.clip.id))).sorted().joined(separator: ", ")) }
+            // Like match_color: the clip's shot at its middle.
+            let mid = referenceTime ?? (c.start + c.duration / 2)
+            ri = mine.first { shots[$0].start <= mid + 1e-6 && mid < shots[$0].end } ?? first
         } else if let t = referenceTime, let i = shots.firstIndex(where: { t >= $0.start && t < $0.end }) {
             ri = i
         }
         let ref = shots[ri]
-        var lines = ["Compare (graded picture, bars left out) against \(ref.clip.id) \(fmt2(ref.start))–\(fmt2(ref.end))s; ΔE is CIEDE2000 of the median color (under 2 invisible, 2–5 close, over 5 a visible mismatch):"]
+        var lines = ["Compare (graded main picture per shot; titles, graphics, captions and bars left out) against \(ref.label) \(fmt2(ref.start))–\(fmt2(ref.end))s; ΔE is CIEDE2000 of the median color (under 2 invisible, 2–5 close, over 5 a visible mismatch):"]
         var mismatched: [String] = []
         for (i, s) in shots.enumerated() {
             let st = s.stats
-            var line = String(format: "  %@–%@ %@: L %.1f a %.1f b %.1f, colorfulness %.1f", fmt2(s.start), fmt2(s.end), s.clip.id, st.mean.x, st.mean.y, st.mean.z, st.chroma)
+            var line = String(format: "  %@–%@ %@: L %.1f a %.1f b %.1f, colorfulness %.1f", fmt2(s.start), fmt2(s.end), s.label, st.mean.x, st.mean.y, st.mean.z, st.chroma)
             if i == ri {
                 line += " (reference)"
             } else {
@@ -213,7 +216,7 @@ extension Toolbox {
                 line += String(format: ", ΔE %.1f, ΔL %+.1f, colorfulness ×%.2f", cmp.deltaE, -cmp.lightnessGap, 1 / max(cmp.colorfulnessRatio, 1e-3))
                 if cmp.deltaE > 5 {
                     line += " — visible mismatch"
-                    mismatched.append(s.clip.id)
+                    if !mismatched.contains(s.clip.id) { mismatched.append(s.clip.id) }
                 }
                 if !cmp.warnings.isEmpty { line += "; not directly comparable: " + cmp.warnings.joined(separator: "; ") }
             }

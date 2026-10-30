@@ -171,43 +171,43 @@ extension Toolbox {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let transcripts = b.transcripts(for: p)
             if args.bool("subtitle_speakers", default: false) {
-                let spoken = Set(p.timelineWords(transcripts: transcripts).compactMap { p.clip($0.clipId)?.mediaId })
+                let spoken = Set(p0.timelineWords(transcripts: transcripts).compactMap { p0.clip($0.clipId)?.mediaId })
                 report += try await analysisWarnings(spoken.sorted().map { AnalysisNeed(mediaId: $0, feature: .speakers, without: "its subtitle lines aren't colored or named by speaker") }, wait: 0)
             }
 
             let languages = (args.strings("subtitle_languages") ?? []).map(Project.languageTag).filter { !$0.isEmpty }
             let subs = args.optString("subtitles") ?? platform?.subtitleFormat ?? (languages.isEmpty ? "none" : "both")
-            let spoken = p.spokenLanguage(transcripts: transcripts)
+            let spoken = p0.spokenLanguage(transcripts: transcripts)
             var cues: [TimedText] = []
             var translatedTracks: [SubtitleTrack] = []
             if subs != "none" {
-                cues = p.subtitleCues(transcripts: transcripts).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
+                cues = p0.subtitleCues(transcripts: transcripts).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                 if cues.isEmpty { report.append("No transcribed speech on the timeline, so no subtitles.") }
-                let overlaps = p.overlappingSpeech(transcripts: transcripts)
+                let overlaps = p0.overlappingSpeech(transcripts: transcripts)
                 if !overlaps.isEmpty { report.append("Overlapping speech at " + overlaps.prefix(5).map { "\(fmt2($0.start))s" }.joined(separator: ", ") + " interleaves two voices in the subtitles; see captions_list.") }
                 let forced = Set((args.strings("subtitle_forced") ?? []).map(Project.languageTag))
-                let shared = p.captionCues(transcripts: transcripts)
+                let shared = p0.captionCues(transcripts: transcripts)
                 for lang in languages where lang != spoken {
-                    guard p.captions.translations[lang] != nil else { throw EditError("No \(lang) translation; run captions_translate language:\"\(lang)\" first" + (p.captions.translations.isEmpty ? "" : " (translated: \(p.captions.translations.keys.sorted().joined(separator: ", ")))")) }
-                    let missing = p.cueTranslations(lang, cues: shared).texts.filter { $0 == nil }.count
+                    guard p0.captions.translations[lang] != nil else { throw EditError("No \(lang) translation; run captions_translate language:\"\(lang)\" first" + (p0.captions.translations.isEmpty ? "" : " (translated: \(p0.captions.translations.keys.sorted().joined(separator: ", ")))")) }
+                    let missing = p0.cueTranslations(lang, cues: shared).texts.filter { $0 == nil }.count
                     if missing > 0 { report.append("\(lang): \(missing) of \(shared.count) cues have no translation and keep the spoken text; captions_list language:\"\(lang)\" shows which.") }
-                    translatedTracks.append(SubtitleTrack(language: lang, cues: p.subtitleCues(transcripts: transcripts, language: lang).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }, forced: forced.contains(lang)))
+                    translatedTracks.append(SubtitleTrack(language: lang, cues: p0.subtitleCues(transcripts: transcripts, language: lang).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }, forced: forced.contains(lang)))
                 }
                 if subs != "embed" {
                     // Zero is the file's first frame, so a leader delays them.
                     let lead = try leaderSpec(args.raw["leader"]).map { p.canvas.timecodeFormat.seconds($0.frames(p.canvas.timecodeFormat)) } ?? 0
-                    report += try writeSubtitleSidecars(p, args, transcripts: transcripts, range: range, base: base, bundle: b, offset: lead, mode: subs, language: spoken)
+                    report += try writeSubtitleSidecars(p0, args, transcripts: transcripts, range: range, base: base, bundle: b, offset: lead, mode: subs, language: spoken)
                     for t in translatedTracks {
-                        report += try writeSubtitleSidecars(p, args, transcripts: transcripts, range: range, base: base.appendingPathExtension(t.language), bundle: b, offset: lead, mode: subs, language: t.language, translation: t.language)
+                        report += try writeSubtitleSidecars(p0, args, transcripts: transcripts, range: range, base: base.appendingPathExtension(t.language), bundle: b, offset: lead, mode: subs, language: t.language, translation: t.language)
                     }
                 }
             }
             var closed: [TimedText] = []
             var sccCues: [TimedText] = []
             if args.bool("closed_captions", default: false) {
-                closed = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 4).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
+                closed = p0.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 4).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                 if closed.isEmpty { report.append("No transcribed speech, so no closed captions.") } else {
-                    sccCues = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 4, range: range).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
+                    sccCues = p0.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 4, range: range).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                 }
             }
             var chapters: [TimedText] = []
@@ -268,6 +268,7 @@ extension Toolbox {
                 var l = leader
                 let mix: LoudnessReport
                 if let loudness { mix = loudness } else { mix = try await LoudnessMeter.measure(built, range: range) }
+                loudness = mix
                 let length = (range?.end ?? p.duration) - (range?.start ?? 0)
                 let date = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .none)
                 let version = args.raw["leader"]?["version"]?.string ?? b.loadHistory().current?.id ?? "1"
@@ -308,6 +309,12 @@ extension Toolbox {
                 throw EditError("Export failed, nothing was left at \(url.path): \(error.localizedDescription)")
             }
             if let conform { report.append(conform.summary) }
+            let delivered: LoudnessReport
+            if let measured = conform?.after ?? loudness { delivered = measured } else { delivered = try await LoudnessMeter.measure(built, range: range) }
+            let peakLimit = platform?.truePeak ?? -1
+            if delivered.truePeakDb > peakLimit + 0.05, !report.contains(where: { $0.contains("True peak") }) {
+                report.append("Warning: true peak \(fmt1(delivered.truePeakDb)) dBTP is over \(fmt1(peakLimit)) dBTP" + (platform.map { " (\($0.name)'s limit)" } ?? "") + "; inter-sample overs distort once encoded. Add effect_add audio.limiter to the master (ceiling −1 dBTP) or run recipe loudness_normalize.")
+            }
             report += try audioTracksSummary(options, url: url, base: base)
             if range == nil, audioSpecs.isEmpty, dialogueGate == nil, let conform { session.measuredMix[try session.stems().masterKey(for: p)] = conform.before }
             try? session.sendPreview(["action": "export", "state": "finished", "path": url.path])
@@ -440,7 +447,7 @@ extension Toolbox {
             if let path = v["path"]?.string { folders.append(session.resolve(path).deletingLastPathComponent()) }
         }
         let before = Toolbox.fileDates(in: folders)
-        let shared = base.raw.filter { $0.key != "variants" && $0.key != "base" }
+        let shared = base.raw.filter { $0.key != "variants" && $0.key != "base" && ($0.key != "strict" || base.has("platform")) }
         if base.bool("base", default: true) {
             installResolvers(try? session.project())
             let r = try await exporter.run(Args(.object(shared)))
@@ -450,12 +457,27 @@ extension Toolbox {
         for (i, v) in variants.enumerated() {
             guard case .object(var o) = v else { throw EditError("variants[\(i)] must be an object") }
             let name = o["name"]?.string ?? "variant\(i + 1)"
+            let unchanged = try session.project()
+            var issues: [String] = []
             for (j, op) in (o["ops"]?.array ?? []).enumerated() {
                 guard let tool = op["tool"]?.string, let t = tools[tool], tool != "export" else { throw EditError("variants[\(i)].ops[\(j)]: unknown tool") }
                 try checkArguments(tool, op["args"], schema: t.schema)
                 installResolvers(try? session.project())
                 let r = try await t.run(Args(op["args"] ?? [:]))
                 if r.isError { throw EditError("\(name), op \(j + 1) (\(tool)): \(r.plainText)") }
+                for line in r.plainText.components(separatedBy: "\n") {
+                    let l = line.trimmingCharacters(in: .whitespaces)
+                    if l.hasPrefix("Check: ") { issues += l.dropFirst(7).components(separatedBy: "; ").map { "\(tool): \($0)" } }
+                    if l.hasPrefix("Warning") { issues.append("\(tool): \(l)") }
+                }
+            }
+            if let changed = try? session.project(), let bundle = session.bundle {
+                let fresh = Set(changed.qualityIssues(transcripts: bundle.transcripts(for: changed))).subtracting(unchanged.qualityIssues(transcripts: bundle.transcripts(for: unchanged)))
+                issues += fresh.sorted().filter { f in !issues.contains { $0.hasSuffix(f) } }
+            }
+            let strict = o["strict"]?.bool ?? base.bool("strict", default: false)
+            if strict, !issues.isEmpty {
+                throw EditError("Not exported: variant \(name) has \(issues.count) issue(s) after its ops:\n" + issues.map { "  - " + $0 }.joined(separator: "\n") + (report.isEmpty ? "" : "\nAlready exported:\n" + report.joined(separator: "\n")) + "\nFix the ops, or export without strict to render anyway.")
             }
             o["ops"] = nil
             o["name"] = nil
@@ -465,9 +487,11 @@ extension Toolbox {
                 o["path"] = .string(b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + "-" + Toolbox.safeName(name)).appendingPathExtension(ext).path)
             }
             for (k, val) in shared where o[k] == nil { o[k] = val }
+            // strict without a platform is checked above, on the variant's issues.
+            if o["platform"] == nil { o["strict"] = nil }
             installResolvers(try? session.project())
             let r = try await exporter.run(Args(.object(o)))
-            report.append("\(name): " + r.plainText.replacingOccurrences(of: "\n", with: "\n  "))
+            report.append("\(name): " + r.plainText.replacingOccurrences(of: "\n", with: "\n  ") + (issues.isEmpty ? "" : "\n  Issues after its ops (strict:true refuses):" + issues.map { "\n    - " + $0 }.joined()))
             _ = try b.checkout(start)
         }
         let written = Toolbox.fileDates(in: folders).filter { before[$0.key] != $0.value }.keys.sorted()
@@ -529,17 +553,42 @@ extension Toolbox {
             let dir = session.resolve(path)
             let media = dir.appendingPathComponent("Media", isDirectory: true)
             try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
-            let (collected, bytes) = try await Consolidate.collect(p, to: media, trim: args.bool("trim", default: false))
+            let trim = args.bool("trim", default: false)
+            let transcripts = b.transcripts(for: p)
+            let (collected, bytes, plan) = try await Consolidate.collect(p, to: media, trim: trim, transcripts: transcripts)
             let bundleURL = dir.appendingPathComponent(stem).appendingPathExtension("cutline")
             try? FileManager.default.removeItem(at: bundleURL)
-            try ProjectBundle.create(at: bundleURL, project: collected)
-            for m in p.media where collected.mediaAsset(m.id) != nil {
-                for kind in ["transcript", "audio", "visual", "beats", "speakers", "shots", "sounds", "tracks"] {
-                    let f = b.analysisURL.appendingPathComponent("\(m.id).\(kind).json")
-                    try? FileManager.default.copyItem(at: f, to: bundleURL.appendingPathComponent("analysis/\(m.id).\(kind).json"))
+            let archived = try ProjectBundle.create(at: bundleURL, project: collected)
+            var split: [String] = []
+            for item in plan.items where collected.mediaAsset(item.newId) != nil {
+                guard item.range != nil else {
+                    for kind in ["transcript", "audio", "visual", "beats", "speakers", "shots", "sounds", "tracks"] {
+                        let f = b.analysisURL.appendingPathComponent("\(item.mediaId).\(kind).json")
+                        try? FileManager.default.copyItem(at: f, to: archived.analysisURL.appendingPathComponent("\(item.newId).\(kind).json"))
+                    }
+                    continue
                 }
+                if item.newId != item.mediaId { split.append(item.newId) }
+                let id = item.mediaId
+                if let t = transcripts[id] {
+                    var (copy, words) = item.retimed(t)
+                    copy.speakers = nil
+                    try archived.saveTranscript(copy)
+                    if let s = b.analysis(SpeakerAnalysis.self, id, "speakers") { try archived.saveAnalysis(item.retimed(s, words: words), item.newId, "speakers") }
+                }
+                if let a = b.audioAnalysis(id) { try archived.saveAudioAnalysis(item.retimed(a)) }
+                if let v = b.visualAnalysis(id) { try archived.saveVisualAnalysis(item.retimed(v)) }
+                if let x = b.analysis(BeatAnalysis.self, id, "beats") { try archived.saveAnalysis(item.retimed(x), item.newId, "beats") }
+                if let x = b.analysis(ShotAnalysis.self, id, "shots") { try archived.saveAnalysis(item.retimed(x), item.newId, "shots") }
+                if let x = b.analysis(SoundEvents.self, id, "sounds") { try archived.saveAnalysis(item.retimed(x), item.newId, "sounds") }
+                if let x = b.analysis([ObjectTrack].self, id, "tracks") { try archived.saveAnalysis(item.retimed(x), item.newId, "tracks") }
             }
-            return .text("Archived to \(bundleURL.path) with \(collected.media.count) media files (\(String(format: "%.1f", Double(bytes) / 1_048_576)) MB)\(args.bool("trim", default: false) ? ", trimmed to the used ranges; trimmed media get new ids, so re-run media_analyze there" : "").")
+            var note = ""
+            if trim {
+                note = ", trimmed to the used ranges (plus 1 s handles). Media keep their ids; transcripts and analysis are re-timed to the copies (source time 0 is each copy's first frame, so word numbers count from the copy's first word)"
+                if !split.isEmpty { note += "; media used in separate ranges have one copy per range: " + split.joined(separator: ", ") }
+            }
+            return .text("Archived to \(bundleURL.path) with \(collected.media.count) media files (\(String(format: "%.1f", Double(bytes) / 1_048_576)) MB)\(note).")
         default:
             throw EditError("deliver is video, audio, stems, stills, image_sequence, gif or archive")
         }

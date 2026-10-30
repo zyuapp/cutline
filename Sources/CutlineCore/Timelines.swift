@@ -117,7 +117,8 @@ extension Project {
     /// added. Clips of matched media whose imported timecode differs from the project's are moved to keep their
     /// source timecode.
     @discardableResult
-    public mutating func adoptTimeline(_ other: Project, name: String) throws -> (matched: Int, added: Int) {
+    public mutating func adoptTimeline(_ other: Project, name requested: String) throws -> (matched: Int, added: Int, name: String) {
+        let name = freeTimelineName(requested)
         var rename: [String: String] = [:]
         var shift: [String: Seconds] = [:]
         var matched = 0, added = 0
@@ -158,6 +159,15 @@ extension Project {
             s.tracks = remap(s.tracks)
             sequences.append(s)
         }
-        return (matched, added)
+        return (matched, added, name)
+    }
+
+    /// `name`, or "name 2", "name 3"… when a timeline already has it.
+    public func freeTimelineName(_ name: String) -> String {
+        let base = name.trimmingCharacters(in: .whitespaces)
+        guard timelineNames.contains(base) else { return base }
+        var n = 2
+        while timelineNames.contains("\(base) \(n)") { n += 1 }
+        return "\(base) \(n)"
     }
 }

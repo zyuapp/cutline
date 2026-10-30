@@ -75,3 +75,29 @@ private func still(_ url: URL, background: (CGFloat, CGFloat, CGFloat), orange: 
     #expect(status.plainText.contains("Node graph") && status.plainText.contains("bg outside (outside"), "\(status.plainText)")
     #expect(status.plainText.contains("fx.bg.node_mode") && !status.plainText.contains("fx.bg.q_hue"), "qualifier parameters stay hidden until used")
 }
+
+@Test func compareMeasuresTheMainPictureWithoutTitlesOverIt() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-compare-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try still(dir.appendingPathComponent("bright.png"), background: (0.35, 0.45, 0.6), orange: false)
+    var project = Project(name: "Compare", canvas: Canvas(width: 640, height: 360, fps: 30))
+    project.media = [try await MediaProbe.probe(dir.appendingPathComponent("bright.png"), id: "bright")]
+    project.tracks[0].clips = [Clip(id: "a", kind: .media, mediaId: "bright", start: 0, duration: 4), Clip(id: "b", kind: .media, mediaId: "bright", start: 4, duration: 2)]
+    // A black title card over most of a, and words over everything.
+    project.tracks.insert(Track(id: "V2", kind: .video, name: "Card", clips: [Clip(id: "card", kind: .solid, start: 0, duration: 3, color: .black)]), at: 1)
+    project.tracks.insert(Track(id: "V3", kind: .video, name: "Words", clips: [Clip(id: "title", kind: .text, start: 0, duration: 6, text: TextSpec(text: "CHAPTER ONE", size: 0.2, color: .white))]), at: 2)
+    let bundleURL = dir.appendingPathComponent("p.cutline")
+    _ = try ProjectBundle.create(at: bundleURL, project: project)
+    let box = Toolbox()
+    _ = await box.call("project_open", ["path": .string(bundleURL.path)])
+    let c = await box.call("timeline_measure", ["what": ["compare"], "reference": "a"])
+    #expect(!c.isError, "\(c.plainText)")
+    // Only the uncovered part of a counts, and it reads the same as b.
+    #expect(!c.plainText.contains("— visible mismatch") && c.plainText.contains("3.00–4.00 a: L"), "\(c.plainText)")
+    let ls = c.plainText.components(separatedBy: "\n").compactMap { line -> Double? in
+        guard let r = line.range(of: ": L ") else { return nil }
+        return Double(line[r.upperBound...].prefix { "0123456789.".contains($0) })
+    }
+    #expect(ls.count == 2 && ls.allSatisfy { $0 > 40 }, "\(c.plainText)")
+}

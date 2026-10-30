@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import CoreText
 import CutlineCore
 import Foundation
@@ -107,17 +108,17 @@ public enum AnimatedText {
         }
         for (i, u) in layout.units.enumerated() {
             let s = i < states.count ? states[i] : .rest
-            guard s.opacity > 0.001, s.scale > 0.001, let img = layout.image(ofUnit: i, color: s.color) else { continue }
-            let dest = CGRect(x: u.imageRect.minX, y: size.height - u.imageRect.maxY, width: u.imageRect.width, height: u.imageRect.height)
+            guard s.opacity > 0.001, s.scale > 0.001, var img = layout.image(ofUnit: i, color: s.color) else { continue }
+            var dest = CGRect(x: u.imageRect.minX, y: size.height - u.imageRect.maxY, width: u.imageRect.width, height: u.imageRect.height)
             let center = CGPoint(x: u.rect.midX, y: size.height - u.rect.midY)
             ctx.saveGState()
             ctx.setAlpha(min(1, s.opacity))
             let radius = CGFloat(s.blur) * fs
-            // A shadow of a copy drawn off-canvas is a fast true Gaussian blur of the unit's silhouette.
-            let away = size.width + size.height + radius * 4
-            if radius > 0.5 {
-                ctx.setShadow(offset: CGSize(width: away, height: 0), blur: radius * 1.5, color: (s.color ?? spec.color).cgColor)
-                ctx.translateBy(x: -away, y: 0)
+            // The unit's own image is blurred, so span colors, highlights and underlines blur in their colors.
+            if radius > 0.5, let blurred = blurred(img, sigma: radius * 0.75) {
+                let grow = (CGFloat(blurred.width) - CGFloat(img.width)) / 2
+                dest = dest.insetBy(dx: -grow, dy: -grow)
+                img = blurred
             }
             ctx.translateBy(x: center.x + CGFloat(s.dx) * fs, y: center.y - CGFloat(s.dy) * fs)
             ctx.scaleBy(x: s.scale, y: s.scale)
@@ -126,6 +127,17 @@ public enum AnimatedText {
             ctx.restoreGState()
         }
         return ctx.makeImage()
+    }
+
+    private static let blurContext = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
+
+    /// `image` Gaussian-blurred, on a canvas grown by 3σ on every side.
+    static func blurred(_ image: CGImage, sigma: CGFloat) -> CGImage? {
+        let grow = (sigma * 3).rounded(.up)
+        let input = CIImage(cgImage: image)
+        let extent = input.extent.insetBy(dx: -grow, dy: -grow)
+        let blur = input.composited(over: CIImage(color: .clear).cropped(to: extent)).applyingGaussianBlur(sigma: Double(sigma)).cropped(to: extent)
+        return blurContext.createCGImage(blur, from: extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
     }
 
     static func bitmap(_ size: CGSize) -> CGContext? {

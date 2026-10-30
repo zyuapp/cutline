@@ -52,16 +52,33 @@ public struct TimelineWord: Equatable, Sendable {
 }
 
 extension Project {
-    /// Words heard on the timeline, mapped from source transcripts through every clip.
+    /// Words heard on the timeline, mapped from source transcripts through every clip's sound range (lead and lag
+    /// included). Where two clips' sound overlaps on one track (a crossfade), each clip is read up to the middle of
+    /// the overlap. A word heard twice at once, from two clips (the same source word, or the same word either side
+    /// of a crossfade), is kept once. Every caption output reads these words.
     public func timelineWords(transcripts: [String: Transcript], trackIds: [String] = []) -> [TimelineWord] {
         var out: [TimelineWord] = []
         for track in flattenedForSound where !track.muted && (trackIds.isEmpty || trackIds.contains(track.id)) {
-            for clip in track.clips where clip.kind == .media && clip.volume > 0.001 {
+            let sounding = track.clips.filter { $0.kind == .media && $0.volume > 0.001 }.sorted { $0.audioRange.start < $1.audioRange.start }
+            for (k, clip) in sounding.enumerated() {
                 guard let mid = clip.mediaId, let tr = transcripts[mid] else { continue }
-                let heard = clip.audioSourceRange, span = clip.audioRange
+                let heard = clip.audioSourceRange
+                var span = clip.audioRange
+                if k > 0 {
+                    let before = sounding[k - 1].audioRange
+                    if before.end > span.start, before.end < span.end { span.start = (span.start + before.end) / 2 }
+                }
+                if k + 1 < sounding.count {
+                    let after = sounding[k + 1].audioRange
+                    if after.start < span.end, after.start > span.start { span.end = (after.start + span.end) / 2 }
+                }
                 for (wi, w) in tr.words.enumerated() {
                     let mid = (w.start + w.end) / 2
                     guard mid >= heard.start, mid < heard.end else { continue }
+                    if span.start != clip.audioRange.start || span.end != clip.audioRange.end {
+                        let at = clip.timelineTime(atSource: mid)
+                        guard at >= span.start, at < span.end else { continue }
+                    }
                     let s = max(span.start, clip.timelineTime(atSource: w.start))
                     let e = min(span.end, clip.timelineTime(atSource: w.end))
                     let speaker = tr.speakers.flatMap { wi < $0.count ? $0[wi] : nil }
@@ -70,9 +87,15 @@ extension Project {
             }
         }
         out.sort { $0.start < $1.start }
+        func norm(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)).lowercased() }
         var deduped: [TimelineWord] = []
         for w in out {
             if let last = deduped.last, last.text == w.text, abs(last.start - w.start) < 0.05 { continue }
+            let heardTwice = deduped.suffix(6).contains { k in
+                k.clipId != w.clipId && min(k.end, w.end) - max(k.start, w.start) > 0.5 * min(k.end - k.start, w.end - w.start)
+                    && ((k.mediaId == w.mediaId && k.wordIndex == w.wordIndex) || norm(k.text) == norm(w.text))
+            }
+            if heardTwice { continue }
             deduped.append(w)
         }
         return deduped

@@ -90,14 +90,14 @@ public struct LoudnessConform: Sendable {
 }
 
 /// Look-ahead peak limiter on sample and 4× interpolated peaks: the gain needed at each frame is held over a
-/// window ahead of it, released over 50 ms and smoothed by a box filter, so peaks are caught without overshoot.
+/// window ahead of it, released (50 ms by default) and smoothed by a box filter, so peaks are caught without overshoot.
 /// The output is delayed by the look-ahead, which `flush` drains.
 struct TruePeakLimiter {
     let channels: Int
     let ceiling: Float
     static let half = 32
     let window = 2 * TruePeakLimiter.half
-    let release: Float = 1 - exp(-1 / Float(0.05 * AudioStems.sampleRate))
+    let release: Float
     /// The last 11 input samples per channel, oldest first, for the interpolation filter.
     var history: [[Float]]
     /// Delayed input, one ring per channel.
@@ -111,9 +111,10 @@ struct TruePeakLimiter {
     var boxAt = 0
     var minGain: Float = 1
 
-    init(channels: Int, ceiling: Float) {
+    init(channels: Int, ceiling: Float, release seconds: Double = 0.05, sampleRate: Double = AudioStems.sampleRate) {
         self.channels = channels
         self.ceiling = ceiling
+        release = 1 - exp(-1 / Float(seconds * sampleRate))
         history = [[Float]](repeating: [Float](repeating: 0, count: 11), count: channels)
         delay = [[Float]](repeating: [Float](repeating: 0, count: 2 * TruePeakLimiter.half - 1), count: channels)
         box = [Float](repeating: 1, count: TruePeakLimiter.half)
@@ -161,6 +162,11 @@ struct TruePeakLimiter {
             }
             // The minimum over the window ending now applies to the frame leaving the delay line.
             released = min(queue.first!.1, released + (1 - released) * release)
+            if frame == d {
+                // Nothing precedes the first frame, so the smoothing starts at its gain rather than ramping into it.
+                box = [Float](repeating: released, count: box.count)
+                boxSum = Double(released) * Double(box.count)
+            }
             boxSum += Double(released) - Double(box[boxAt])
             box[boxAt] = released
             boxAt = (boxAt + 1) % box.count

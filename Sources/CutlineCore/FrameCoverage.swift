@@ -54,4 +54,47 @@ extension Project {
     public func mainPicture(at t: Seconds) -> Clip? {
         pictureLayers(at: t).max { $0.visible < $1.visible }?.clip
     }
+
+    /// The timeline without what is drawn over the picture: captions, text and graphics generators (and their
+    /// transitions). Grades, adjustment layers and picture clips stay, for measuring the graded picture.
+    public func pictureOnly() -> Project {
+        var p = self
+        p.captions.enabled = false
+        var gone = Set<String>()
+        for t in p.tracks.indices where p.tracks[t].kind == .video {
+            p.tracks[t].clips.removeAll { c in
+                let graphic = c.kind == .text || (c.kind == .generator && c.effects.first.map { !Self.fullFrameGenerators.contains($0.type) } ?? true)
+                if graphic { gone.insert(c.id) }
+                return graphic
+            }
+        }
+        p.transitions.removeAll { tr in [tr.from, tr.to].contains { $0.map(gone.contains) ?? false } }
+        return p
+    }
+
+    /// Timeline spans each showing one shot of one media clip as the main picture (`mainPicture`), split at clip
+    /// edges and at `shots` (source spans per clip id), with that clip and the shot's index among its shots.
+    public func mainPictureShots(shots: (Clip) -> [TimeRange], minLength: Seconds = 0.3) -> [(range: TimeRange, clip: Clip, shot: Int, shots: Int)] {
+        var cuts = Set<Double>([0, duration])
+        var spans: [String: [TimeRange]] = [:]
+        for t in tracks where t.kind == .video && !t.hidden {
+            for c in t.clips where [.media, .solid, .sequence, .generator].contains(c.kind) {
+                cuts.insert(c.start)
+                cuts.insert(c.end)
+                guard c.kind == .media else { continue }
+                let s = shots(c).map { c.timelineSpan(ofSource: $0) }.sorted { $0.start < $1.start }
+                spans[c.id] = s
+                for r in s where r.start > c.start + 1e-6 && r.start < c.end - 1e-6 { cuts.insert(r.start) }
+            }
+        }
+        let bounds = cuts.sorted()
+        var out: [(range: TimeRange, clip: Clip, shot: Int, shots: Int)] = []
+        for (lo, hi) in zip(bounds, bounds.dropFirst()) where hi - lo > minLength {
+            guard let c = mainPicture(at: (lo + hi) / 2), c.kind == .media else { continue }
+            let s = spans[c.id] ?? []
+            let i = s.lastIndex { $0.start <= (lo + hi) / 2 + 1e-6 } ?? 0
+            out.append((TimeRange(lo, hi), c, i, max(1, s.count)))
+        }
+        return out
+    }
 }

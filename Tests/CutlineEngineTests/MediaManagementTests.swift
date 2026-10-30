@@ -298,9 +298,9 @@ private func deliveryTimeline(_ dir: URL) async throws -> (Project, BuiltTimelin
     let times = [0.0, 0.5, 0.9, 1.0, 1.6]
     let before = try await Frames.timeline(built, times: times, maxSize: CGSize(width: 320, height: 180))
 
-    let (trimmed, bytes) = try await Consolidate.collect(p, to: dir.appendingPathComponent("trimmed"), trim: true, handles: 0.1)
+    let (trimmed, bytes, _) = try await Consolidate.collect(p, to: dir.appendingPathComponent("trimmed"), trim: true, handles: 0.1)
     #expect(bytes > 0)
-    #expect(trimmed.media.map(\.id) == ["m_t1", "m_t2"])
+    #expect(trimmed.media.map(\.id) == ["m", "m_t2"])
     let c2 = try #require(trimmed.clip("c2"))
     #expect(c2.mediaId == "m_t2" && abs(c2.sourceIn - 0.1) < 1e-9)
     #expect(trimmed.media.allSatisfy { $0.path.hasPrefix(dir.appendingPathComponent("trimmed").path) && $0.duration < 1.5 })
@@ -316,7 +316,7 @@ private func deliveryTimeline(_ dir: URL) async throws -> (Project, BuiltTimelin
     let next = try await Frames.timeline(built, times: [0.5 + 1.0 / 30], maxSize: CGSize(width: 320, height: 180))
     #expect(meanDiff(thumb(next[0].image, 64, 36), thumb(before[1].image, 64, 36)) > 2)
 
-    let (whole, wholeBytes) = try await Consolidate.collect(p, to: dir.appendingPathComponent("whole"), trim: false)
+    let (whole, wholeBytes, _) = try await Consolidate.collect(p, to: dir.appendingPathComponent("whole"), trim: false)
     #expect(whole.media.map(\.id) == ["m"] && whole.clip("c2")?.sourceIn == 2)
     #expect(wholeBytes == (try FileManager.default.attributesOfItem(atPath: p.media[0].path)[.size] as? Int64))
 }
