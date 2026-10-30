@@ -52,7 +52,7 @@ public enum FFmpeg {
         let state = RunState()
         out.fileHandleForReading.readabilityHandler = { h in
             let data = h.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else { state.close(stdout: true); h.readabilityHandler = nil; return }
             state.touch(stdout: data)
             guard let duration, duration > 0, let progress else { return }
             for line in String(decoding: data, as: UTF8.self).split(separator: "\n") where line.hasPrefix("out_time_us=") {
@@ -61,7 +61,7 @@ public enum FFmpeg {
         }
         err.fileHandleForReading.readabilityHandler = { h in
             let data = h.availableData
-            if !data.isEmpty { state.touch(stderr: data) }
+            if data.isEmpty { state.close(stdout: false); h.readabilityHandler = nil } else { state.touch(stderr: data) }
         }
         let status: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (done: CheckedContinuation<Int32, Error>) in
@@ -84,10 +84,11 @@ public enum FFmpeg {
         } onCancel: {
             if proc.isRunning { proc.terminate() }
         }
+        // The handlers drain each pipe to its end; output read after exit could otherwise race them and be lost.
+        let drained = Date().addingTimeInterval(10)
+        while !state.bothClosed, Date() < drained { try? await Task.sleep(nanoseconds: 5_000_000) }
         out.fileHandleForReading.readabilityHandler = nil
         err.fileHandleForReading.readabilityHandler = nil
-        if let rest = try? out.fileHandleForReading.readToEnd(), !rest.isEmpty { state.touch(stdout: rest) }
-        if let rest = try? err.fileHandleForReading.readToEnd(), !rest.isEmpty { state.touch(stderr: rest) }
         let tail = state.stderrTail
         if Task.isCancelled { throw CancellationError() }
         if state.stalled { throw EditError("\(tool.lastPathComponent) made no progress for \(Int(stall))s and was stopped") }
@@ -104,6 +105,10 @@ public enum FFmpeg {
         private var stdout = Data()
         private var stderr = Data()
         var stalled = false
+
+        private var closed = (stdout: false, stderr: false)
+        func close(stdout: Bool) { lock.withLock { if stdout { closed.stdout = true } else { closed.stderr = true } } }
+        var bothClosed: Bool { lock.withLock { closed.stdout && closed.stderr } }
 
         func touch(stdout data: Data) { lock.withLock { last = Date(); if stdout.count < 8_000_000 { stdout.append(data) } } }
         func touch(stderr data: Data) {

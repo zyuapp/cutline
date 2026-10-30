@@ -72,7 +72,7 @@ private func referenceSentences(_ words: [Word]) -> [[Int]] {
 private let sameSpeaker = [(2, 3), (5, 6), (6, 7), (7, 8), (5, 8), (1, 4), (11, 12), (17, 18), (18, 19), (37, 38)]
 private let differentSpeakers = [(0, 1), (1, 2), (1, 3), (4, 5), (4, 8), (2, 4), (19, 20), (20, 21), (17, 20)]
 
-@Test(.enabled(if: FileManager.default.fileExists(atPath: tearsOfSteelPath)))
+@Test(.enabled(if: ProcessInfo.processInfo.environment["CUTLINE_SLOW"] != nil && FileManager.default.fileExists(atPath: tearsOfSteelPath)))
 func tearsOfSteelTurnsFollowSentences() async throws {
     let transcript = tearsOfSteelTranscript()
     let words = transcript.words
@@ -228,7 +228,7 @@ private func scoreFilm(_ result: SpeakerAnalysis, words: [Word], label: String) 
     return out
 }
 
-@Test(.enabled(if: FileManager.default.fileExists(atPath: tearsOfSteelPath)))
+@Test(.enabled(if: ProcessInfo.processInfo.environment["CUTLINE_SLOW"] != nil && FileManager.default.fileExists(atPath: tearsOfSteelPath)))
 func tearsOfSteelWholeFilmKeepsVoicesApart() async throws {
     let transcript = tearsOfSteelFilmTranscript()
     let words = transcript.words
