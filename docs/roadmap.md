@@ -98,12 +98,15 @@ Goal: an editor coming from Final Cut Pro, Premiere or Resolve can bring their t
   - **Editing:** linked picture and sound, replace edits, fit to fill, dual-system sound sync by waveform.
   - **Organizing:** marker kinds and colors, keyword ranges and favorite/reject ratings on footage, source timecode and reels.
   - **Media management:** background proxies for preview, relinking, archiving with trimmed media.
+  - **Captions and color science:** CEA-608 closed captions embedded in .mov/.mp4 plus SCC files (verified with ffmpeg's decoder); ACES 1.3 output transforms matching OpenColorIO to 5e-5.
+  - **Finishing aids:** shot color matching; active-speaker detection from lip movement, so reframing follows whoever is talking; sync groups so multicam angles can be swapped later without losing sync.
+  - **Scale:** a 1,429-clip timeline validates, diffs and quality-checks in milliseconds and rebuilds in about 1.2 s.
   - **Delivery:** stills, image sequences and GIFs.
 - **Still open:**
   - **Audio formats:** surround (5.1/7.1) and multichannel audio.
-  - **Captions:** embedded CEA-608/708 closed captions.
+  - **Captions:** CEA-708 and 608 inside the video bitstream (SEI); 608 tracks and SCC files are done.
   - **Color:** full ACES output transforms (gamut compression is done).
-  - **Interchange:** AAF.
+  - **Interchange:** AAF (needs an outside reader such as pyaaf2 to verify; not yet allowed here).
   - **Validation in the real apps:** opening Cutline's exports in Final Cut Pro, Premiere and Resolve themselves (none are installed here).
 
 ### Validation on real material
