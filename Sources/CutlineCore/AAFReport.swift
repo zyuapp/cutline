@@ -51,7 +51,7 @@ extension Project {
                     let afx = c.effects.filter { $0.enabled && EffectCatalog.type($0.type)?.category == "audio" }.map(\.type)
                     if !afx.isEmpty { lost.append(afx.joined(separator: ", ")) }
                     if c.surround != nil { lost.append("surround panning") }
-                    if c.channels != nil { lost.append("channel routing (every source channel is written)") }
+                    if case .mix = c.channels?.form { lost.append("channel mix (each mixed channel is its own mono track)") }
                     if let role = c.role { lost.append("audio role \(role)") }
                 }
                 if !lost.isEmpty { out.append("\(name) → \(lost.joined(separator: ", ")) not carried") }

@@ -13,7 +13,7 @@ extension Project {
     /// filler. Levels are MonoAudioGain operation groups, Amplitude constant or keyframed (track faders and the
     /// master folded in); constant speed is a VideoSpeedControl. Markers are DescriptiveMarkers on an event slot.
     /// Titles and solids are filler carrying the Cutline clip in a "Cutline clip" comment.
-    public func aaf(handles: Seconds = 2, date: Date = Date()) -> Data { aaf(InterchangeContext(), handles: handles, date: date) }
+    public func aaf(handles: Seconds = 2, date: Date = Date()) -> Data { scopedToTimeline().aaf(InterchangeContext(), handles: handles, date: date) }
 
     func aaf(_ ctx: InterchangeContext, handles: Seconds, date: Date) -> Data {
         var w = AAFWriter(project: flattenedSequences(), ctx: ctx, handles: handles, date: date)
@@ -29,7 +29,8 @@ extension Project {
     /// Source channels a media's sound is written as.
     func aafChannels(_ m: MediaAsset) -> Int {
         guard m.hasAudio, !m.isImage else { return 0 }
-        return min(max(m.audioChannels?.count ?? 2, 1), 16)
+        let routed = (tracks + sequences.flatMap(\.tracks)).flatMap(\.clips).filter { $0.mediaId == m.id }.compactMap { $0.channels?.sourceChannels.max() }.max() ?? 0
+        return min(max(m.audioChannels?.count ?? 2, routed, 1), 16)
     }
 }
 
@@ -53,6 +54,8 @@ struct AAFWriter {
         var comment: String?
         /// Where the clip sits beyond its sound, for Cutline to read back (`SoundHint`).
         var hint: String?
+        /// Source channels (from 0) the sound slots of this piece read in order; nil reads every channel.
+        var channels: [Int]?
         var length: Int { end - start }
     }
 
@@ -187,6 +190,7 @@ struct AAFWriter {
             let r = c.audioRange
             var piece = Piece(start: f(r.start), end: f(r.end), media: m.id, source: f(c.audioSourceRange.start), clip: c, track: t)
             piece.speed = c.isRetimed ? 1 : abs(c.speed)
+            if let routed = c.channels?.sourceChannels, !routed.isEmpty { piece.channels = routed.map { $0 - 1 } }
             if let e = cutAt[c.id]?.end { piece.end = min(piece.end, e) }
             if let s = cutAt[c.id]?.start, s > piece.start {
                 piece.source += Int((Double(s - piece.start) * piece.speed).rounded())
@@ -237,7 +241,7 @@ struct AAFWriter {
                 if fin > 0, !crossed.contains("<" + c.id) { fadeIn(&s, i, length: f(fin), op: AAFDef.monoAudioDissolve) }
                 if fout > 0, !crossed.contains(c.id + ">") { fadeOut(&s, i, length: f(fout), op: AAFDef.monoAudioDissolve) }
             }
-            let channels = lane.compactMap { $0.media.flatMap(p.mediaAsset).map(p.aafChannels) }.max() ?? 2
+            let channels = lane.compactMap { piece in piece.channels?.count ?? piece.media.flatMap(p.mediaAsset).map(p.aafChannels) }.max() ?? 2
             return (s, max(channels, 1))
         }
     }
@@ -278,8 +282,9 @@ struct AAFWriter {
 
     /// The segment of a piece on a slot of `kind`, for source channel `channel` (sound slot) or the picture.
     mutating func segment(_ piece: Piece, kind: AUID, channel: Int?) -> AAFObject {
+        let source = channel.flatMap { k in piece.channels.map { k < $0.count ? $0[k] : -1 } ?? k }
         guard let id = piece.media, id != "-", let master = masters[id], let m = p.mediaAsset(id),
-              channel.map({ $0 < p.aafChannels(m) }) ?? (m.hasVideo || m.isImage) else {
+              source.map({ $0 >= 0 && $0 < p.aafChannels(m) }) ?? (m.hasVideo || m.isImage) else {
             var o = filler(kind, length: piece.length)
             if let note = piece.comment { o.set(0x0204, comments([("Cutline clip", note)])) }
             return o
@@ -287,7 +292,7 @@ struct AAFWriter {
         let lo = ranges[id]?.lo ?? 0
         let speed = piece.speed
         let sourceLength = speed == 1 ? piece.length : Int((Double(piece.length) * speed).rounded())
-        let slotID = channel.map { $0 + 2 } ?? 1
+        let slotID = source.map { $0 + 2 } ?? 1
         var seg = sourceClip(kind, length: sourceLength, mob: master, slot: slotID, start: piece.source - lo)
         if abs(speed - 1) > 1e-9 {
             operations.insert(AAFDef.videoSpeedControl)

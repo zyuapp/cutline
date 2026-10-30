@@ -67,6 +67,10 @@ extension Project {
     static let fcpClipKey = "com.cutline.clip"
     /// Names a .cube holding a clip's whole grade in notes and comments: "GRADE LUT <path>".
     static let gradeLUTTag = "GRADE LUT"
+    /// Comment or metadata holding a sound clip's `audio.channels` routing: "Cutline channels ch3+ch4".
+    static let channelsTag = "Cutline channels "
+    /// FCPXML metadata key holding a clip's `audio.channels` routing.
+    static let fcpChannelsKey = "com.cutline.channels"
     /// EDL comment with an event's source timecodes in the source's own counting, when the list's differs.
     static let edlSourceTCTag = "SOURCE TC"
 
@@ -88,7 +92,7 @@ extension Project {
 
     /// Writes `format` with what `options` made for it.
     public func interchange(_ format: InterchangeFormat, options: InterchangeOptions = InterchangeOptions()) throws -> InterchangeExport {
-        let (p, ctx) = prepared(for: format, options: options)
+        let (p, ctx) = scopedToTimeline().prepared(for: format, options: options)
         let data: Data
         switch format {
         case .otio: data = try p.otio(ctx)
@@ -255,6 +259,32 @@ extension Project {
 
     /// What `format` can't carry, clip by clip, as the exporters write it.
     public func interchangeLosses(_ format: InterchangeFormat, options: InterchangeOptions = InterchangeOptions()) -> [String] {
+        scopedToTimeline().losses(format, options: options)
+    }
+
+    /// The current timeline alone, as interchange writes it: no other timelines, and only the nested sequences and
+    /// media it plays (through nested and multicam sequences, recursively).
+    public func scopedToTimeline() -> Project {
+        var p = self
+        p.timelines = []
+        var seqIds = Set<String>(), mediaIds = Set<String>()
+        var queue = tracks
+        while let t = queue.popLast() {
+            for c in t.clips {
+                guard let id = c.mediaId else { continue }
+                if c.kind == .media { mediaIds.insert(id) }
+                if c.kind == .sequence, seqIds.insert(id).inserted, let s = sequence(id) {
+                    queue += s.tracks
+                    for a in s.multicam?.angles ?? [] { mediaIds.insert(a.mediaId) }
+                }
+            }
+        }
+        p.sequences = sequences.filter { seqIds.contains($0.id) }
+        p.media = media.filter { mediaIds.contains($0.id) }
+        return p
+    }
+
+    func losses(_ format: InterchangeFormat, options: InterchangeOptions) -> [String] {
         if format == .aaf { return aafLosses(options) }
         var out: [String] = []
         let otio = format == .otio, edl = format == .edl, fcp = format == .fcpxml
@@ -375,7 +405,7 @@ extension Project {
             if !fx.isEmpty { lost.append(fx.joined(separator: ", ")) }
             if !otio {
                 if c.surround != nil { lost.append("surround panning") }
-                if c.channels != nil { lost.append("channel routing") }
+                if edl, c.channels != nil { lost.append("channel routing") }
                 if c.role != nil, !fcp { lost.append("audio role \(c.role!)") }
             }
             if edl, c.anim["audio.volume"] != nil || abs(c.volume - 1) > 1e-6 { lost.append("level") }
@@ -425,6 +455,28 @@ extension Project {
             }
         }
         return out
+    }
+}
+
+extension Project {
+    /// Channels in each of a media's audio tracks, as interchange describes its sound: two (one stereo track) when
+    /// the layout isn't known.
+    static func channelLayout(_ m: MediaAsset) -> [Int] {
+        guard let chs = m.audioChannels, !chs.isEmpty else { return [2] }
+        var out: [(track: Int, count: Int)] = []
+        for c in chs {
+            let t = c.originalTrack ?? c.track
+            if let i = out.firstIndex(where: { $0.track == t }) { out[i].count += 1 } else { out.append((t, 1)) }
+        }
+        return out.map(\.count)
+    }
+}
+
+extension Importer {
+    /// Source channels of a file whose audio tracks hold `layout` channels each; nil for one mono or stereo track.
+    static func sourceChannels(_ layout: [Int]) -> [SourceChannel]? {
+        guard layout.count > 1 || (layout.first ?? 0) > 2 else { return nil }
+        return layout.enumerated().flatMap { t, n in (1...max(n, 1)).map { SourceChannel(track: t + 1, channel: $0) } }
     }
 }
 

@@ -380,6 +380,7 @@ struct LaneBuilder {
                     slots[v].clips[i].volume = a.volume
                     slots[v].clips[i].audioFadeIn = a.audioFadeIn
                     slots[v].clips[i].audioFadeOut = a.audioFadeOut
+                    slots[v].clips[i].channels = a.channels
                     removals.append((s, k))
                     break
                 }
@@ -635,6 +636,9 @@ final class FCPReader {
             let start = time(e.attr("start")) ?? 0
             if start > 0, !isImage { m.timecodeStart = start }
             if let reel = e.first("metadata")?.elems.first(where: { $0.attr("key") == "com.apple.proapps.studio.reel" })?.attr("value"), !reel.isEmpty { m.reel = reel }
+            if hasAudio, let tracks = e.attr("audioSources").flatMap({ Int($0) }), let total = e.attr("audioChannels").flatMap({ Int($0) }), tracks > 0, total > 0 {
+                m.audioChannels = Importer.sourceChannels((0..<tracks).map { total / tracks + ($0 < total % tracks ? 1 : 0) })
+            }
             if hasAudio, var rate = e.attr("audioRate")?.lowercased() {
                 let k = rate.hasSuffix("k")
                 if k { rate.removeLast() }
@@ -1027,7 +1031,7 @@ final class FCPReader {
         }
         if let note = e.first("note")?.stringValue { clip.effects += Importer.noteColor(note) }
         if let role = e.attr("audioRole"), !role.isEmpty { clip.role = role }
-        var channels: [Bool] = []
+        var channels: [(enabled: Bool, src: [Int]?)] = []
         for k in e.elems {
             switch k.name ?? "" {
             case "adjust-transform":
@@ -1070,7 +1074,8 @@ final class FCPReader {
                 default: clip.transform.fit = .fit
                 }
             case "audio-channel-source", "audio-role-source":
-                channels.append(k.attr("enabled") != "0")
+                let src = k.attr("srcCh").map { $0.split(separator: ",").map { Int($0.trimmingCharacters(in: .whitespaces)) } }
+                channels.append((k.attr("enabled") != "0" && k.attr("active") != "0", src.flatMap { $0.contains(nil) ? nil : $0.compactMap { $0 } }))
             case "filter-video", "filter-audio":
                 warnings.append("Effect \(k.attr("name") ?? k.attr("ref") ?? "") on \(what) not kept")
             case let n where n.hasPrefix("adjust-"):
@@ -1079,9 +1084,22 @@ final class FCPReader {
                 break
             }
         }
-        if !channels.isEmpty, !channels.contains(true) { clip.volume = 0 } else if channels.contains(false) {
+        let heard = channels.filter(\.enabled)
+        let count = clip.mediaId.flatMap { id in media.first { $0.id == id } }?.sourceChannelCount ?? 0
+        if !channels.isEmpty, heard.isEmpty {
+            clip.volume = 0
+        } else if clip.kind == .media, !heard.isEmpty, heard.allSatisfy({ $0.src != nil }) {
+            var src: [Int] = []
+            for n in heard.flatMap({ $0.src! }) where !src.contains(n) { src.append(n) }
+            let whole = src == Array(1...max(count, 2)) || (src.isEmpty)
+            if !whole {
+                let raw = src.count == 1 ? "ch\(src[0])" : src.count == 2 && heard.count == 1 ? "ch\(src[0])+ch\(src[1])" : "mix:" + src.map(String.init).joined(separator: ",")
+                clip.channels = ChannelRouting(rawValue: raw)
+            }
+        } else if heard.count < channels.count {
             warnings.append("Some audio channels of \(what) are disabled; all are kept")
         }
+        if let raw = e.first("metadata")?.elems.first(where: { $0.attr("key") == Project.fcpChannelsKey })?.attr("value"), let ch = ChannelRouting(rawValue: raw) { clip.channels = ch }
     }
 }
 
@@ -1355,6 +1373,7 @@ final class OTIOReader {
             m.setTimecode(seconds: s, format: TimecodeFormat(fps: rate ?? canvas.fps, dropFrame: label.map(TimecodeFormat.isDropLabel)))
         }
         if let reel = Self.path(ref, ["metadata", "cutline", "reel"]) as? String, !reel.isEmpty { m.reel = reel }
+        if let layout = Self.path(ref, ["metadata", "cutline", "audioChannels"]) as? [Any] { m.audioChannels = Importer.sourceChannels(layout.compactMap { Self.number($0).map { Int($0) } }) }
         media.append(m)
         mediaByKey[key] = media.count - 1
         availableStart[id] = isImage ? 0 : avail?.start ?? 0
@@ -1563,6 +1582,7 @@ final class OTIOReader {
         if let v = Self.number(md["audioLead"]) { c.audioLead = v }
         if let v = Self.number(md["audioLag"]) { c.audioLag = v }
         if md["reverse"] as? Bool == true { c.reverse = true }
+        if let ch = (md["channels"] as? String).flatMap(ChannelRouting.init(rawValue:)) { c.channels = ch }
         if let t = Self.decode(Transform.self, md["transform"]) { c.transform = t }
         if let e = Self.decode([Effect].self, md["effects"]) { c.effects = e }
         if let a = Self.decode([String: Curve].self, md["anim"]) { c.anim.merge(a) { _, b in b } }
@@ -2267,7 +2287,7 @@ extension Project {
     /// start, then a zero-length line of it and a D line of the incoming event. They start at the edit, so a
     /// centered one moves the edit to its start (crossfades sit on the sound cut); transitions from or to nothing
     /// go through black. Only media clips are listed.
-    public func edl(title: String) -> String { edl(title: title, InterchangeContext()) }
+    public func edl(title: String) -> String { scopedToTimeline().edl(title: title, InterchangeContext()) }
 
     func edl(title: String, _ ctx: InterchangeContext) -> String { flattenedSequences().flatEDL(title: title, ctx) }
 
@@ -2719,9 +2739,9 @@ final class XMEMLReader {
 
         // Audio clipitems repeating a video clip's sound, or another channel's, fold away.
         let half = 0.5 / fps
-        func same(_ a: Clip, _ b: Clip) -> Bool {
+        func same(_ a: Clip, _ b: Clip, channels: Bool = true) -> Bool {
             a.mediaId == b.mediaId && a.kind == b.kind && abs(a.start - b.start) < half && abs(a.duration - b.duration) < half
-                && abs(a.sourceIn - b.sourceIn) < half && abs(a.speed - b.speed) < 1e-6 && a.reverse == b.reverse
+                && abs(a.sourceIn - b.sourceIn) < half && abs(a.speed - b.speed) < 1e-6 && a.reverse == b.reverse && (!channels || a.channels == b.channels)
         }
         var heard = Set<String>()
         var folded = Set<String>()
@@ -2731,6 +2751,7 @@ final class XMEMLReader {
             v.volume = a.volume
             v.audioFadeIn = a.audioFadeIn
             v.audioFadeOut = a.audioFadeOut
+            v.channels = a.channels
             if let c = a.anim["audio.volume"] { v.anim["audio.volume"] = c.shifted(by: a.start - v.start) }
             if split {
                 v.audioLead = v.start - a.start
@@ -2743,7 +2764,8 @@ final class XMEMLReader {
         for t in tracks.indices where tracks[t].kind == .audio {
             for a in tracks[t].clips {
                 for v in tracks.indices where tracks[v].kind == .video && !folded.contains(a.id) {
-                    guard let i = tracks[v].clips.firstIndex(where: { same($0, a) }) else { continue }
+                    // Another source channel of a picture already heard stays a clip of its own.
+                    guard let i = tracks[v].clips.firstIndex(where: { same($0, a, channels: false) && (!heard.contains($0.id) || $0.channels == a.channels) }) else { continue }
                     if !heard.contains(tracks[v].clips[i].id) { hear(a, in: &tracks[v].clips[i], split: false) }
                     heard.insert(tracks[v].clips[i].id)
                     folded.insert(a.id)
@@ -2776,7 +2798,7 @@ final class XMEMLReader {
             let kept = tracks[t].clips.filter { a in
                 if folded.contains(a.id) { return false }
                 if !(links[a.id] ?? []).isDisjoint(with: heardXML),
-                   let v = tracks.lazy.filter({ $0.kind == .video }).flatMap(\.clips).first(where: { heard.contains($0.id) && $0.mediaId == a.mediaId && links[a.id]!.contains(xmlIds[$0.id] ?? "") }) {
+                   let v = tracks.lazy.filter({ $0.kind == .video }).flatMap(\.clips).first(where: { heard.contains($0.id) && $0.mediaId == a.mediaId && $0.channels == a.channels && links[a.id]!.contains(xmlIds[$0.id] ?? "") }) {
                     soundOf[a.id] = v.id
                     return false
                 }
@@ -3097,6 +3119,13 @@ final class XMEMLReader {
             let note = comments.elems.compactMap { $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: "; ")
             c.effects += Importer.noteColor(note.isEmpty ? comments.stringValue ?? "" : note)
         }
+        // The source channel the item plays: its sourcetrack in a file of more than two channels, or Cutline's routing.
+        if kind == .audio, c.kind == .media {
+            let count = c.mediaId.flatMap { id in media.first { $0.id == id } }?.sourceChannelCount ?? 0
+            if let n = number(e.first("sourcetrack"), "trackindex").map({ Int($0) }), n > 2 || (count > 2 && n >= 1) { c.channels = ChannelRouting(rawValue: "ch\(n)") }
+            let notes = e.elems.filter { $0.name == "comments" }.flatMap(\.elems).compactMap(\.stringValue)
+            if let s = notes.first(where: { $0.hasPrefix(Project.channelsTag) }) { c.channels = ChannelRouting(rawValue: String(s.dropFirst(Project.channelsTag.count))) ?? c.channels }
+        }
         return c
     }
 
@@ -3237,6 +3266,7 @@ final class XMEMLReader {
         }
         if let reel = text(file.first("timecode")?.first("reel"), "name"), !reel.isEmpty { m.reel = reel }
         if let rate = number(fileMedia?.first("audio")?.first("samplecharacteristics"), "samplerate"), rate > 0 { m.sampleRate = rate }
+        m.audioChannels = Importer.sourceChannels((fileMedia?.elems.filter { $0.name == "audio" } ?? []).map { max(1, Int(number($0, "channelcount") ?? 1)) })
         media.append(m)
         mediaByKey[key] = id
         if !Importer.exists(path) {
@@ -3288,7 +3318,7 @@ extension Project {
     /// in `mastercomment3`; nested sequences are nested sequences; adjustment and generator clips are left out. The
     /// sequence's timecode is the canvas's start timecode; each file declares its own audio sample rate and its
     /// source timecode (at its own rate and drop frame) with its reel. Clip in and out points stay zero-based.
-    public func xmeml() -> String { xmeml(InterchangeContext()) }
+    public func xmeml() -> String { scopedToTimeline().xmeml(InterchangeContext()) }
 
     func xmeml(_ ctx: InterchangeContext) -> String {
         let grid = FrameGrid(fps: canvas.fps)
@@ -3341,9 +3371,12 @@ extension Project {
                 ])]))
             }
             if m.hasAudio {
-                mediaKids.append(XMLElem("audio", children: [
-                    XMLElem("samplecharacteristics", children: [leaf("depth", "16"), leaf("samplerate", "\(m.sampleRate.map { Int($0.rounded()) } ?? 48000)")]), leaf("channelcount", "2"),
-                ]))
+                // One audio element per source track, so sourcetrack's trackindex counts source channels.
+                for count in Project.channelLayout(m) {
+                    mediaKids.append(XMLElem("audio", children: [
+                        XMLElem("samplecharacteristics", children: [leaf("depth", "16"), leaf("samplerate", "\(m.sampleRate.map { Int($0.rounded()) } ?? 48000)")]), leaf("channelcount", "\(count)"),
+                    ]))
+                }
             }
             kids.append(XMLElem("media", children: mediaKids))
             return XMLElem("file", [("id", id)], children: kids)
@@ -3507,7 +3540,7 @@ extension Project {
                         }
                         if c.reverse { sourceFrame = f(min(c.sourceIn, c.sourceOut)) }
                         kids += [leaf("in", "\(inF)"), leaf("out", "\(outF)"), file(m)]
-                        if kind == .audio { kids.append(XMLElem("sourcetrack", children: [leaf("mediatype", "audio"), leaf("trackindex", "1")])) }
+                        if kind == .audio { kids.append(XMLElem("sourcetrack", children: [leaf("mediatype", "audio"), leaf("trackindex", "\(c.channels?.sourceChannels.first ?? 1)")])) }
                         if abs(c.speed - 1) > 1e-9 || c.reverse {
                             kids.append(XMLElem("filter", children: [effect("Time Remap", id: "timeremap", category: "motion", type: "motion", mediaType: "video", [
                                 parameter("variablespeed", "variablespeed", "0"),
@@ -3606,9 +3639,12 @@ extension Project {
                     }
                     // What the clipitem can't say about the clip's sound, for Cutline to read back.
                     let hint = SoundHint(c, grid: grid)
+                    var soundNotes: [XMLElem] = []
+                    if kind == .audio, c.kind == .media, let ch = c.channels { soundNotes.append(leaf("mastercomment2", Project.channelsTag + ch.rawValue)) }
                     if heard, overlapped.contains(c.id) || (into == nil && r0 != s) || (outOf == nil && r1 != e) || (track.kind == .audio && (hint.lead != 0 || hint.lag != 0)) {
-                        kids.append(XMLElem("comments", children: [leaf("mastercomment4", hint.text)]))
+                        soundNotes.append(leaf("mastercomment4", hint.text))
                     }
+                    if !soundNotes.isEmpty { kids.append(XMLElem("comments", children: soundNotes)) }
                     if c.kind == .media || c.kind == .sequence { kids += links(c) }
                     if heard, into == nil, black.into == nil, c.audioFadeIn > 0 { items.append(fadeItem(r0, min(r1, r0 + max(1, f(c.audioFadeIn))), into: true)) }
                     items.append(XMLElem(c.kind == .text || c.kind == .solid ? "generatoritem" : "clipitem", [("id", itemId(c, sound: sound))], children: kids))

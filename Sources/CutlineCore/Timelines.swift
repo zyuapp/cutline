@@ -112,30 +112,68 @@ extension Project {
         media[i] = m
     }
 
-    /// Adds another project's timeline (an imported EDL, FCPXML, OTIO or XML) as a new timeline and makes it current.
-    /// Its media are matched to this project's (`matchingMedia`), so clips point at media already here; the rest are
-    /// added. Clips of matched media whose imported timecode differs from the project's are moved to keep their
-    /// source timecode.
+    /// Adds another project's timeline (an imported EDL, FCPXML, OTIO, XML or AAF) as a new timeline and makes it
+    /// current. Its media are matched to this project's (`matchingMedia`) when the source range the timeline reads
+    /// fits them: clips of matched media whose imported timecode differs from the project's move to keep their
+    /// source timecode, and offline media whose timecode agrees grow to what the timeline reads. Media that
+    /// conflict with offline media (another timecode or a longer range) are added as separate media. Nested
+    /// sequences whose id is taken get a new one. Clips that still don't fit are trimmed to their source, moved off
+    /// overlaps to a new track, or left out, each with a warning, so one bad clip never stops the import.
     @discardableResult
-    public mutating func adoptTimeline(_ other: Project, name: String) throws -> (matched: Int, added: Int) {
+    public mutating func adoptTimeline(_ other: Project, name: String) throws -> (matched: Int, added: Int, warnings: [String]) {
         var rename: [String: String] = [:]
         var shift: [String: Seconds] = [:]
         var matched = 0, added = 0
-        for m in other.media {
-            if let same = matchingMedia(m) {
-                rename[m.id] = same.id
-                if let a = m.timecodeStart, let b = same.timecodeStart, abs(a - b) > 1e-6 { shift[m.id] = a - b }
-                matched += 1
-            } else {
-                var copy = m
-                var n = 2
-                while media.contains(where: { $0.id == copy.id }) { copy.id = "\(m.id)-\(n)"; n += 1 }
-                rename[m.id] = copy.id
-                media.append(copy)
-                added += 1
-            }
+        var warnings: [String] = []
+        let reads = other.sourceReads()
+        func add(_ m: MediaAsset) -> String {
+            var copy = m
+            copy.id = uniqueMediaId(m.id)
+            media.append(copy)
+            added += 1
+            return copy.id
         }
-        func remap(_ tracks: [Track]) -> [Track] {
+        for m in other.media {
+            guard let first = matchingMedia(m) else {
+                rename[m.id] = add(m)
+                continue
+            }
+            // The match, then other media of the same file (separate copies made by earlier imports).
+            let candidates = [first] + media.filter { $0.id != first.id && $0.name == first.name && $0.path == first.path }
+            let need = reads[m.id]
+            func tcShift(_ same: MediaAsset) -> Seconds {
+                guard let a = m.timecodeStart, let b = same.timecodeStart, abs(a - b) > 1e-6 else { return 0 }
+                return a - b
+            }
+            func fits(_ same: MediaAsset) -> Bool {
+                guard !same.isImage, let need else { return true }
+                let tol = 1 / max(same.fps, 24), s = tcShift(same)
+                return need.start + s >= -tol && need.end + s <= same.duration + tol
+            }
+            var pick = candidates.first(where: fits)
+            if pick == nil, let need, need.start > -1e-3,
+               let grow = candidates.first(where: { !Importer.exists($0.path) && tcShift($0) == 0 }), let i = media.firstIndex(where: { $0.id == grow.id }) {
+                media[i].duration = need.end
+                pick = media[i]
+            }
+            if pick == nil, Importer.exists(first.path) { pick = first }
+            if let same = pick {
+                rename[m.id] = same.id
+                let s = tcShift(same)
+                if s != 0 { shift[m.id] = s }
+                matched += 1
+                continue
+            }
+            let id = add(m)
+            rename[m.id] = id
+            let theirs = m.timecodeString(fallback: other.canvas.fps).map { " from \($0)" } ?? ""
+            let mine = first.timecodeString(fallback: canvas.fps).map { " from \($0)" } ?? ""
+            warnings.append("\(m.name): this timeline reads \(fmt2(need?.start ?? 0))–\(fmt2(need?.end ?? 0))s of it\(theirs), outside the project's offline \(first.id) (\(fmt2(first.duration))s\(mine)); kept as separate media \(id)")
+        }
+        var renameSequence: [String: String] = [:]
+        var usedSequenceIds = Set(sequences.map(\.id))
+        for s in other.sequences where usedSequenceIds.contains(s.id) { renameSequence[s.id] = Importer.unique(s.id, &usedSequenceIds) }
+        func remapMedia(_ tracks: [Track]) -> [Track] {
             tracks.map { t in
                 var t = t
                 for i in t.clips.indices where t.clips[i].kind == .media {
@@ -146,18 +184,126 @@ extension Project {
                 return t
             }
         }
+        func remapSequences(_ tracks: [Track]) -> [Track] {
+            tracks.map { t in
+                var t = t
+                for i in t.clips.indices where t.clips[i].kind == .sequence {
+                    if let id = t.clips[i].mediaId, let new = renameSequence[id] { t.clips[i].mediaId = new }
+                }
+                return t
+            }
+        }
+        var incoming: [NestedSequence] = []
+        for s in other.sequences {
+            var s = s
+            s.tracks = remapMedia(s.tracks)
+            if var setup = s.multicam {
+                for k in setup.angles.indices {
+                    setup.angles[k].offset += shift[setup.angles[k].mediaId] ?? 0
+                    setup.angles[k].mediaId = rename[setup.angles[k].mediaId] ?? setup.angles[k].mediaId
+                }
+                s.multicam = setup
+            }
+            incoming.append(s)
+        }
+        // A sequence that is already here as it is keeps its id.
+        for s in incoming where renameSequence[s.id] != nil {
+            if let same = sequence(s.id), same.name == s.name, same.tracks == remapSequences(s.tracks), same.multicam == s.multicam { renameSequence[s.id] = nil }
+        }
+        var addedSequences = Set<String>()
+        for var s in incoming {
+            if renameSequence[s.id] == nil, sequence(s.id) != nil { continue }
+            s.id = renameSequence[s.id] ?? s.id
+            s.tracks = remapSequences(s.tracks)
+            addedSequences.insert(s.id)
+            sequences.append(s)
+        }
         try newTimeline(name, duplicate: false)
         canvas = other.canvas
-        tracks = remap(other.tracks)
+        tracks = remapSequences(remapMedia(other.tracks))
         transitions = other.transitions
         markers = other.markers
         captions = other.captions
         master = other.master
-        for s in other.sequences where !sequences.contains(where: { $0.id == s.id }) {
-            var s = s
-            s.tracks = remap(s.tracks)
-            sequences.append(s)
+        for i in sequences.indices where addedSequences.contains(sequences[i].id) {
+            var inner = inside(sequences[i])
+            warnings += inner.repairAdopted(label: "In \(sequences[i].name): ")
+            sequences[i].tracks = inner.tracks
+            sequences[i].transitions = inner.transitions
         }
-        return (matched, added)
+        warnings += repairAdopted(label: "")
+        return (matched, added, Importer.condense(warnings))
+    }
+
+    func uniqueMediaId(_ base: String) -> String {
+        var id = base, n = 2
+        while media.contains(where: { $0.id == id }) { id = "\(base)-\(n)"; n += 1 }
+        return id
+    }
+
+    /// The source range each media's clips read (split-edit sound included), on the timeline and in its sequences.
+    func sourceReads() -> [String: TimeRange] {
+        var out: [String: TimeRange] = [:]
+        for c in (tracks + sequences.flatMap(\.tracks)).flatMap(\.clips) where c.kind == .media {
+            guard let id = c.mediaId else { continue }
+            let r = c.audioSourceRange
+            let lo = min(c.sourceIn, c.sourceOut, r.start), hi = max(c.sourceIn, c.sourceOut, r.end)
+            out[id] = out[id].map { TimeRange(min($0.start, lo), max($0.end, hi)) } ?? TimeRange(lo, hi)
+        }
+        return out
+    }
+
+    /// Makes an adopted timeline valid clip by clip: overlapping clips move to a new track of their kind, media
+    /// clips reading past their source are trimmed to it, and clips that still don't fit are left out.
+    mutating func repairAdopted(label: String) -> [String] {
+        var warnings: [String] = []
+        func problem(_ c: Clip, _ track: Track) -> String? {
+            do { try checkClipFits(c, track: track); return nil } catch { return (error as? EditError)?.message ?? "\(error)" }
+        }
+        var t = 0
+        while t < tracks.count {
+            tracks[t].clips.sort { $0.start < $1.start }
+            var kept: [Clip] = [], moved: [Clip] = []
+            for c in tracks[t].clips {
+                if let last = kept.last, c.start < last.end - eps { moved.append(c) } else { kept.append(c) }
+            }
+            if !moved.isEmpty {
+                let kind = tracks[t].kind, prefix = kind == .video ? "V" : "A"
+                var n = tracks.filter { $0.kind == kind }.count + 1
+                while trackIndex("\(prefix)\(n)") != nil { n += 1 }
+                warnings.append("\(label)\(moved.map { $0.name ?? $0.id }.prefix(3).joined(separator: ", "))\(moved.count > 3 ? ", …" : "") overlapped clips on \(tracks[t].id); moved to \(prefix)\(n)")
+                tracks[t].clips = kept
+                let lane = Track(id: "\(prefix)\(n)", kind: kind, name: kind == .video ? "Video \(n)" : "Audio \(n)", muted: tracks[t].muted, hidden: tracks[t].hidden, clips: moved)
+                tracks.insert(lane, at: t + 1)
+            }
+            var dropped = Set<String>()
+            for i in tracks[t].clips.indices {
+                let track = tracks[t]
+                var c = track.clips[i]
+                guard let why = problem(c, track) else { continue }
+                if c.kind == .media, let m = c.mediaId.flatMap(mediaAsset), !m.isImage, !c.reverse, !c.isRetimed, c.speed > 0 {
+                    if c.sourceIn < 0 { c = Project.trimmedLeft(c, to: c.start - c.sourceIn / c.speed) }
+                    if c.sourceOut > m.duration { c = Project.trimmedRight(c, to: c.start + (m.duration - c.sourceIn) / c.speed) }
+                    c.audioLead = max(0, min(c.audioLead, c.sourceIn / c.speed))
+                    c.audioLag = max(0, min(c.audioLag, (m.duration - c.sourceOut) / c.speed))
+                    if c.duration > canvas.frameDuration / 2, problem(c, track) == nil {
+                        tracks[t].clips[i] = c
+                        warnings.append("\(label)\(c.name ?? c.id): \(why); trimmed to \(fmt2(c.duration))s")
+                        continue
+                    }
+                }
+                dropped.insert(c.id)
+                warnings.append("\(label)\(c.name ?? c.id): \(why); left out")
+            }
+            if !dropped.isEmpty {
+                tracks[t].clips.removeAll { dropped.contains($0.id) }
+                transitions.removeAll { [$0.from, $0.to].contains { $0.map(dropped.contains) ?? false } }
+            }
+            let busIds = Set(buses.map(\.id))
+            if let o = tracks[t].output, !busIds.contains(o) { tracks[t].output = nil }
+            tracks[t].sends.removeAll { !busIds.contains($0.bus) }
+            t += 1
+        }
+        return warnings
     }
 }

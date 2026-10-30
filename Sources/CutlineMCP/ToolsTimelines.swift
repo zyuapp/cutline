@@ -23,9 +23,10 @@ extension Toolbox {
             } else {
                 (imported, notes) = try await importTimeline(file, name: name, edlFps: args.optDouble("edl_fps") ?? current.canvas.fps)
             }
-            var counts = (matched: 0, added: 0)
+            var counts: (matched: Int, added: Int, warnings: [String]) = (0, 0, [])
             let p = try session.edit("Import timeline \(name)") { p in counts = try p.adoptTimeline(imported, name: name) }
             try? session.sendPreview(["action": "rebuild"])
+            if !counts.warnings.isEmpty { notes.append("Conform notes: " + counts.warnings.prefix(12).joined(separator: "; ") + (counts.warnings.count > 12 ? "; …\(counts.warnings.count - 12) more" : "")) }
             return .text("Imported \(file.lastPathComponent) as timeline \(name): \(p.tracks.flatMap(\.clips).count) clips, \(fmt2(p.duration))s; \(counts.matched) media matched to the project's, \(counts.added) added.\n" + notes.joined(separator: "\n") + "\n" + footer(p))
         })
 

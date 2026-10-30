@@ -231,7 +231,7 @@ extension Project {
     /// `source_range` the part played. `global_start_time` is the canvas's start timecode. Media with source
     /// timecode have their `available_range` from it at their own rate and clips' `source_range` start in it, with
     /// the label and reel in the reference's Cutline metadata.
-    public func otio() throws -> Data { try otio(InterchangeContext()) }
+    public func otio() throws -> Data { try scopedToTimeline().otio(InterchangeContext()) }
 
     /// With clips the export replaced (`InterchangeContext.originals`) written as the clip they stand for, in metadata.
     func otio(_ ctx: InterchangeContext) throws -> Data {
@@ -262,6 +262,7 @@ extension Project {
             if let t = clip.text { md["text"] = t.text }
             if let c = clip.color { md["color"] = c.hex }
             if clip.reverse { md["reverse"] = true }
+            if let ch = clip.channels { md["channels"] = ch.rawValue }
             // Everything about titles, solids and generators, and the clip a baked graphic stands for.
             if let e = ctx.embedded(clip) { md["clip"] = Self.jsonValue(e) }
             return md
@@ -300,6 +301,7 @@ extension Project {
                 md["timecode"] = tc.format.string(tc.frames)
             }
             if let reel = m.reel, !reel.isEmpty { md["reel"] = reel }
+            if m.hasAudio, m.audioChannels != nil { md["audioChannels"] = Self.channelLayout(m) }
             let metadata: [String: Any] = md.isEmpty ? [:] : ["cutline": md]
             return ["OTIO_SCHEMA": "ExternalReference.1", "name": m.name, "target_url": m.conformURL.absoluteString,
                     "available_range": available, "available_image_bounds": NSNull(), "metadata": metadata]
@@ -527,7 +529,7 @@ extension Project {
     /// The project's `tcStart` is the canvas's start timecode; assets declare their own audio sample rate. An asset
     /// with source timecode starts at it (with its reel as metadata), and clips of it start at that timecode plus
     /// their in point, as Final Cut writes them.
-    public func fcpxml() -> String { fcpxml(InterchangeContext()) }
+    public func fcpxml() -> String { scopedToTimeline().fcpxml(InterchangeContext()) }
 
     func fcpxml(_ ctx: InterchangeContext) -> String {
         let grid = FrameGrid(fps: canvas.fps)
@@ -576,7 +578,8 @@ extension Project {
             attrs.append(("hasAudio", m.hasAudio ? "1" : "0"))
             if m.hasAudio {
                 let rate = m.sampleRate.map { Int($0.rounded()) }.flatMap { $0 > 0 ? $0 : nil } ?? 48000
-                attrs += [("audioSources", "1"), ("audioChannels", "2"), ("audioRate", "\(rate)")]
+                let layout = Self.channelLayout(m)
+                attrs += [("audioSources", "\(layout.count)"), ("audioChannels", "\(layout.reduce(0, +))"), ("audioRate", "\(rate)")]
             }
             var kids = [XMLElem("media-rep", [("kind", "original-media"), ("src", m.conformURL.absoluteString)])]
             if let reel = m.reel, !reel.isEmpty {
@@ -688,7 +691,15 @@ extension Project {
             }
             if !audioOnly && asset.hasVideo { children += pictureChildren(clip) }
             if sound { children += volumeChildren(clip, track: track, start: start, scope: scope) }
-            if !audioOnly { children += cutlineMetadata(clip) }
+            var md = !audioOnly ? cutlineMetadata(clip).flatMap(\.children) : []
+            if sound, let ch = clip.channels {
+                // The source channels heard, as Final Cut lists them; Cutline's routing as metadata.
+                var a = [("srcCh", (ch.sourceChannels.isEmpty ? [1, 2] : ch.sourceChannels).map(String.init).joined(separator: ", "))]
+                if case .pair = ch.form { a.append(("outCh", "L, R")) }
+                children.append(XMLElem("audio-channel-source", a))
+                md.append(XMLElem("md", [("key", Self.fcpChannelsKey), ("value", ch.rawValue)]))
+            }
+            if !md.isEmpty { children.append(XMLElem("metadata", children: md)) }
             return XMLElem(asset.isImage ? "video" : "asset-clip", attrs, children: children)
         }
         /// A solid as Final Cut's Custom solid generator in its color.
