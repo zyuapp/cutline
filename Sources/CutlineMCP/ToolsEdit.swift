@@ -41,7 +41,7 @@ extension Toolbox {
             "source_in": Schema.time("Source start (seconds in the media, or a word anchor like \"talk.w12\")"),
             "source_out": Schema.time("Source end (seconds or word anchor such as \"talk.w40.end\")"),
             "duration": Schema.time("Timeline duration; images, solids and adjustment layers default to 5"),
-            "speed": Schema.number("Playback speed, 1 = normal"),
+            "speed": Schema.number("Playback speed, 1 = normal. With source_in, source_out and a duration or end, speed is computed to fit (fit to fill)"),
             "name": Schema.string("Label shown in the preview timeline"),
         ].merging(Toolbox.setProp) { a, _ in a }), label: { a, p in a.optString("media_id").map { id in "Add " + (p.mediaAsset(id)?.name ?? id) } ?? (a.bool("adjustment", default: false) ? "Add adjustment layer" : "Add a color clip") }) { p, args in
             var clip: Clip
@@ -52,10 +52,15 @@ extension Toolbox {
             if let mid = args.optString("media_id") {
                 guard let m = p.mediaAsset(mid) else { throw EditError("No media \(mid). Known: \(p.media.map(\.id).joined(separator: ", "))") }
                 let sIn = try args.optSourceTime("source_in") ?? 0
-                let speed = args.optDouble("speed") ?? 1
+                var speed = args.optDouble("speed") ?? 1
                 var dur: Seconds
                 if m.isImage {
                     dur = try span ?? args.optTime("duration") ?? 5
+                } else if let sOut = try args.optSourceTime("source_out"), args.optDouble("speed") == nil, let fill = try span ?? args.optTime("duration") {
+                    // Fit to fill: the source range is retimed to the requested length.
+                    guard fill > 0, sOut > sIn else { throw EditError("source_out must be after source_in") }
+                    speed = (sOut - sIn) / fill
+                    dur = fill
                 } else if let sOut = try args.optSourceTime("source_out") {
                     dur = (sOut - sIn) / speed
                 } else if let d = try span ?? args.optTime("duration") {
