@@ -8,7 +8,7 @@ extension Toolbox {
         Sources: "beats" / "downbeats" (pulses out_hi on each beat of the timeline's music, decaying to out_lo over decay=0.25s), \
         "audio:<media id>" (loudness where that media plays; map dB, default [-40, 0, out_lo, out_hi]), \
         "face:<media id>[:n].x|y|size" and "track:<track id>.x|y|width|height" (a face or tracked object, in canvas fractions where the media plays; \
-        for transform.x/y the value is the offset from center, for text.x/y the absolute position; add offset to place beside it). \
+        for transform.x/y the value is the offset from center, for anything else (text.x/y, fx.<id>.limit_x/y, effect centers) the absolute position; add offset to place beside it). \
         Example: {"transform.scale": {"source": "beats", "map": [0, 1, 1, 1.06]}} pumps scale on every beat.
         """
 
@@ -88,7 +88,7 @@ extension Toolbox {
                 samples = found.samples
             }
             guard let m = p.mediaAsset(mediaId) else { throw EditError("No media \(mediaId)") }
-            let absolute = path.hasPrefix("text.")
+            let absolute = !path.hasPrefix("transform.")
             values = times.map { local in
                 let t = c.start + local
                 guard let host = p.tracks.flatMap(\.clips).first(where: { $0.mediaId == mediaId && $0.kind == .media && t >= $0.start && t < $0.end }) else { return nil }
