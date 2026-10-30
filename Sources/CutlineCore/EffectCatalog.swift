@@ -39,8 +39,11 @@ public enum EffectCatalog {
         ("stylize", "Glow, grain, vignette, shadows and other looks"),
         ("distort", "Warps and lens effects"),
         ("mask", "Limit the clip to a shape; feather, invert, animate"),
-        ("audio", "Sound processing on tracks (and the master bus): EQ, dynamics, voice cleanup, space, character"),
+        ("audio", "Sound processing on clips, tracks and the master bus: EQ, dynamics, repair (noise, hum, sibilance, clicks), voice cleanup, stereo, space, character"),
     ]
+
+    /// Every built-in effect type an agent can add: the picture and audio effects plus the restoration effects.
+    public static var listed: [EffectType] { all + ProAudioCatalog.all }
 
     public static func isAudio(_ type: String) -> Bool { type.hasPrefix("audio.") || ProAudioCatalog.isPlugin(type) }
 

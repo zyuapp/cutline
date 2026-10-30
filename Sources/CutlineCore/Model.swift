@@ -320,6 +320,8 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public var inputExposure: Double?
     /// Position in a surround mix; nil is the default (front center, full center share, no LFE).
     public var surround: SurroundPan?
+    /// Which source channels play; nil is stereo as recorded.
+    public var channels: ChannelRouting?
 
     public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), blend: BlendMode = .normal, effects: [Effect] = [], anim: [String: Curve] = [:], text: TextSpec? = nil, color: RGBA? = nil) {
         self.id = id
@@ -347,7 +349,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, mediaId, start, duration, sourceIn, speed, volume, audioFadeIn, audioFadeOut, audioLead, audioLag
-        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure, surround
+        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure, surround, channels
     }
 
     public init(from decoder: Decoder) throws {
@@ -370,6 +372,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         inputTone = try c.decodeIfPresent(ToneMap.self, forKey: .inputTone)
         inputExposure = try c.decodeIfPresent(Double.self, forKey: .inputExposure)
         surround = try c.decodeIfPresent(SurroundPan.self, forKey: .surround)
+        channels = try c.decodeIfPresent(ChannelRouting.self, forKey: .channels)
         audioLag = try c.decodeIfPresent(Double.self, forKey: .audioLag) ?? 0
         fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
         fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
@@ -422,6 +425,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(inputTone, forKey: .inputTone)
         try c.encodeIfPresent(inputExposure, forKey: .inputExposure)
         try c.encodeIfPresent(surround, forKey: .surround)
+        try c.encodeIfPresent(channels, forKey: .channels)
     }
 
     public var end: Seconds { start + duration }

@@ -4,12 +4,14 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "music_fit", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color", "grade_group"]
+    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "room_tone", "fill_gaps", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "music_fit", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color", "grade_group"]
 
     static let recipeDocs = """
         duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
         loudness_normalize: {target_lufs: -14, ceiling_db: -1.5, limit: true}. \
         split_edit: {edit: "clip_a|clip_b", offset: seconds (+ J cut, − L cut)}. \
+        room_tone: {start, end (timeline), media, source_start, source_end (a quiet stretch of that media's sound, in source time; 2 s or more sounds best), track (default a new audio track "Room tone"), crossfade: 0.25}; fills the range with that room tone, looped from varied start points with short crossfades so the repeat isn't heard. \
+        fill_gaps: {track: the dialogue track, media, source_start, source_end (a quiet stretch, as room_tone), into (default a new audio track "Room tone"), min_gap: 0.04, crossfade: 0.25}; fills every gap between that track's sounds with room tone so the background never drops out. \
         speed_ramp: {clip, at: time (default middle), speed: 0.3, ramp: 0.3, hold: 0.8}. \
         freeze_frame: {at: time, duration: 1.5, track (default top video at that time), zoom: 1 (e.g. 1.08 pushes in)}. \
         punch_in: {clips (default: every other jump cut on track), track: "V1", amount: 1.15, settle: false (start slightly tighter and ease out)}; centers on faces when shots are analyzed. \
@@ -44,6 +46,30 @@ extension Toolbox {
             }
         }
         switch name {
+        case "room_tone", "fill_gaps":
+            let mid = try a.string("media")
+            let source = TimeRange(try a.sourceTime("source_start"), try a.sourceTime("source_end"))
+            let crossfade = a.optDouble("crossfade") ?? 0.25
+            var ranges: [TimeRange]
+            if name == "room_tone" {
+                ranges = [TimeRange(try a.time("start"), try a.time("end"))]
+                guard ranges[0].duration > 0 else { throw EditError("end must be after start") }
+            } else {
+                let dialogue = try a.string("track")
+                ranges = try current.soundGaps(trackId: dialogue, minGap: a.optDouble("min_gap") ?? 0.04)
+                guard !ranges.isEmpty else { throw EditError("\(dialogue) has no gaps between its sounds") }
+            }
+            let fill = ranges
+            return try runEdit(name == "room_tone" ? "Room tone \(fmt2(fill[0].start))–\(fmt2(fill[0].end))s" : "Fill \(fill.count) gap(s) with room tone", dry: dry) { p in
+                var trackId = a.optString(name == "room_tone" ? "track" : "into") ?? ""
+                if p.trackIndex(trackId) == nil { trackId = p.addTrack(kind: .audio, name: "Room tone").id }
+                var lines: [String] = []
+                for r in fill {
+                    let ids = try p.fillRoomTone(r, mediaId: mid, source: source, trackId: trackId, crossfade: crossfade)
+                    lines.append("\(fmt2(r.start))–\(fmt2(r.end))s: \(ids.count) clip(s)")
+                }
+                return "Room tone from \(mid) \(fmt2(source.start))–\(fmt2(source.end))s on \(trackId), crossfaded \(fmt2(crossfade))s: " + lines.joined(separator: "; ") + ". Set its level with param_set target \(trackId)/* audio.volume or track_update volume."
+            }
         case "speed_ramp":
             let id = try a.string("clip")
             return try runEdit("Speed ramp on \(Toolbox.clipName(id, current))", dry: dry) { p in

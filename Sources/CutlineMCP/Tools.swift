@@ -282,6 +282,7 @@ enum Describe {
         if c.audioFadeIn > 0 || c.audioFadeOut > 0 { extra.append("audio fade \(fmt2(c.audioFadeIn))/\(fmt2(c.audioFadeOut))") }
         if c.audioLead != 0 { extra.append("audio leads \(fmt2(c.audioLead))s") }
         if c.audioLag != 0 { extra.append("audio lags \(fmt2(c.audioLag))s") }
+        if let ch = c.channels, ch != .stereo { extra.append("channels \(ch.rawValue)") }
         let t = c.transform
         if t != Transform() {
             var parts: [String] = []

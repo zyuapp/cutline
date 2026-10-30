@@ -6,7 +6,7 @@ extension Toolbox {
     func registerLookTools() {
         let targetSchema: JSON = ["type": ["string", "array"], "items": ["type": "string"], "description": "Clip id, track id, \"V1/*\" for every clip on a track, \"master\" (param_set gain_db and layout), or a list of these"]
 
-        addEdit(EditTool(name: "param_set", description: "Set or animate any parameter of clips or tracks by path: transform.scale/x/y/rotation/opacity/fit/crop.*, blend, fade.in/out, audio.volume, surround panning (audio.pan_x/pan_y/center/lfe, heard when the master layout is 5.1 or 7.1), text.*, color, and fx.<effect id>.<param> for effects. Animate with keys [time, value, ease?]; times are timeline seconds or anchors (\"talk.w12\", \"clip_x.end-0.5\"), or seconds from the clip start with relative:true. Eases: linear, easeIn, easeOut, easeInOut (default), hold, back, elastic, bounce, or \"bezier(x1, y1, x2, y2)\" for a custom curve. Numbers and colors interpolate. project_status with target lists a clip's paths and values; catalog explains every effect parameter.", schema: Schema.object([
+        addEdit(EditTool(name: "param_set", description: "Set or animate any parameter of clips or tracks by path: transform.scale/x/y/rotation/opacity/fit/crop.*, blend, fade.in/out, audio.volume, audio.channels (stereo, left, right, mono_mix, swap: left or right plays one mic of a two-channel recording on both sides), surround panning (audio.pan_x/pan_y/center/lfe, heard when the master layout is 5.1 or 7.1), text.*, color, and fx.<effect id>.<param> for effects. Animate with keys [time, value, ease?]; times are timeline seconds or anchors (\"talk.w12\", \"clip_x.end-0.5\"), or seconds from the clip start with relative:true. Eases: linear, easeIn, easeOut, easeInOut (default), hold, back, elastic, bounce, or \"bezier(x1, y1, x2, y2)\" for a custom curve. Numbers and colors interpolate. project_status with target lists a clip's paths and values; catalog explains every effect parameter.", schema: Schema.object([
             "target": targetSchema,
             "set": ["type": "object", "description": "{path: value}, e.g. {\"transform.scale\": 1.2, \"blend\": \"screen\", \"fx.glow1.amount\": 0.8}"],
             "animate": ["type": "object", "description": "{path: [[time, value, ease?], ...]}, e.g. {\"transform.scale\": [[\"clip_x.start\", 1], [\"clip_x.end\", 1.15, \"easeOut\"]]}. Replaces that path's existing animation."],
@@ -67,9 +67,9 @@ extension Toolbox {
             return lines.joined(separator: "\n")
         })
 
-        addEdit(EditTool(name: "effect_add", description: "Add, update, reorder or remove an effect on clips or tracks. Effects stack in order on each clip: blur, sharpen, color correction, black and white, glow, vignette, film grain, pixelate, posterize, drop shadow, border, distortions, and rect/ellipse masks (feathered, inverted, animatable). Effects on an adjustment layer (clip_add adjustment:true) apply to everything below it. Audio effects (audio.eq, compressor, gate, limiter, voice_isolation, reverb, delay, character, pitch) go on tracks and process every clip's sound on that track; they are rendered offline, so preview and export match. Passing an existing id updates that effect. Animate parameters afterwards with param_set path fx.<id>.<param>. Call catalog for each type's parameters.", schema: Schema.object([
+        addEdit(EditTool(name: "effect_add", description: "Add, update, reorder or remove an effect on clips or tracks. Effects stack in order on each clip: blur, sharpen, color correction, black and white, glow, vignette, film grain, pixelate, posterize, drop shadow, border, distortions, and rect/ellipse masks (feathered, inverted, animatable). Effects on an adjustment layer (clip_add adjustment:true) apply to everything below it. Audio effects (audio.eq, compressor, gate, limiter, voice_isolation, reverb, delay, character, pitch, and repair: denoise, deess, dehum, declick, plus pan and width) go on a clip (its sound only), a track (every clip's sound on it) or the master; they are rendered offline, so preview and export match. Passing an existing id updates that effect. Animate parameters afterwards with param_set path fx.<id>.<param>. Call catalog for each type's parameters.", schema: Schema.object([
             "target": targetSchema,
-            "type": Schema.string("Effect type", values: EffectCatalog.all.map(\.id)),
+            "type": Schema.string("Effect type", values: EffectCatalog.listed.map(\.id)),
             "params": ["type": "object", "description": "Parameter values; unset ones use catalog defaults"],
             "id": Schema.string("Effect id to create or update; default type-based such as \"vignette1\""),
             "index": Schema.integer("Position in the stack, 0 first; default last"),
@@ -136,11 +136,11 @@ extension Toolbox {
             }
             if let id = args.optString("type") {
                 if let t = TransitionCatalog.type(id) { return .text(Toolbox.describeTransitionType(t)) }
-                guard let t = EffectCatalog.type(id) else { throw EditError("No effect or transition \(id). Effects: \(EffectCatalog.all.map(\.id).joined(separator: ", ")). Transitions: \(TransitionCatalog.all.map(\.id).joined(separator: ", "))") }
+                guard let t = EffectCatalog.type(id) else { throw EditError("No effect or transition \(id). Effects: \(EffectCatalog.listed.map(\.id).joined(separator: ", ")). Transitions: \(TransitionCatalog.all.map(\.id).joined(separator: ", "))") }
                 return .text(Toolbox.describeEffectType(t))
             }
             if let q = args.optString("search")?.lowercased() {
-                let hits = EffectCatalog.all.filter { t in
+                let hits = EffectCatalog.listed.filter { t in
                     t.id.contains(q) || t.summary.lowercased().contains(q) || t.params.contains { $0.name.contains(q) || $0.summary.lowercased().contains(q) }
                 }
                 guard !hits.isEmpty else { return .text("No effects match \(q). Call catalog with no arguments for the full list.") }
@@ -317,7 +317,7 @@ extension Toolbox {
             plan = EffectPlan(effectId: id)
         } else {
             guard let typeId else { throw EditError("Pass type to add an effect" + (id.map { ", or an existing id (\($0) was not found)" } ?? "")) }
-            guard EffectCatalog.type(typeId) != nil else { throw EditError("No effect \(typeId). Types: \(EffectCatalog.all.map(\.id).joined(separator: ", "))") }
+            guard EffectCatalog.type(typeId) != nil else { throw EditError("No effect \(typeId). Types: \(EffectCatalog.listed.map(\.id).joined(separator: ", "))") }
             let base = EffectCatalog.shortName(typeId)
             var n = 1
             while stack.contains(where: { $0.id == "\(base)\(n)" }) { n += 1 }
@@ -388,7 +388,7 @@ extension Toolbox {
         var lines: [String] = ["Effects (effect_add; catalog type=<id> for parameters):"]
         for (cat, summary) in EffectCatalog.categories {
             lines.append("  \(cat): \(summary)")
-            for t in EffectCatalog.all where t.category == cat { lines.append("    \(t.id): \(t.summary)") }
+            for t in EffectCatalog.listed where t.category == cat { lines.append("    \(t.id): \(t.summary)") }
         }
         lines.append("Generators (clip_add generator:<id>, params; animate fx.gen.<param>):")
         for t in GeneratorCatalog.all { lines.append("    \(t.id): \(t.summary)") }
@@ -397,7 +397,7 @@ extension Toolbox {
         lines += [
             "Blend modes (param_set blend): " + BlendMode.allCases.map(\.rawValue).joined(separator: ", "),
             "Eases for animation keys: " + Easing.allCases.map(\.rawValue).joined(separator: ", "),
-            "Parameter paths: transform.{scale,x,y,rotation,opacity,fit,crop.left|top|right|bottom}, blend, fade.{in,out}, audio.{volume,fade_in,fade_out}, text.*, color, fx.<id>.<param>. catalog paths=true lists them all.",
+            "Parameter paths: transform.{scale,x,y,rotation,opacity,fit,crop.left|top|right|bottom}, blend, fade.{in,out}, audio.{volume,fade_in,fade_out,lead,lag,channels}, text.*, color, fx.<id>.<param>. catalog paths=true lists them all.",
             "Units: lengths are fractions of frame height; positions are fractions of the frame with 0,0 top left; angles are degrees clockwise.",
             "Time anchors (anywhere a time is taken): seconds, \"m:ss.f\", \"<media>.w12\" / \"<media>.w12.end\" (transcript words; source-time arguments resolve them in the media), \"<clip id>.start\" / \".end\", \"marker:<label>\", \"start\", \"end\", each with optional +/- seconds.",
             "Every edit tool takes dry_run:true to preview its changes. batch groups edits into one undo step and can name results with as:\"x\" for later \"$x\".",
