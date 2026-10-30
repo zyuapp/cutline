@@ -335,6 +335,102 @@ extension Diarizer {
         return renumber(labels.map { root($0) })
     }
 
+    /// Held-out word accuracy at which one speaker's lines within a scene are split into two voices.
+    static let sceneSplitAccuracy = 0.9
+    /// With voiced pitch this many semitones apart, less held-out accuracy and less speech split a scene.
+    static let pitchSplitSemitones = 7.0
+    static let pitchSplitAccuracy = 0.8
+    /// Sentences by two talking faces seen together split at this held-out accuracy.
+    static let faceSplitAccuracy = 0.7
+    /// Units of one speaker less than this far apart form a scene.
+    static let sceneGap = 8.0
+
+    /// Median voiced pitch of `units` in semitones and how many voiced frames it rests on.
+    static func medianPitch(_ units: [Int], _ unitFrames: [[Int]], _ v: VoiceFrames) -> (st: Double, voiced: Int)? {
+        let p = units.flatMap { unitFrames[$0] }.map { v.features.f0[$0] }.filter { !$0.isNaN }.sorted()
+        return p.isEmpty ? nil : (Double(p[p.count / 2]), p.count)
+    }
+
+    /// Splits a speaker in two within a scene when its sentences fall into two groups that a Gaussian per group tells
+    /// apart word by word: two voices in quick alternation share a room and a microphone, so over a whole film they
+    /// can look like one voice while within the scene they are plainly two. Groups are proposed by ΔBIC and by the
+    /// widest gap in the sentences' median pitch, and by talking face (`faceOf`) when two faces are seen together; a
+    /// group whose pitch sits far from the rest, or that another face says, needs less evidence.
+    /// Returns the labels with each split-off group under a new label, and unit pairs across every split, which must
+    /// stay apart.
+    static func splitMixedScenes(_ labels: [Int], units: [Segment], wordFrames: [[[Int]]], unitFrames: [[Int]], v: VoiceFrames, cannot: Set<Pair>, faceOf: [Int?] = []) -> (labels: [Int], apart: Set<Pair>) {
+        var out = labels
+        var apart = Set<Pair>()
+        var next = (labels.max() ?? 0) + 1
+        let words = { (us: [Int]) in us.flatMap { wordFrames[$0] }.filter { !$0.isEmpty } }
+        func frames(_ us: [Int]) -> Int { us.reduce(0) { $0 + unitFrames[$1].count } }
+        func accepts(_ a: [Int], _ b: [Int], byFace: Bool) -> Bool {
+            guard !a.isEmpty, !b.isEmpty else { return false }
+            let small = min(frames(a), frames(b))
+            if byFace { return small >= 2 * minSeedFrames && heldOutAccuracy(words(a), words(b), v) >= faceSplitAccuracy }
+            if small >= minSpeakerFrames, heldOutAccuracy(words(a), words(b), v) >= sceneSplitAccuracy { return true }
+            guard small >= 2 * minSeedFrames, let pa = medianPitch(a, unitFrames, v), let pb = medianPitch(b, unitFrames, v),
+                  min(pa.voiced, pb.voiced) >= minSeedFrames, abs(pa.st - pb.st) >= pitchSplitSemitones else { return false }
+            return heldOutAccuracy(words(a), words(b), v) >= pitchSplitAccuracy
+        }
+        for c in 0...(labels.max() ?? 0) {
+            var scenes: [[Int]] = []
+            for u in units.indices where labels[u] == c {
+                if let l = scenes.last?.last, units[u].start - units[l].end < sceneGap { scenes[scenes.count - 1].append(u) } else { scenes.append([u]) }
+            }
+            for scene in scenes {
+                let seeds = scene.filter { unitFrames[$0].count >= minSeedFrames / 2 }
+                guard seeds.count >= 3 else { continue }
+                var seedCannot = Set<Pair>()
+                for i in seeds.indices { for j in (i + 1)..<seeds.count where cannot.contains(Pair(seeds[i], seeds[j])) { seedCannot.insert(Pair(i, j)) } }
+                let two = bicClusters(seeds.map { v.stats(unitFrames[$0]) }, maxSpeakers: 2, cannot: seedCannot)
+                var candidates = [(seeds.indices.filter { two[$0] == 0 }.map { seeds[$0] }, seeds.indices.filter { two[$0] == 1 }.map { seeds[$0] }, false)]
+                let pitched = seeds.compactMap { u in medianPitch([u], unitFrames, v).flatMap { $0.voiced >= minSeedFrames / 2 ? (u, $0.st) : nil } }.sorted { $0.1 < $1.1 }
+                if pitched.count >= 2, let gap = (1..<pitched.count).max(by: { pitched[$0].1 - pitched[$0 - 1].1 < pitched[$1].1 - pitched[$1 - 1].1 }),
+                   pitched[gap].1 - pitched[gap - 1].1 >= pitchSplitSemitones / 2 {
+                    candidates.append((pitched[..<gap].map(\.0), pitched[gap...].map(\.0), false))
+                }
+                let faced = seeds.filter { faceOf.indices.contains($0) && faceOf[$0] != nil }
+                if let main = Dictionary(grouping: faced, by: { faceOf[$0]! }).max(by: { frames($0.value) < frames($1.value) || (frames($0.value) == frames($1.value) && $0.key > $1.key) })?.value {
+                    let others = faced.filter { faceOf[$0] != faceOf[main[0]] }
+                    if main.contains(where: { x in others.contains { cannot.contains(Pair(x, $0)) } }) { candidates.append((main, others, true)) }
+                }
+                guard let (a, b, _) = candidates.first(where: { accepts($0.0, $0.1, byFace: $0.2) }) else { continue }
+                let minor = frames(a) < frames(b) ? a : b, major = frames(a) < frames(b) ? b : a
+                for u in minor { out[u] = next }
+                for x in minor { for y in major { apart.insert(Pair(x, y)) } }
+                next += 1
+            }
+        }
+        return (renumber(out), apart)
+    }
+
+    /// Joins the closest speakers by ΔBIC until at most `max` remain; speakers holding units in a `cannot` pair stay
+    /// apart while any other pair can join.
+    static func capSpeakers(_ labels: [Int], max limit: Int, unitFrames: [[Int]], v: VoiceFrames, cannot: Set<Pair>) -> [Int] {
+        var labels = renumber(labels)
+        while (labels.max() ?? 0) + 1 > limit {
+            let k = (labels.max() ?? 0) + 1
+            var stats = [GaussStats](repeating: GaussStats(dims: v.dims), count: k)
+            var members = [[Int]](repeating: [], count: k)
+            for (u, fr) in unitFrames.enumerated() {
+                stats[labels[u]] = stats[labels[u]] + v.stats(fr)
+                members[labels[u]].append(u)
+            }
+            var best: (d: Double, a: Int, b: Int, blocked: Bool)?
+            for a in 0..<k {
+                for b in (a + 1)..<k {
+                    let blocked = members[a].contains { x in members[b].contains { cannot.contains(Pair(x, $0)) } }
+                    let d = deltaBIC(stats[a], stats[b])
+                    if best == nil || (!blocked && best!.blocked) || (blocked == best!.blocked && d < best!.d) { best = (d, a, b, blocked) }
+                }
+            }
+            guard let best else { break }
+            labels = renumber(labels.map { $0 == best.b ? best.a : $0 })
+        }
+        return labels
+    }
+
     /// Held-out word accuracy above which two speakers are kept apart.
     static let separableAccuracy = 0.8
 

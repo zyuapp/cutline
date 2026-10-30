@@ -100,6 +100,115 @@ func tearsOfSteelTurnsFollowSentences() async throws {
     #expect(result.segments.allSatisfy { ($0.confidence ?? -1) >= 0 && ($0.confidence ?? 2) <= 1 })
 }
 
+/// The whole film (12 min) as transcribed by `Transcriber` in a separate run from the excerpt above.
+private let tearsOfSteelFilmWords = """
+    We@3.72-4.98 have@4.98-5.16 main@5.16-5.46 engine@5.46-5.7 start,@5.7-6.6 four,@6.6-7.8 three,@7.8-8.34
+    two,@8.34-9.12 one...@9.12-11.58 You're@21.96-23.34 a@23.34-23.46 jerk,@23.46-23.88 Tom.@23.88-24.24
+    Look,@24.3-24.78 Celia,@24.78-25.38 we@25.38-25.56 have@25.56-25.68 to@25.68-25.74 follow@25.74-25.86
+    our@25.86-26.1 passions.@26.1-26.94 You@27.06-27.42 have@27.42-27.54 your@27.54-27.66 robotics,@27.66-28.2
+    and@28.2-28.38 I@28.38-28.5 just@28.5-28.62 want@28.62-28.74 to@28.74-28.86 be@28.86-28.92 awesome@28.92-29.1
+    in@29.1-29.4 space.@29.4-29.64 Why@29.7-30.9 don't@30.9-31.14 you@31.14-31.2 just@31.2-31.38 admit@31.38-31.74
+    that@31.74-31.92 you're@31.92-32.22 freaked@32.22-32.88 out@32.88-33.12 by@33.12-33.3 my@33.3-33.42
+    robe@33.42-33.72 on@33.72-33.96 hand?@33.96-34.62 I'm@34.68-35.04 not@35.04-35.1 freed@35.1-35.28
+    out,@35.28-35.52 but@35.52-35.58 it's...@35.58-36.84 All@37.44-37.62 right,@37.62-37.92 fine.@37.92-38.16
+    I'm@38.22-38.76 freaked@38.76-38.94 out.@38.94-39.24 I'm@39.3-39.54 having@39.54-39.66 nightmares@39.66-40.14
+    that@40.14-40.26 I'm@40.26-40.5 being@40.5-40.56 chased@40.56-40.74 by@40.74-40.98 these@40.98-41.1
+    giant@41.1-41.4 robotic@41.4-42.06 glasses.@42.06-42.48 Oh,@42.54-42.72 God,@42.72-43.14 you're@43.14-43.32
+    dumb.@43.32-43.62 We're@43.68-44.52 done.@44.52-44.7 Robot's@48.96-50.7 memory@50.7-51 synced,@51-51.84
+    and...@51.84-52.62 locked.@52.62-53.82 Is@59.94-61.02 this@61.02-61.5 pretty@61.5-61.62 freaky?@61.62-61.98
+    Shouldn't@116.4-117.9 you@117.9-117.96 be@117.96-118.08 down@118.08-118.14 there?@118.14-118.32 I@130.32-131.58
+    heard@131.58-131.7 you@131.7-131.88 guys@131.88-132 talking@132-132.18 last@132.18-132.48 night.@132.48-132.9
+    It's@136.02-136.62 not@136.62-136.74 my@136.74-136.86 fault,@136.86-137.22 you@137.22-137.34 know?@137.34-137.7
+    Are@190.02-191.28 you@191.28-191.52 ready?@191.52-191.76 Of@191.82-193.02 course,@193.02-193.14
+    you're@193.14-193.32 ready.@193.32-193.5 You're@193.56-193.8 a@193.8-193.86 rock@193.86-193.98
+    star.@193.98-194.34 How's@195.84-197.28 it@197.28-197.34 looking,@197.34-197.7 Barley?@197.7-198.12
+    We@198.18-198.96 should@198.96-199.14 have@199.14-199.38 about@199.38-199.56 ten@199.56-199.86
+    minutes.@199.86-200.04 Well,@200.46-201.84 that's@201.84-202.08 perfect.@202.08-202.26 We're@202.44-203.88
+    only@203.88-204 one!@204-204.54 All@204.6-205.32 systems@205.32-205.74 go!@205.74-206.1 Yeah,@206.16-206.76
+    you,@206.76-207 go!@207-207.3 Go!@207.36-208.56 Move,@208.8-210.3 your@210.3-210.42 ass!@210.42-211.14
+    Go,@211.2-211.5 go,@211.5-211.8 go!@211.8-212.34 I@212.4-213.18 love@213.18-213.6 it!@213.6-213.96
+    Go@214.02-214.44 on!@214.44-214.92 Go!@214.98-216.3 That's@222.36-222.96 nice.@222.96-223.2 Nothing@223.5-224.76
+    to@224.76-224.94 worry@224.94-225.06 about.@225.06-225.3 Done.@225.36-226.02 Dumb.@229.38-230.88
+    There@231-232.08 she@232.08-232.2 is.@232.2-232.44 Now.@232.5-234 You@234.36-235.38 love@235.38-235.62
+    her.@235.62-235.92 She's@236.28-237.66 your@237.66-237.84 passion.@237.84-238.38 The@238.44-239.22
+    Be@240.42-241.68 honest.@241.68-242.22 Be@242.82-243.96 tender.@243.96-244.56 Reminder,@244.68-246.48
+    what@246.48-247.2 love@247.2-247.74 is.@247.74-248.28 And...@291.66-294.18 action!@294.18-294.96
+    Memory@295.62-297 override@297-297.66 in@297.66-297.78 progress.@297.78-298.08 You're@298.2-299.52
+    in@299.52-299.7 jerk,@299.7-300.24 Tom.@300.24-300.66 Oh,@300.84-302.22 I'm@302.22-302.46 sorry.@302.46-302.64
+    Sorry.@302.76-303.48 Sorry.@303.48-303.78 Sorry.@303.84-305.04 Sorry.@305.04-305.4 Look,@314.64-316.08
+    Celia,@316.08-316.8 we@316.8-318.42 have@318.42-318.6 to@318.6-318.72 follow@318.72-318.9 our@318.9-319.2
+    passions.@319.2-319.74 You@320.16-321.42 have@321.42-321.6 your@321.6-321.72 robotics.@321.72-322.38
+    And@324-325.26 I@325.26-325.92 just@325.92-326.1 want@326.1-326.28 to@326.28-326.46 be@326.46-326.52
+    awesome@326.52-326.76 in@326.76-327.06 space.@327.06-327.3 Get@337.86-339.12 it@339.12-339.36
+    coming.@339.36-339.84 Two@339.9-340.38 minutes@340.38-340.5 left.@340.5-340.74 Two@340.8-341.58
+    minutes.@341.58-341.94 Speed@342-343.14 it@343.14-343.26 up,@343.26-343.5 Thorn.@343.5-343.98
+    Leave@344.04-345.12 it,@345.12-345.42 CCO!@345.42-346.08 Why@346.14-347.04 don't@347.04-347.34 you@347.34-347.4
+    just@347.4-347.64 admit@347.64-347.94 that@347.94-348.12 you're@348.12-348.36 freaked@348.36-348.6
+    out@348.6-348.78 by@348.78-348.96 my@348.96-349.08 robot@349.08-349.2 hand?@349.2-349.68 Listen,@355.74-357.12
+    Celia.@357.12-357.72 I@357.9-358.08 was@358.08-358.32 young.@358.32-358.98 And@360-360.18 a@360.18-360.36
+    dick.@360.36-360.84 But@360.9-361.32 there's@361.32-361.62 no@361.62-361.68 reason@361.68-361.8 to@361.8-361.98
+    destroy@361.98-362.28 the@362.28-362.46 world.@362.46-363.9 Why@363.96-365.1 does@365.1-365.28 she@365.28-365.46
+    do@365.46-365.58 this?@365.58-365.88 Have@365.94-367.14 we@367.14-367.38 already@367.38-367.8 tried@367.8-367.98
+    that@367.98-368.22 one?@368.22-368.58 Abort!@371.7-372.66 No!@378.78-379.92 No!@379.92-382.62 You@382.62-383.64
+    broke@383.64-384 my@384-384.24 heart.@384.24-384.48 No.@385.08-386.7 You@386.7-387.24 forgot@387.24-387.54
+    me@387.54-387.84 on@387.84-387.96 Earth.@387.96-388.26 No.@388.38-389.46 I@389.58-390.54 should@390.54-390.84
+    just@390.84-391.08 brush@391.08-391.5 you.@391.5-391.86 Un...@395.76-397.92 I'm@406.38-407.76
+    sorry.@407.76-407.94 Go,@409.08-410.52 Dad,@410.52-410.76 lip.@410.76-411.12 Not@418.08-419.34 my@419.34-419.64
+    fault.@419.64-419.88 It's@420.9-422.34 time.@422.34-422.52 Wire,@428.58-429.3 sir.@429.3-429.66
+    We're@429.72-430.32 out@430.32-430.44 of@430.44-430.56 time.@430.56-430.8 Round@430.86-431.04 of@431.04-431.22
+    time.@431.22-431.52 Emory@502.8-504.24 over@504.24-504.42 at@504.42-504.66 it,@504.66-504.96 90%.@504.96-505.44
+    Captain,@505.5-506.82 we@506.82-507.36 have@507.36-507.48 to@507.48-507.6 abort.@507.6-508.2 The@517.98-519.24
+    world's@519.24-519.54 changed,@519.54-519.84 Celia.@519.84-520.5 Maybe@533.82-535.08 we@535.08-535.5
+    can,@535.5-535.74 too.@535.74-535.86 Memory@537.06-538.5 override@538.5-538.91 complete.@538.91-539.28
+    You@557.75-559.01 know...@559.01-559.8 There's@560.75-562.2 a@562.2-562.5 lesson@562.5-562.68 to@562.68-562.74
+    be@562.74-562.86 learned@562.86-563.04 from@563.04-563.1 this.@563.1-563.28 Could@565.08-566.34
+    have@566.34-566.39 gone@566.39-566.51 worse.@566.51-567
+"""
+
+/// Sentences named by a time inside them. The first 240 s repeat the excerpt's pairs. From 290 s the memory replay,
+/// judged the same way from frames and pitch: Thom on screen and talking, 108–135 Hz, at 317 ("Look, Celia…"),
+/// 356.5 ("Listen, Celia."), 358.3, 360.4 and 362 ("…destroy the world."); Celia on screen at 348 ("…my robot
+/// hand?", 238 Hz); the robot's "You're a jerk, Tom." at 299.5 (351 Hz); Barley in close-up at 343 ("Speed it up");
+/// the captain at 365 ("Why does she do this?", 239 Hz). Lines over music or unseen talkers are left out.
+private let filmSame: [(Seconds, Seconds)] = [
+    (25.5, 28), (35, 37.8), (37.8, 38.7), (38.7, 40.5), (35, 40.5), (23, 32), (50.5, 53.4), (191, 192.9), (192.9, 194), (235, 237),
+    (317, 356.5), (356.5, 358.3), (358.3, 360.4), (360.4, 362), (317, 362),
+]
+private let filmDifferent: [(Seconds, Seconds)] = [
+    (7, 23), (23, 25.5), (23, 28), (32, 35), (32, 40.5), (25.5, 32), (194, 197), (197, 199), (191, 197),
+    (348, 362), (317, 348), (348, 356.5), (362, 365), (299.5, 317), (343, 317), (343, 348),
+]
+
+@Test(.enabled(if: FileManager.default.fileExists(atPath: tearsOfSteelPath)))
+func tearsOfSteelWholeFilmKeepsVoicesApart() async throws {
+    let words = tearsOfSteelFilmWords.split(whereSeparator: \.isWhitespace).map { tok -> Word in
+        let parts = tok.split(separator: "@")
+        let times = parts[1].split(separator: "-").map { Double($0)! }
+        return Word(text: String(parts[0]), start: times[0], end: times[1])
+    }
+    let transcript = Transcript(mediaId: "tos", locale: "en-US", words: words)
+    let samples = try await Diarizer.decodeMono(url: URL(fileURLWithPath: tearsOfSteelPath))
+    let result = Diarizer.analyze(samples: samples, sampleRate: Diarizer.decodeRate, transcript: transcript)
+    for s in result.segments where s.start < 372 {
+        let text = words.filter { $0.start >= s.start - 0.01 && $0.end <= s.end + 0.01 }.map(\.text).joined(separator: " ")
+        print(String(format: "film %7.2f–%7.2f %@ %.2f %@", s.start, s.end, s.speaker, s.confidence ?? -1, text))
+    }
+    func speaker(_ t: Seconds) -> String? {
+        let i = words.indices.min { abs((words[$0].start + words[$0].end) / 2 - t) < abs((words[$1].start + words[$1].end) / 2 - t) }!
+        return result.wordSpeakers[i]
+    }
+    func score(_ range: ClosedRange<Seconds>) -> (same: Int, of: Int, different: Int, ofDifferent: Int) {
+        let s = filmSame.filter { range.contains($0.0) }, d = filmDifferent.filter { range.contains($0.0) }
+        return (s.filter { speaker($0.0) == speaker($0.1) }.count, s.count, d.filter { speaker($0.0) != speaker($0.1) }.count, d.count)
+    }
+    let early = score(0...240), replay = score(290...372)
+    print("film speakers \(result.speakers.count), 0–240 s same \(early.same)/\(early.of) different \(early.different)/\(early.ofDifferent), 290–372 s same \(replay.same)/\(replay.of) different \(replay.different)/\(replay.ofDifferent)")
+    #expect((2...6).contains(result.speakers.count))
+    // Over the whole film Thom and Celia share the room and mic of their scenes, yet stay two voices.
+    #expect(Double(early.same + early.different) / Double(early.of + early.ofDifferent) >= 0.85)
+    #expect(Double(replay.same + replay.different) / Double(replay.of + replay.ofDifferent) >= 0.8)
+}
+
 @Test func talkingFacesLinkSentences() {
     let units = [
         Diarizer.Segment(start: 0, end: 2, words: [0]), Diarizer.Segment(start: 2.2, end: 4, words: [1]),

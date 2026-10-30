@@ -78,6 +78,16 @@ public enum Diarizer {
                     labels = Set(merged).count > 1 ? resegment(unitFrames, costs: costs, labels: merged, v: v) : merged
                 }
             }
+            let split = splitMixedScenes(labels, units: units, wordFrames: wordFrames, unitFrames: unitFrames, v: v, cannot: cannot, faceOf: faceOf)
+            if split.labels != labels {
+                labels = resegment(unitFrames, costs: costs, labels: split.labels, v: v)
+                let apart = cannot.union(split.apart)
+                let merged = mergeSimilarSpeakers(wordFrames, labels: labels, v: v, cannot: apart, faceOf: faceOf)
+                if merged != labels {
+                    labels = Set(merged).count > 1 ? resegment(unitFrames, costs: costs, labels: merged, v: v) : merged
+                }
+                labels = capSpeakers(labels, max: max(1, maxSpeakers), unitFrames: unitFrames, v: v, cannot: apart)
+            }
         }
         labels = renumber(labels)
 
@@ -264,6 +274,8 @@ public enum Diarizer {
 
     // MARK: Decoding
 
+    /// The first audio track as mono at `decodeRate`. Decodes at the track's own rate and resamples here, since
+    /// AVFoundation's rate converter dithers and would make every analysis of the same file slightly different.
     static func decodeMono(url: URL) async throws -> [Float] {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
@@ -276,26 +288,110 @@ public enum Diarizer {
             AVLinearPCMIsFloatKey: true,
             AVLinearPCMIsNonInterleaved: false,
             AVLinearPCMIsBigEndianKey: false,
-            AVSampleRateKey: decodeRate,
             AVNumberOfChannelsKey: 1,
         ])
         output.alwaysCopiesSampleData = false
         reader.add(output)
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read audio of \(url.lastPathComponent)") }
         let samples = try await runBlocking { _ -> [Float] in
+            var resampler: Resampler?
             var samples: [Float] = []
             while let buffer = output.copyNextSampleBuffer() {
                 guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+                if resampler == nil {
+                    let rate = CMSampleBufferGetFormatDescription(buffer).flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee.mSampleRate } ?? decodeRate
+                    resampler = Resampler(from: rate > 0 ? rate : decodeRate, to: decodeRate)
+                }
                 var length = 0
                 var ptr: UnsafeMutablePointer<CChar>?
                 guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
                 let n = length / MemoryLayout<Float>.size
-                ptr.withMemoryRebound(to: Float.self, capacity: n) { samples.append(contentsOf: UnsafeBufferPointer(start: $0, count: n)) }
+                ptr.withMemoryRebound(to: Float.self, capacity: n) { resampler!.push(UnsafeBufferPointer(start: $0, count: n), into: &samples) }
             }
             if reader.status == .failed { throw reader.error ?? EditError("Audio decode failed for \(url.lastPathComponent)") }
+            resampler?.finish(into: &samples)
             return samples
         }
         return samples
+    }
+}
+
+/// Windowed-sinc sample-rate conversion, the same for any split of the input into chunks.
+struct Resampler {
+    static let phases = 512
+    let step: Double
+    let half: Int
+    let kernels: [Float]
+    let passthrough: Bool
+    private var buffer: [Float]
+    /// Input index of `buffer[0]`.
+    private var offset: Int
+    private var produced = 0
+    private var received = 0
+
+    init(from inRate: Double, to outRate: Double) {
+        step = inRate / outRate
+        passthrough = abs(inRate - outRate) < 1e-6
+        let fc = 0.45 * min(1, outRate / inRate)
+        half = passthrough ? 1 : Int((6 / fc).rounded(.up))
+        let taps = 2 * half
+        var k = [Float](repeating: 0, count: (Self.phases + 1) * taps)
+        for p in 0...Self.phases {
+            let frac = Double(p) / Double(Self.phases)
+            var row = [Double](repeating: 0, count: taps)
+            for i in 0..<taps {
+                let x = Double(i - half + 1) - frac
+                let w = abs(x) >= Double(half) ? 0 : 0.42 + 0.5 * cos(.pi * x / Double(half)) + 0.08 * cos(2 * .pi * x / Double(half))
+                let arg = 2 * fc * x
+                row[i] = w * (abs(arg) < 1e-12 ? 1 : sin(.pi * arg) / (.pi * arg))
+            }
+            let sum = row.reduce(0, +)
+            for i in 0..<taps { k[p * taps + i] = Float(row[i] / sum) }
+        }
+        kernels = k
+        buffer = [Float](repeating: 0, count: half)
+        offset = -half
+    }
+
+    mutating func push(_ x: UnsafeBufferPointer<Float>, into out: inout [Float]) {
+        received += x.count
+        if passthrough { out.append(contentsOf: x); return }
+        buffer.append(contentsOf: x)
+        drain(into: &out, final: false)
+    }
+
+    mutating func finish(into out: inout [Float]) {
+        guard !passthrough else { return }
+        buffer.append(contentsOf: [Float](repeating: 0, count: half))
+        drain(into: &out, final: true)
+    }
+
+    private mutating func drain(into out: inout [Float], final: Bool) {
+        let taps = 2 * half
+        let total = Int((Double(received) / step).rounded(.down))
+        buffer.withUnsafeBufferPointer { b in
+            kernels.withUnsafeBufferPointer { k in
+                while true {
+                    if final && produced >= total { break }
+                    let t = Double(produced) * step
+                    var base = Int(t.rounded(.down))
+                    var p = Int(((t - Double(base)) * Double(Self.phases)).rounded())
+                    if p == Self.phases { base += 1; p = 0 }
+                    let first = base - half + 1 - offset
+                    guard first + taps <= b.count else { break }
+                    var v: Float = 0
+                    vDSP_dotpr(b.baseAddress! + first, 1, k.baseAddress! + p * taps, 1, &v, vDSP_Length(taps))
+                    out.append(v)
+                    produced += 1
+                }
+            }
+        }
+        let keep = Int((Double(produced) * step).rounded(.down)) - half + 1 - offset
+        if keep > 0 {
+            let drop = min(keep, buffer.count)
+            buffer.removeFirst(drop)
+            offset += drop
+        }
     }
 }
 

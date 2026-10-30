@@ -206,3 +206,24 @@ private func accuracy(_ result: SpeakerAnalysis, _ scene: Scene, speakers: Int) 
     let none = Diarizer.analyze(samples: [Float](repeating: 0, count: 16_000), sampleRate: rate, transcript: Transcript(mediaId: "m", locale: "en", words: []))
     #expect(none.speakers.isEmpty && none.emphasis.isEmpty)
 }
+
+@Test func resamplingKeepsSpeechBandAndIgnoresChunking() {
+    func resample(_ x: [Float], chunk: Int) -> [Float] {
+        var r = Resampler(from: 44_100, to: 16_000)
+        var out: [Float] = []
+        var i = 0
+        while i < x.count {
+            x[i..<min(x.count, i + chunk)].withUnsafeBufferPointer { r.push($0, into: &out) }
+            i += chunk
+        }
+        r.finish(into: &out)
+        return out
+    }
+    func rms(_ x: [Float]) -> Float { (x[200..<(x.count - 200)].map { $0 * $0 }.reduce(0, +) / Float(x.count - 400)).squareRoot() }
+    let speech = (0..<44_100).map { Float(sin(Double($0) * 2 * .pi * 1_000 / 44_100)) }
+    let above = (0..<44_100).map { Float(sin(Double($0) * 2 * .pi * 12_000 / 44_100)) }
+    let a = resample(speech, chunk: 4_096), b = resample(speech, chunk: 1_000)
+    #expect(a.count == 16_000 && a == b)
+    #expect(abs(rms(a) - 0.7071) < 0.01)
+    #expect(rms(resample(above, chunk: 4_096)) < 0.001)
+}
