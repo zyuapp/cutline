@@ -352,8 +352,13 @@ extension Toolbox {
     static func describePlan(_ plan: EffectPlan, effects: [Effect], owner: String) -> String {
         let order = effects.map(\.id).joined(separator: " → ").ifEmptyText("none")
         if plan.removed { return "\(owner): removed \(plan.effectId). Stack: \(order)." }
-        let type = effects.first { $0.id == plan.effectId }?.type ?? ""
-        let applied = plan.values.map { "\($0.0.split(separator: ".").last ?? "") \($0.1)" }
+        let effect = effects.first { $0.id == plan.effectId }
+        let type = effect?.type ?? ""
+        // Values as stored, after validation normalized them.
+        let applied = plan.values.map { v -> String in
+            let name = String(v.0.split(separator: ".").last ?? "")
+            return "\(name) \(effect?.params[name] ?? v.1)"
+        }
         return "\(owner): \(plan.created ? "added" : "updated") \(plan.effectId) (\(type))" + (applied.isEmpty ? "" : ": " + applied.joined(separator: ", ")) + ". Stack: \(order). Animate with param_set path fx.\(plan.effectId).<param>."
     }
 

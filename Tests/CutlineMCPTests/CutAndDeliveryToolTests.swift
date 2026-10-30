@@ -138,9 +138,13 @@ private func openProject(fps: Double = 25, _ body: (inout Project) -> Void = { _
     #expect(!bare.plainText.contains("Handles"), "\(bare.plainText)")
 
     // The tone never goes quiet, but the transcript has a 0.5 s pause between "there." and "Next".
+    try b.saveAudioAnalysis(AudioAnalysis(mediaId: "tone", levelRate: 10, levels: [Float](repeating: -14, count: 30), silences: [], silenceThresholdDb: -45, loudnessDb: -17))
     let level = await box.call("cut_silences", ["media_id": "tone", "by": "level", "min_pause": 0.4])
     #expect(level.isError, "\(level.plainText)")
-    let speech = await box.call("cut_silences", ["media_id": "tone", "min_pause": 0.4, "keep": 0.1])
+    // The tone fills that gap as loud as the words, so it isn't a pause unless include_music says to cut such gaps too.
+    let kept = await box.call("cut_silences", ["media_id": "tone", "min_pause": 0.4, "keep": 0.1])
+    #expect(!kept.isError && kept.plainText.contains("nothing cut; kept 1 gap between words") && kept.plainText.contains("not quiet"), "\(kept.plainText)")
+    let speech = await box.call("cut_silences", ["media_id": "tone", "min_pause": 0.4, "keep": 0.1, "include_music": true])
     #expect(!speech.isError && speech.plainText.contains("1 pauses ≥0.40s from gaps between transcribed words"), "\(speech.plainText)")
 }
 

@@ -168,10 +168,10 @@ public enum EffectCatalog {
         ]),
         EffectType(id: "color.wheels", category: "color", summary: "Full primary grade like Resolve's wheels: lift/gamma/gain/offset with per-channel RGB balance, white balance, contrast with pivot, shadows/highlights recovery and saturation. Every parameter is 0 when neutral; a wheel's color is its master plus _r/_g/_b, e.g. lift_b 0.03 lift_r -0.02 cools the blacks, gain_r 0.05 warms the whites. Order: white balance, offset, lift/gamma/gain, contrast, shadows/highlights, saturation", params: wheelSpecs),
         EffectType(id: "color.curves", category: "color", summary: "Tone curves for all channels and red, green, blue; points are \"x,y\" pairs 0…1 separated by spaces", params: [
-            ParamSpec("master", .text, .string(""), "All channels, e.g. \"0,0 0.25,0.2 0.75,0.82 1,1\" for an S-curve"),
-            ParamSpec("red", .text, .string(""), "Red channel curve"),
-            ParamSpec("green", .text, .string(""), "Green channel curve"),
-            ParamSpec("blue", .text, .string(""), "Blue channel curve, e.g. \"0,0.06 1,0.94\" lifts blue shadows"),
+            ParamSpec("master", .points(minimum: 0), .string(""), "All channels, e.g. \"0,0 0.25,0.2 0.75,0.82 1,1\" for an S-curve"),
+            ParamSpec("red", .points(minimum: 0), .string(""), "Red channel curve"),
+            ParamSpec("green", .points(minimum: 0), .string(""), "Green channel curve"),
+            ParamSpec("blue", .points(minimum: 0), .string(""), "Blue channel curve, e.g. \"0,0.06 1,0.94\" lifts blue shadows"),
         ]),
         EffectType(id: "color.hsl", category: "color", summary: "Shift the hue, saturation or lightness of one color range, such as making skies deeper or greens warmer; stack one per range", params: [
             ParamSpec("range", .choice(["reds", "oranges", "yellows", "greens", "aquas", "blues", "purples", "magentas"]), .string("blues"), "Which colors to change"),
@@ -180,11 +180,11 @@ public enum EffectCatalog {
             ParamSpec("lightness", .number, .number(0), min: -1, max: 1, "Darker or lighter"),
         ]),
         EffectType(id: "color.hue_curves", category: "color", summary: "Secondary curves like Resolve's: hue vs hue, hue vs saturation, hue vs luminance, luminance vs saturation and saturation vs saturation. Each is a point list \"x,y x,y\"; hue x is degrees (0 red, 30 orange, 60 yellow, 120 green, 180 aqua, 225 blue, 270 purple, 315 magenta) and wraps at 360, joined by a smooth periodic spline that never overshoots; one point alone is a bump that fades to neutral 60° either side. Grays are untouched, and saturation and luminance changes keep hue. Examples: greens less saturated hue_sat \"60,1 120,0.5 180,1\"; skin toward orange hue_hue \"0,0 20,6 45,0\"; darker deeper sky hue_lum \"225,0.8\" with hue_sat \"225,1.3\"; desaturate shadows lum_sat \"0,0.5 0.25,1 1,1\"; tame already-vivid colors sat_sat \"0,1 0.6,1 1,0.75\"", params: [
-            ParamSpec("hue_hue", .text, .string(""), "Hue shift in degrees (-180…180) by input hue, e.g. \"20,6\" pushes skin (≈20°) 6° toward orange"),
-            ParamSpec("hue_sat", .text, .string(""), "Saturation multiplier (0…4, 1 unchanged) by hue, e.g. \"120,0.5\" halves the greens"),
-            ParamSpec("hue_lum", .text, .string(""), "Brightness multiplier (0…4, 1 unchanged) by hue, e.g. \"225,0.8\" darkens blues"),
-            ParamSpec("lum_sat", .text, .string(""), "Saturation multiplier by luma 0…1, e.g. \"0,0.6 0.3,1 1,1\" pulls color out of the shadows"),
-            ParamSpec("sat_sat", .text, .string(""), "Saturation multiplier by input saturation 0…1, e.g. \"0,1.3 0.4,1 1,1\" lifts muted colors only"),
+            ParamSpec("hue_hue", .points(minimum: 0), .string(""), "Hue shift in degrees (-180…180) by input hue, e.g. \"20,6\" pushes skin (≈20°) 6° toward orange"),
+            ParamSpec("hue_sat", .points(minimum: 0), .string(""), "Saturation multiplier (0…4, 1 unchanged) by hue, e.g. \"120,0.5\" halves the greens"),
+            ParamSpec("hue_lum", .points(minimum: 0), .string(""), "Brightness multiplier (0…4, 1 unchanged) by hue, e.g. \"225,0.8\" darkens blues"),
+            ParamSpec("lum_sat", .points(minimum: 0), .string(""), "Saturation multiplier by luma 0…1, e.g. \"0,0.6 0.3,1 1,1\" pulls color out of the shadows"),
+            ParamSpec("sat_sat", .points(minimum: 0), .string(""), "Saturation multiplier by input saturation 0…1, e.g. \"0,1.3 0.4,1 1,1\" lifts muted colors only"),
         ]),
         EffectType(id: "color.hdr_zones", category: "color", summary: "HDR palette: exposure (stops) and saturation per luminance zone, like Resolve's HDR wheels. Zones are centered in cd/m² (black 0.1, dark 2, shadow 15, light 80 for skin and diffuse white, highlight 400, specular 1500) and blend with a smooth raised-cosine crossover in stops, so moving one zone never bands. Works on PQ and HLG canvases in absolute nits, and on SDR canvases with white at 100 cd/m². Examples: tame speculars specular_exposure -1; open the shadows shadow_exposure 0.5; less saturated highlights highlight_saturation -0.3. Measure with timeline_measure picture/scopes, which report nits on HDR timelines", params: HDRZones.names.flatMap { z in
             let i = HDRZones.names.firstIndex(of: z)!
@@ -275,7 +275,7 @@ public enum EffectCatalog {
         ]),
         EffectType(id: "mask.ellipse", category: "mask", summary: "Keeps an ellipse; e.g. a spotlight or a circular face cam", params: shape),
         EffectType(id: "mask.shape", category: "mask", summary: "Keeps a freeform shape drawn as points (a roto or pen mask); animate points to follow movement, with the same number of points in every key", params: [
-            ParamSpec("points", .text, .string("0.3,0.3 0.7,0.3 0.7,0.7 0.3,0.7"), animatable: true, "Corners as \"x,y\" pairs, fractions of the clip's frame from the top left"),
+            ParamSpec("points", .points(minimum: 3), .string("0.3,0.3 0.7,0.3 0.7,0.7 0.3,0.7"), animatable: true, "Corners as \"x,y\" pairs, fractions of the clip's frame from the top left"),
             ParamSpec("smooth", .bool, .bool(false), "Curve through the points instead of straight edges"),
             ParamSpec("feather", .number, .number(0.005), min: 0, max: 0.3, unit: "of frame height", "Soft edge"),
             ParamSpec("invert", .bool, .bool(false), "Keep everything outside the shape"),

@@ -267,15 +267,28 @@ extension Project {
     /// Changes the canvas shape and pans each media clip to keep its subject in frame.
     /// `subject` gives subject centers over source time (fractions of the source frame).
     public mutating func reframe(width: Int, height: Int, subject: (Clip) -> [(t: Seconds, x: Double, y: Double)]) throws -> String {
+        let oldAspect = Double(canvas.width) / Double(max(1, canvas.height))
         canvas.width = width
         canvas.height = height
         let canvasAspect = Double(width) / Double(height)
-        var followed = 0, centered = 0
+        var followed = 0, centered = 0, recentered = 0
         for ti in tracks.indices where tracks[ti].kind == .video {
             for ci in tracks[ti].clips.indices where tracks[ti].clips[ci].kind == .media {
                 var c = tracks[ti].clips[ci]
                 guard let m = c.mediaId.flatMap({ mediaAsset($0) }), m.hasVideo, m.height > 0 else { continue }
                 let srcAspect = Double(m.width) / Double(m.height)
+                // Vertical offsets keep the same subject point and stay within the overflow, so the picture covers the frame.
+                let wasH = (c.transform.fit == .fill ? max(1, oldAspect / srcAspect) : min(1, oldAspect / srcAspect)) * c.transform.scale
+                let ph = max(1, canvasAspect / srcAspect) * c.transform.scale
+                let roomY = max(0, (ph - 1) / 2)
+                func fitY(_ v: Double) -> Double { min(roomY, max(-roomY, wasH > 0 ? v * ph / wasH : v)) }
+                let beforeY = c.transform.y, beforeCurve = c.anim["transform.y"]
+                c.transform.y = fitY(c.transform.y)
+                if var curve = c.anim["transform.y"] {
+                    for k in curve.keys.indices { if let v = curve.keys[k].v.number { curve.keys[k].v = .number(fitY(v)) } }
+                    c.anim["transform.y"] = curve
+                }
+                if abs(beforeY - c.transform.y) > 1e-6 || beforeCurve != c.anim["transform.y"] { recentered += 1 }
                 c.transform.fit = .fill
                 c.anim["transform.x"] = nil
                 let pw = max(1, srcAspect / canvasAspect) * c.transform.scale
@@ -310,7 +323,7 @@ extension Project {
                 tracks[ti].clips[ci] = c
             }
         }
-        return "Canvas is now \(width)×\(height). \(followed) clip(s) pan to follow their subject, \(centered) centered."
+        return "Canvas is now \(width)×\(height). \(followed) clip(s) pan to follow their subject, \(centered) centered." + (recentered > 0 ? " \(recentered) clip(s) had their vertical offset refit so their pictures still cover the frame." : "")
     }
 }
 

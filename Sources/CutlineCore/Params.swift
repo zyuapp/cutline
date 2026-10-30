@@ -207,6 +207,8 @@ public enum ParamKind: Codable, Equatable, Hashable, Sendable {
     case bool
     case choice([String])
     case text
+    /// "x,y x,y …" pairs separated by spaces, at least `minimum` of them; "" when `minimum` is 0 means unset.
+    case points(minimum: Int)
 
     public var label: String {
         switch self {
@@ -215,7 +217,42 @@ public enum ParamKind: Codable, Equatable, Hashable, Sendable {
         case .bool: return "bool"
         case .choice(let v): return v.joined(separator: "|")
         case .text: return "text"
+        case .points: return "points \"x,y x,y …\""
         }
+    }
+
+    /// `v` as an "x,y x,y …" list: text with spaces or commas between pairs, or a JSON list of [x, y] pairs,
+    /// {x, y} objects or flat numbers. Nil when it isn't one.
+    static func pointList(_ v: ParamValue) -> [(Double, Double)]? {
+        guard let s = v.string?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        if s.isEmpty { return [] }
+        if s.hasPrefix("["), let data = s.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data) as? [Any] {
+            func num(_ a: Any?) -> Double? { (a as? NSNumber).map(\.doubleValue) ?? (a as? String).flatMap(Double.init) }
+            if !json.isEmpty, json.allSatisfy({ $0 is NSNumber }), json.count % 2 == 0 {
+                let ns = json.compactMap { num($0) }
+                return stride(from: 0, to: ns.count, by: 2).map { (ns[$0], ns[$0 + 1]) }
+            }
+            var out: [(Double, Double)] = []
+            for item in json {
+                if let pair = item as? [Any], pair.count == 2, let x = num(pair[0]), let y = num(pair[1]) { out.append((x, y)) }
+                else if let o = item as? [String: Any], let x = num(o["x"]), let y = num(o["y"]) { out.append((x, y)) }
+                else { return nil }
+            }
+            return out
+        }
+        let tidy = s.replacingOccurrences(of: #"\s*,\s*"#, with: ",", options: .regularExpression)
+        var out: [(Double, Double)] = []
+        for pair in tidy.split(whereSeparator: { $0.isWhitespace || $0 == ";" }) {
+            let xy = pair.split(separator: ",")
+            guard xy.count == 2, let x = Double(xy[0]), let y = Double(xy[1]), x.isFinite, y.isFinite else { return nil }
+            out.append((x, y))
+        }
+        return out
+    }
+
+    static func pointText(_ points: [(Double, Double)]) -> String {
+        func n(_ d: Double) -> String { d.rounded() == d && abs(d) < 1e9 ? String(Int(d)) : String(d) }
+        return points.map { "\(n($0.0)),\(n($0.1))" }.joined(separator: " ")
     }
 }
 
@@ -263,8 +300,28 @@ public struct ParamSpec: Equatable, Hashable, Sendable {
             return .string(s)
         case .text:
             guard let s = v.string else { throw EditError("\(path) needs text, got \(v)") }
+            if ParamSpec.isJSONList(s), !(defaultValue.string.map(ParamSpec.isJSONList) ?? false) {
+                throw EditError("\(path) needs text, got a list \(s.prefix(60))")
+            }
             return .string(s)
+        case .points(let minimum):
+            let example = "\"0.1,0.1 0.9,0.1 0.5,0.9\""
+            guard let list = ParamKind.pointList(v) else {
+                throw EditError("\(path) needs points as \"x,y x,y …\" (pairs separated by spaces, e.g. \(example)) or a list of [x, y] pairs; got \(v)")
+            }
+            if list.isEmpty, minimum == 0 { return .string("") }
+            guard list.count >= Swift.max(1, minimum) else {
+                throw EditError("\(path) needs at least \(Swift.max(1, minimum)) point\(minimum > 1 ? "s" : "") as \"x,y x,y …\", e.g. \(example); got \(list.count)")
+            }
+            return .string(ParamKind.pointText(list))
         }
+    }
+
+    static func isJSONList(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = t.first, first == "[" || first == "{", let data = t.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data) else { return false }
+        if let list = json as? [Any] { return !list.isEmpty && list.allSatisfy { $0 is [Any] || $0 is [String: Any] } }
+        return json is [String: Any]
     }
 
     public var line: String {

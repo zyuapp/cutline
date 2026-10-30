@@ -1806,8 +1806,29 @@ enum EDLTimecode {
 }
 
 extension Importer {
-    /// The longest split-edit lead or lag an EDL importer folds into a picture event.
+    /// The longest split-edit lead or lag an importer folds into a picture clip; sound further apart stays a clip of its own.
     public static let maxSplit: Seconds = 5
+
+    /// Links each sound clip left on an audio track to the silent picture clip of the same media it plays in sync
+    /// with, so they move together like a detached sound.
+    static func linkSeparateSound(_ tracks: inout [Track], half: Seconds) {
+        for t in tracks.indices where tracks[t].kind == .audio {
+            for i in tracks[t].clips.indices where tracks[t].clips[i].kind == .media && tracks[t].clips[i].link == nil {
+                let a = tracks[t].clips[i]
+                for v in tracks.indices where tracks[v].kind == .video {
+                    guard let j = tracks[v].clips.firstIndex(where: { c in
+                        c.kind == .media && c.mediaId == a.mediaId && c.volume <= 1e-6 && abs(c.speed - a.speed) < 1e-6 && c.reverse == a.reverse
+                            && a.start < c.end - half && c.start < a.end - half
+                            && abs((a.sourceIn - a.start * a.speed) - (c.sourceIn - c.start * c.speed)) < half * max(a.speed, 1)
+                    }) else { continue }
+                    let link = tracks[v].clips[j].link ?? IDs.make("lnk")
+                    tracks[v].clips[j].link = link
+                    tracks[t].clips[i].link = link
+                    break
+                }
+            }
+        }
+    }
 
     /// An EDL of `project`'s media read into a copy of it: its timeline is replaced by the EDL's, media it
     /// names are matched to the project's (see `edl(_:fps:media:mediaResolver:)`), and sources it doesn't
@@ -2370,7 +2391,8 @@ extension Project {
     /// CMX 3600 EDL of the main video track and the first two audio tracks, recorded from the canvas's start
     /// timecode in canvas frames (drop frame as `Canvas.isDropFrame` says). Sequence clips are listed as the
     /// events they play (`flattenedSequences`). The main track's production sound rides with its picture as
-    /// AA/V when picture and sound cut and dissolve together; otherwise (split edits, picture-only dissolves,
+    /// AA/V (A/V for a one-channel source, A/V or A2/V when routed to one channel) when picture and sound cut and
+    /// dissolve together; otherwise (split edits, picture-only dissolves,
     /// audio-only crossfades) the picture is a V event and the sound an AA event over its audio range. Audio
     /// tracks are A and A2, or channels 3 and 4 (NONE with an AUD line) when there is production sound; a clip
     /// routed to source channels (audio.channels ch1, ch2, ch1+ch2, ch3, ch4, ch3+ch4) goes on those channels
@@ -2584,31 +2606,6 @@ extension Project {
                 return track.kind == .video || m.hasAudio
             }.sorted { $0.start < $1.start }
         }
-        let pictures = video.map(listed) ?? []
-        let production = video.map { v in pictures.filter { sounds($0, v) } } ?? []
-        // Sound rides on its picture's events (AA/V) only where both cut and dissolve together.
-        let heard = Set(production.map(\.id))
-        var together = Set(production.filter { !split($0) }.map(\.id))
-        var settled = false
-        while !settled {
-            settled = true
-            for tr in transitions {
-                let ends = [tr.from, tr.to].compactMap { $0 }.filter(heard.contains)
-                guard ends.contains(where: together.contains), tr.part != .both || !ends.allSatisfy(together.contains) else { continue }
-                together.subtract(ends)
-                settled = false
-            }
-        }
-
-        // Picture; sound riding on it takes channels 1 and 2.
-        var busy: [Int: [(Int, Int)]] = [:]
-        for e in events(pictures, sound: false, joins: { $0.hasVideo }) {
-            let both = together.contains(e.clip.id)
-            if both { for ch in [1, 2] { busy[ch, default: []].append((e.r0, e.end)) } }
-            write(e, both ? "AA/V" : "V", aud: [], picture: true)
-        }
-        flushMarkers(before: nil)
-
         // Sound, on lanes of channels: AA (1 and 2), A (1), A2 (2), and 3 and 4 (NONE with an AUD line).
         struct Lane: Equatable { var label: String; var aud: [Int]; var channels: [Int] }
         let aa = Lane(label: "AA", aud: [], channels: [1, 2]), a1 = Lane(label: "A", aud: [], channels: [1]), a2 = Lane(label: "A2", aud: [], channels: [2])
@@ -2627,9 +2624,44 @@ extension Project {
             default: return nil
             }
         }
+        /// Whether a clip's unrouted sound is one channel: its source has a single channel.
+        func mono(_ c: Clip) -> Bool { c.channels == nil && c.mediaId.flatMap(mediaAsset)?.audioChannels?.count == 1 }
+        /// The channels production sound takes riding on its picture event (A/V, A2/V or AA/V); nil when it is on
+        /// channels a picture event can't carry.
+        func riding(_ c: Clip) -> Lane? {
+            if let r = routed(c) { return r.aud.isEmpty ? r : nil }
+            return mono(c) ? a1 : aa
+        }
+        let pictures = video.map(listed) ?? []
+        let production = video.map { v in pictures.filter { sounds($0, v) } } ?? []
+        // Sound rides on its picture's events (A/V, AA/V) only where both cut and dissolve together.
+        let heard = Set(production.map(\.id))
+        var together = Set(production.filter { !split($0) && riding($0) != nil }.map(\.id))
+        var settled = false
+        while !settled {
+            settled = true
+            for tr in transitions {
+                let ends = [tr.from, tr.to].compactMap { $0 }.filter(heard.contains)
+                guard ends.contains(where: together.contains), tr.part != .both || !ends.allSatisfy(together.contains) else { continue }
+                together.subtract(ends)
+                settled = false
+            }
+        }
+
+        // Picture; sound riding on it takes its channels (1 and 2 for stereo, 1 for a mono source).
+        var busy: [Int: [(Int, Int)]] = [:]
+        for e in events(pictures, sound: false, joins: { $0.hasVideo }) {
+            let ride = together.contains(e.clip.id) ? riding(e.clip) : nil
+            if let ride { for ch in ride.channels { busy[ch, default: []].append((e.r0, e.end)) } }
+            write(e, ride.map { $0.label + "/V" } ?? "V", aud: [], picture: true)
+        }
+        flushMarkers(before: nil)
+
         /// A chain's lane: the one its clips are all routed to, else `fallback`.
         func lane(_ chain: [Event], _ fallback: Lane) -> Lane {
-            guard let first = chain.first.flatMap({ routed($0.clip) }), chain.allSatisfy({ routed($0.clip) == first }) else { return fallback }
+            guard let first = chain.first.flatMap({ routed($0.clip) }), chain.allSatisfy({ routed($0.clip) == first }) else {
+                return fallback == aa && chain.allSatisfy({ mono($0.clip) }) ? a1 : fallback
+            }
             return first
         }
         let audioTracks = Array(tracks.filter { $0.kind == .audio }.prefix(2))
@@ -2889,6 +2921,7 @@ final class XMEMLReader {
                             && abs(c.speed - a.speed) < 1e-6 && !c.reverse && !a.reverse
                             && a.start < c.end + half && c.start < a.end + half
                             && abs((a.sourceIn - a.start * a.speed) - (c.sourceIn - c.start * c.speed)) < half * max(a.speed, 1)
+                            && abs(c.start - a.start) <= Importer.maxSplit + half && abs(a.end - c.end) <= Importer.maxSplit + half
                     }) else { continue }
                     hear(a, in: &tracks[v].clips[i], split: true)
                     heard.insert(tracks[v].clips[i].id)
@@ -2954,6 +2987,7 @@ final class XMEMLReader {
         for t in tracks.indices {
             if tracks[t].kind == .video { v += 1; tracks[t].id = "V\(v)" } else { a += 1; tracks[t].id = "A\(a)" }
         }
+        Importer.linkSeparateSound(&tracks, half: half)
         return (tracks, Importer.foldTransitions(transitions, soundOf: soundOf, separate: heard, frame: 1 / fps))
     }
 

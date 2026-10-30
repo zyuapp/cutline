@@ -109,13 +109,13 @@ extension Toolbox {
             "spans[].scale": "", "spans[].text": "", "spans[].to": "", "spans[].underline": "", "spans[].weight": "",
             "set": "Initial parameters by path", "subtitles": ".srt/.vtt to import as titles", "offset": "Seconds added to subtitle times",
         ]),
-        "clip_update": ToolBrief(text: "Move, trim, retime, rename, relink, replace media or retitle a clip. Looks and levels go through param_set.", args: [
+        "clip_update": ToolBrief(text: "Move, trim, retime, rename, relink, replace media, retitle or detach_audio a clip. Looks and levels: param_set.", args: [
             "clip_id": "", "start": "", "track": "Move here (overwrites)", "duration": "Trims the tail", "end": "Trims the tail",
             "source_in": "Trims the head; start stays", "source_out": "", "speed": "Keeps the source range",
             "media_id": "Replace edit: other media, same place and length", "text": "New title words", "name": "",
             "ripple": "Shift later clips on the track", "link": "Clips that move together with it", "unlink": "",
             "allow_stretch": "Allow audio below 0.25×",
-        ]),
+        ], hide: ["detach_audio", "attach_audio", "audio_track"]),
         "clip_split": ToolBrief(text: "Split one clip, or every clip under a time, at a timeline time.", args: [
             "at": "", "clip_id": "", "track_ids": "",
         ]),
@@ -132,7 +132,7 @@ extension Toolbox {
         ]),
         "cut_silences": ToolBrief(text: "Remove pauses over min_pause (keeping `keep`) and filler words, rippling all tracks.", args: [
             "media_id": "Default every transcribed media", "min_pause": "Default 0.5", "keep": "Default 0.2", "fillers": "Default true", "by": "speech (word gaps, default with a transcript) or level",
-        ]),
+        ], hide: ["include_music"]),
         "track_add": ToolBrief(text: "Add a track; later video tracks draw on top.", args: ["kind": "", "name": "", "position": "Index from the bottom"]),
         "track_update": ToolBrief(text: "Rename, mute, hide, set volume, role, bus output or sends of, or remove a track.", args: [
             "track": "", "name": "", "muted": "", "hidden": "", "remove": "", "volume": "0–2", "role": "dialogue, music, effects or custom (stems, captions)",
@@ -213,7 +213,7 @@ extension Toolbox {
             "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml, aaf (+ .notes.txt)", "aaf_handles": "Default 2 s", "render_graphics": "Bake generators", "bake_luts": "Grades as .cube", "trim": "For archive: used parts only",
             "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported after the base, then undone", "base": "With variants: render this export too, default true",
             "sdr_from_hdr": "true or {method, target_nits}",
-        ]),
+        ], hide: ["all_timelines"]),
         "timeline_measure": ToolBrief(text: "Measure the render: sound (LUFS, peaks), picture (exposure, cast, flashes; nits if HDR), text, scopes, compare (shot continuity).", args: [
             "what": "sound, picture, text, scopes, compare; default the first three", "start": "", "end": "", "at": "For scopes",
             "tracks": "Each track's sound too", "platform": "Text against its UI-free area", "reference": "For compare: clip id or time",

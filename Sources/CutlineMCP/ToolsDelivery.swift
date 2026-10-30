@@ -74,9 +74,15 @@ extension Toolbox {
             parts.append((n == 1 ? "ch\(ch)" : "ch\(ch)-\(ch + n - 1)") + " \(r.spec.name) (\(r.spec.layout.title)) \(level(r))")
             ch += n
         }
+        // XDCAM HD422 always carries eight mono channels; the ones the layout leaves free are silent.
+        let padded = options.preset == .xdcam_hd422 ? max(0, 9 - ch) : 0
+        if padded > 0 {
+            for k in ch...8 { sheet.append("\(k)\tsilent\t-\tMono\tsilent") }
+            parts.append((padded == 1 ? "ch8" : "ch\(ch)-8") + " silent (XDCAM always carries 8)")
+        }
         let sheetURL = base.appendingPathExtension("tracks.txt")
         try sheet.joined(separator: "\n").appending("\n").write(to: sheetURL, atomically: true, encoding: .utf8)
-        let packing = mxf ? "\(ch - 1) mono MXF tracks" : options.audioPacking == .channels && tracks.count > 1 ? "one \(ch - 1)-channel track" : "\(tracks.count) named tracks"
+        let packing = mxf ? "\(ch - 1 + padded) mono MXF tracks" : options.audioPacking == .channels && tracks.count > 1 ? "one \(ch - 1)-channel track" : "\(tracks.count) named tracks"
         var lines = ["Audio tracks (\(packing)): " + parts.joined(separator: ", ") + "; channel sheet \(sheetURL.lastPathComponent)"]
         if tracks.contains(where: { $0.spec.content != .mix && $0.spec.content.isProgram }) { lines.append("Stems and M&E are pre-master (no master effects or loudness conform), so they sum to the unprocessed mix.") }
         return lines

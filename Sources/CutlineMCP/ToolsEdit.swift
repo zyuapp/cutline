@@ -226,7 +226,7 @@ extension Toolbox {
             return "Added text \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))" + spec.spanWarnings.map { "\nWarning: " + $0 }.joined()
         })
 
-        addEdit(EditTool(name: "clip_update", description: "Change a clip's timing or place: move it (start, track), trim it (source_in/source_out keep the start; duration or end trim the tail), change speed (keeps the source range), rename it, or change a title's words. Appearance, audio levels and animation go through param_set and effect_add. If the new end collides with the next clip, pass ripple=true to shift later clips on that track.", schema: Schema.object([
+        addEdit(EditTool(name: "clip_update", description: "Change a clip's timing or place: move it (start, track), trim it (source_in/source_out keep the start; duration or end trim the tail), change speed (keeps the source range), rename it, or change a title's words. Appearance, audio levels and animation go through param_set and effect_add. If the new end collides with the next clip, pass ripple=true to shift later clips on that track; a speed change ripples by default when the next clip butts against it (ripple:false keeps the gap). detach_audio moves its sound to a linked audio clip; attach_audio folds it back.", schema: Schema.object([
             "clip_id": Schema.string("Clip id"),
             "start": Schema.time("New timeline start (seconds or anchor)"),
             "end": Schema.time("New timeline end; trims the tail"),
@@ -238,13 +238,29 @@ extension Toolbox {
             "track": Schema.string("Move to this track (overwrites what is there)"),
             "name": Schema.string("Label"),
             "text": Schema.string("New words for a title clip"),
-            "ripple": Schema.bool("Shift later clips on the track by the change in end time, default false"),
+            "ripple": Schema.bool("Shift later clips on the track by the change in end time; default false, except for a speed change of a clip the next one butts against"),
             "media_id": Schema.string("Replace edit: swap in other media at the same place and length (source_in picks where it starts)"),
             "link": Schema.strings("Link this clip with these clips so they move, split and delete together (e.g. picture and its separately recorded sound)"),
             "unlink": Schema.bool("Break this clip's link"),
+            "detach_audio": Schema.bool("Split a picture clip's sound off onto a linked clip on an audio track (audio_track, default a \"Sound of <track>\" track): its split lead/lag, channel routing, level and automation, fades and audio effects move with it and the picture goes silent; the two stay linked so they move together"),
+            "attach_audio": Schema.bool("Fold a detached sound clip back into its linked picture (pass either clip): it must play the same media in sync; where they start or end apart it becomes a split edit"),
+            "audio_track": Schema.string("With detach_audio: the audio track for the sound"),
         ], required: ["clip_id"]), label: { a, p in Toolbox.describeUpdate(a, p) }) { p, args in
             let id = try args.string("clip_id")
             guard var c = p.clip(id) else { throw EditError("No clip \(id)") }
+            if args.bool("detach_audio", default: false) {
+                let had = (lead: c.audioLead, lag: c.audioLag)
+                let (sound, track) = try p.detachAudio(id, to: args.optString("audio_track"))
+                var line = "Detached \(id)'s sound to \(sound.id) on \(track) at \(fmt2(sound.start))–\(fmt2(sound.end))s (source \(fmt2(sound.sourceIn))–\(fmt2(sound.sourceOut)))"
+                if had.lead != 0 || had.lag != 0 { line += ", keeping its split edit (sound \(had.lead >= 0 ? "leads" : "starts") \(fmt2(abs(had.lead)))s, \(had.lag >= 0 ? "lags" : "ends") \(fmt2(abs(had.lag)))s)" }
+                return line + "; \(id) is now silent and linked with it. attach_audio:true folds it back."
+            }
+            if args.bool("attach_audio", default: false) {
+                let (pic, sound) = try p.attachAudio(id)
+                guard let now = p.clip(pic) else { throw EditError("No clip \(pic)") }
+                let split = now.audioLead != 0 || now.audioLag != 0
+                return "Folded \(sound)'s sound back into \(pic)" + (split ? " as a split edit (sound \(fmt2(now.audioRange.start))–\(fmt2(now.audioRange.end))s, picture \(fmt2(now.start))–\(fmt2(now.end))s)" : "") + "; \(sound) is removed."
+            }
             if args.bool("unlink", default: false) { c.link = nil }
             if let others = args.strings("link") {
                 let group = c.link ?? IDs.make("lnk")
@@ -302,9 +318,21 @@ extension Toolbox {
                 moved.duration = c.duration; moved.sourceIn = c.sourceIn; moved.speed = c.speed; moved.name = c.name; moved.text = c.text
                 c = moved
             }
-            try p.replaceClip(c, ripple: args.bool("ripple", default: false))
+            // A speed change keeps the clip butted to the next one on its track unless ripple:false.
+            var rippleNote = ""
+            var ripple = args.bool("ripple", default: false)
+            if args.has("speed"), let loc = p.locateClip(id), let old = p.clip(id), abs(old.end - c.end) > 1e-6 {
+                let butted = p.tracks[loc.track].clips.contains { $0.id != id && abs($0.start - old.end) < p.canvas.frameDuration / 2 }
+                if !args.has("ripple"), butted, !args.has("end"), !args.has("duration"), !args.has("track") {
+                    ripple = true
+                    rippleNote = ". Later clips on \(p.tracks[loc.track].id) moved \(fmt2(abs(c.end - old.end)))s \(c.end > old.end ? "later" : "earlier") to stay butted (ripple:false \(c.end > old.end ? "refuses the overlap instead" : "keeps the gap"))"
+                } else if !ripple, butted, c.end < old.end {
+                    rippleNote = ". This leaves a \(fmt2(old.end - c.end))s gap before the next clip; ripple:true closes it"
+                }
+            }
+            try p.replaceClip(c, ripple: ripple)
             let now = p.clip(id)!
-            return "Updated \(id): \(Describe.clip(now, p))" + (warning.map { ". " + $0 } ?? "")
+            return "Updated \(id): \(Describe.clip(now, p))" + (warning.map { ". " + $0 } ?? "") + rippleNote
         })
 
         addEdit(EditTool(name: "clip_split", description: "Split at a timeline time: one clip (clip_id) or every clip under that time on the given tracks (default all).", schema: Schema.object([
@@ -402,18 +430,20 @@ extension Toolbox {
                 + (butts == 0 ? "" : "\nContiguous takes of the same source share their edit (\(butts) edit(s)), so no frame plays twice")
         })
 
-        addEdit(EditTool(name: "cut_silences", description: "Tighten talking footage: remove pauses longer than min_pause (leaving `keep` seconds of breathing room) and, by default, filler words (um, uh…). Works in source time on every clip of the media, rippling all tracks. Check the result with timeline_transcript.", schema: Schema.object([
+        addEdit(EditTool(name: "cut_silences", description: "Tighten talking footage: remove pauses longer than min_pause (leaving `keep` seconds of breathing room) and, by default, filler words (um, uh…). Gaps between words under music or other sound, or as loud as the speech, are kept and reported (include_music:true cuts them). Works in source time on every clip of the media, rippling all tracks. Check the result with timeline_transcript.", schema: Schema.object([
             "media_id": Schema.string("Media id; default every transcribed media on the timeline"),
             "min_pause": Schema.time("Only pauses at least this long, default 0.5"),
             "keep": Schema.time("Pause length to leave behind, default 0.2"),
             "fillers": Schema.bool("Also remove filler words, default true"),
-            "by": Schema.string("Where pauses come from: speech (default with a transcript: gaps between transcribed words, so music or ambience under a pause doesn't hide it) or level (quiet audio from the level analysis; the fallback without a transcript)", values: ["speech", "level"]),
+            "by": Schema.string("Where pauses come from: speech (default with a transcript: gaps between transcribed words that are quiet and hold no music or other sound, from the level and sound analysis) or level (quiet audio from the level analysis; the fallback without a transcript)", values: ["speech", "level"]),
+            "include_music": Schema.bool("With by speech: also cut gaps under music, other sound (action, effects) or as loud as the speech, default false"),
         ]), label: { a, _ in a.bool("fillers", default: true) ? "Cut pauses and filler words" : "Cut pauses" }) { [unowned self] p, args in
             let b = try session.requireBundle()
             let minPause = try args.optTime("min_pause") ?? 0.5
             let keep = try args.optTime("keep") ?? 0.2
             let by = args.optString("by")
             let fillersToo = args.bool("fillers", default: true)
+            let includeMusic = args.bool("include_music", default: false)
             let ids = args.optString("media_id").map { [$0] } ?? Array(Set(p.tracks.flatMap(\.clips).compactMap(\.mediaId))).sorted()
             var report: [String] = []
             for id in ids {
@@ -421,8 +451,13 @@ extension Toolbox {
                 let speech = by == "speech" || (by == nil && t?.words.isEmpty == false)
                 if by == "speech", t == nil { throw EditError("\(id) has no transcript for by:\"speech\"; run media_analyze, or use by:\"level\"") }
                 let pauses: [TimeRange]
+                var keptNote: String?
                 if speech, let t {
-                    pauses = t.pauses(atLeast: minPause, skippingFillers: fillersToo)
+                    let gaps = t.pauses(atLeast: minPause, skippingFillers: fillersToo).filter { !p.timelineRanges(mediaId: id, sourceRanges: [$0]).isEmpty }
+                    let sorted = SpeechPauses(gaps: gaps, words: t.words, sounds: b.analysis(SoundEvents.self, id, "sounds")?.events, levels: b.audioAnalysis(id), includeMusic: includeMusic)
+                    pauses = sorted.cut
+                    keptNote = sorted.keptSummary.map { $0 + " (include_music:true cuts them too)" }
+                    if b.analysis(SoundEvents.self, id, "sounds") == nil, b.audioAnalysis(id) == nil, !gaps.isEmpty { keptNote = "no sound or level analysis, so every gap between words counted as a pause (media_analyze features:[\"sounds\"] tells music and action apart)" }
                 } else {
                     guard let audio = b.audioAnalysis(id) else { continue }
                     pauses = audio.silences.filter { $0.duration >= minPause }.map { TimeRange($0.start, $0.end) }
@@ -437,7 +472,9 @@ extension Toolbox {
                 let heard = pauses.filter { !p.timelineRanges(mediaId: id, sourceRanges: [$0]).isEmpty }.count
                 let removed = p.cutSourceRanges(mediaId: id, ranges: TimeRange.merged(ranges, tolerance: 0.05))
                 if !removed.isEmpty {
-                    report.append("\(id): \(removed.count) cuts, \(fmt2(removed.map(\.duration).reduce(0, +)))s removed (\(heard) pauses ≥\(fmt2(minPause))s from \(speech ? "gaps between transcribed words" : "audio level"), \(fillerCount) fillers)")
+                    report.append("\(id): \(removed.count) cuts, \(fmt2(removed.map(\.duration).reduce(0, +)))s removed (\(heard) pauses ≥\(fmt2(minPause))s from \(speech ? "gaps between transcribed words" : "audio level"), \(fillerCount) fillers)" + (keptNote.map { "; " + $0 } ?? ""))
+                } else if let keptNote {
+                    report.append("\(id): nothing cut; \(keptNote)")
                 }
             }
             guard !report.isEmpty else { throw EditError("Nothing to cut. Is the media analyzed and on the timeline?") }
@@ -720,6 +757,8 @@ extension Toolbox {
         let name = clipName(a.optString("clip_id"), p)
         let keys = Set(a.raw.keys).subtracting(["clip_id", "ripple", "dry_run"])
         if let m = a.optString("media_id") { return "Replace \(name) with \(p.mediaAsset(m)?.name ?? m)" }
+        if a.bool("detach_audio", default: false) { return "Detach sound of \(name)" }
+        if a.bool("attach_audio", default: false) { return "Attach sound of \(name)" }
         if keys == ["unlink"] { return "Unlink \(name)" }
         if keys == ["link"] { return "Link \(name) with \(a.strings("link")?.count ?? 0) clip(s)" }
         if keys.contains("speed") { return "Change speed of \(name)" }

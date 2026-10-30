@@ -65,8 +65,14 @@ extension Toolbox {
             ids += current.tracks[i].clips.filter { $0.kind == .media }.map(\.id)
         }
         if ids.isEmpty, let v1 = current.tracks.first(where: { $0.kind == .video }) { ids = v1.clips.filter { $0.kind == .media }.map(\.id) }
+        let named = ids
         var seen: Set<String> = [refId]
         ids = ids.filter { seen.insert($0).inserted }
+        if ids.isEmpty, !a.bool("include_reference_shots", default: false) {
+            let source = a.optString("track").map { "track \($0)" } ?? (a.strings("clips") != nil ? "clips" : current.tracks.first { $0.kind == .video }.map { "track \($0.id) (the default)" } ?? "the timeline")
+            let what = named.isEmpty ? "\(source) has no media clips" : "\(source) has only the reference clip \(refId)"
+            throw EditError("Nothing to match: \(what). Pass clips or a track holding other clips, or include_reference_shots:true to match the reference's other shots")
+        }
         let strength = a.optDouble("strength") ?? 0.8
         guard (0...1).contains(strength) else { throw EditError("strength is 0…1") }
         return MatchPlan(ref: ref, refAt: refAt, refTimes: refTimes, ids: ids, strength: strength, cap: a.bool("allow_large", default: false) ? nil : ColorMatch.maxLightnessShift)

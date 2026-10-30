@@ -200,11 +200,15 @@ public struct ConsolidatePlan: Equatable, Sendable {
 
     public var items: [Item]
     public var trim: Bool
+    /// With `trim`: whether the project's other timelines keep their media too; otherwise they're left out.
+    public var allTimelines: Bool
 
     /// Without `trim`, every media item is copied whole. With it, unused media is dropped, stills are
-    /// copied whole, and time-based media keeps the ranges clips read (entire nested clips) plus `handles`.
-    public init(_ project: Project, trim: Bool, handles: Seconds) {
+    /// copied whole, and time-based media keeps the ranges clips read (entire nested clips) plus `handles`: clips of
+    /// the current timeline and its sequences, and of the other timelines with `allTimelines`.
+    public init(_ project: Project, trim: Bool, handles: Seconds, allTimelines: Bool = false) {
         self.trim = trim
+        self.allTimelines = allTimelines
         var names = Set<String>()
         func unique(_ name: String) -> String {
             let url = URL(fileURLWithPath: name)
@@ -227,8 +231,8 @@ public struct ConsolidatePlan: Equatable, Sendable {
         }
         var raw: [String: [TimeRange]] = [:]
         var stills = Set<String>()
-        Self.wholeClipUses(project) { _, id, r in raw[id, default: []].append(r) }
-        for c in Self.mediaClips(project) {
+        Self.wholeClipUses(project, allTimelines: allTimelines) { _, id, r in raw[id, default: []].append(r) }
+        for c in Self.mediaClips(project, allTimelines: allTimelines) {
             if let id = c.mediaId, project.mediaAsset(id)?.isImage == true { stills.insert(id) }
         }
         for m in project.media {
@@ -247,15 +251,31 @@ public struct ConsolidatePlan: Equatable, Sendable {
 
     /// Whole media clips of the top level (keyed by clip id) and of every sequence ("<sequence id>:<clip id>"),
     /// each measured with the transitions of its own timeline.
-    static func wholeClipUses(_ p: Project, _ use: (String, String, TimeRange) -> Void) {
+    static func wholeClipUses(_ p: Project, allTimelines: Bool = false, _ use: (String, String, TimeRange) -> Void) {
         p.collectSourceUses(tracks: p.tracks, transitions: p.transitions, window: nil, clipWindows: false, depth: Project.maxNesting - 1, use)
         for seq in p.sequences {
             p.collectSourceUses(tracks: seq.tracks, transitions: seq.transitions, window: nil, clipWindows: false, depth: Project.maxNesting - 1, prefix: "\(seq.id):", use)
         }
+        guard allTimelines else { return }
+        for (i, t) in p.timelines.enumerated() {
+            p.collectSourceUses(tracks: t.tracks, transitions: t.transitions, window: nil, clipWindows: false, depth: Project.maxNesting - 1, prefix: "timeline\(i):", use)
+        }
     }
 
-    static func mediaClips(_ p: Project) -> [Clip] {
-        (p.tracks + p.sequences.flatMap(\.tracks)).flatMap(\.clips).filter { $0.kind == .media }
+    static func mediaClips(_ p: Project, allTimelines: Bool = false) -> [Clip] {
+        (p.tracks + p.sequences.flatMap(\.tracks) + (allTimelines ? p.timelines.flatMap(\.tracks) : [])).flatMap(\.clips).filter { $0.kind == .media }
+    }
+
+    /// Media of `project` the plan leaves out, each with why: "offline" (its file is missing), "only on other
+    /// timelines" (used there but not on the current one) or "unused".
+    public func skipped(_ project: Project) -> [(mediaId: String, reason: String)] {
+        let kept = Set(items.map(\.mediaId))
+        let elsewhere = Set(project.timelines.flatMap(\.tracks).flatMap(\.clips).compactMap(\.mediaId))
+        return project.media.filter { !kept.contains($0.id) }.map { m in
+            if !FileManager.default.fileExists(atPath: m.path) { return (m.id, "offline") }
+            if elsewhere.contains(m.id) { return (m.id, "only on other timelines") }
+            return (m.id, "unused")
+        }
     }
 
     /// The copy holding `range` of a media item's source, if any.
@@ -296,7 +316,7 @@ public struct ConsolidatePlan: Equatable, Sendable {
         }
         guard trim else { return p }
         var hulls: [String: TimeRange] = [:]
-        Self.wholeClipUses(project) { path, _, r in hulls[path] = r }
+        Self.wholeClipUses(project, allTimelines: allTimelines) { path, _, r in hulls[path] = r }
         func remap(_ c: inout Clip, key: String) {
             guard c.kind == .media, let id = c.mediaId, project.mediaAsset(id)?.isImage == false,
                   let hull = hulls[key], let it = item(for: id, containing: hull) else { return }
@@ -312,6 +332,15 @@ public struct ConsolidatePlan: Equatable, Sendable {
             for t in p.sequences[s].tracks.indices {
                 for c in p.sequences[s].tracks[t].clips.indices { remap(&p.sequences[s].tracks[t].clips[c], key: "\(sid):\(p.sequences[s].tracks[t].clips[c].id)") }
             }
+        }
+        if allTimelines {
+            for i in p.timelines.indices {
+                for t in p.timelines[i].tracks.indices {
+                    for c in p.timelines[i].tracks[t].clips.indices { remap(&p.timelines[i].tracks[t].clips[c], key: "timeline\(i):\(p.timelines[i].tracks[t].clips[c].id)") }
+                }
+            }
+        } else {
+            p.timelines = []
         }
         remapWords(&p.captions, transcripts: transcripts)
         for i in p.timelines.indices { remapWords(&p.timelines[i].captions, transcripts: transcripts) }

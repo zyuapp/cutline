@@ -58,6 +58,7 @@ extension Toolbox {
             "image_format": Schema.string("For stills and image sequences, default png", values: Delivery.StillFormat.allCases.map(\.rawValue)),
             "times": Schema.numbers("For stills: timeline times"),
             "trim": Schema.bool("For archive: copy only the used parts of each file plus 1 s handles"),
+            "all_timelines": Schema.bool("For archive with trim: also keep the project's other timelines and the media they use (default: the current timeline only)"),
             "variants": ["type": "array", "description": "Render several versions in one call: [{name, ops: [{tool, args}], and any export argument such as platform, path, start, end}]. The call's own arguments render the base version first (base:false skips it); then each variant applies its ops (any tools, e.g. recipe reframe, text edits, a different hook) to the base arguments, exports, and the project returns to how it was. The report lists every file written.", "items": ["type": "object"]],
             "base": Schema.bool("With variants: also render the call's own export (default true)"),
         ])) { [unowned self] args in
@@ -410,7 +411,7 @@ extension Toolbox {
         }
         let a = info.audio
         if let first = a.first {
-            lines.append("Audio: \(info.audioChannels) channel\(info.audioChannels == 1 ? "" : "s") in \(a.count) track\(a.count == 1 ? "" : "s"), \(first.codec) \(first.sampleRate / 1000) kHz \(first.bitsPerSample)-bit")
+            lines.append("Audio: \(info.audioChannels) channel\(info.audioChannels == 1 ? "" : "s") in \(a.count)\(info.audioChannels == a.count ? " mono" : "") track\(a.count == 1 ? "" : "s"), \(first.codec) \(first.sampleRate / 1000) kHz \(first.bitsPerSample)-bit")
         } else {
             lines.append("No audio")
         }
@@ -481,12 +482,16 @@ extension Toolbox {
             }
             o["ops"] = nil
             o["name"] = nil
+            // The variant's own path extension picks its container unless the variant names one.
+            let ownExtension = o["path"]?.string.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } ?? ""
             if o["path"] == nil {
                 let p = try session.project()
-                let ext = (o["preset"]?.string ?? base.optString("preset")).flatMap(ExportPreset.init(rawValue:))?.fileExtension ?? o["container"]?.string ?? base.optString("container") ?? "mp4"
+                let preset = (o["preset"]?.string ?? base.optString("preset")).flatMap(ExportPreset.init(rawValue:))
+                let container = o["container"]?.string ?? base.optString("container")
+                let ext = preset?.isProRes == true ? "mov" : container ?? preset?.fileExtension ?? "mp4"
                 o["path"] = .string(b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + "-" + Toolbox.safeName(name)).appendingPathExtension(ext).path)
             }
-            for (k, val) in shared where o[k] == nil { o[k] = val }
+            for (k, val) in shared where o[k] == nil && !(k == "container" && !ownExtension.isEmpty) { o[k] = val }
             // strict without a platform is checked above, on the variant's issues.
             if o["platform"] == nil { o["strict"] = nil }
             installResolvers(try? session.project())
@@ -555,7 +560,8 @@ extension Toolbox {
             try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
             let trim = args.bool("trim", default: false)
             let transcripts = b.transcripts(for: p)
-            let (collected, bytes, plan) = try await Consolidate.collect(p, to: media, trim: trim, transcripts: transcripts)
+            let allTimelines = args.bool("all_timelines", default: false)
+            let (collected, bytes, plan) = try await Consolidate.collect(p, to: media, trim: trim, allTimelines: allTimelines, transcripts: transcripts)
             let bundleURL = dir.appendingPathComponent(stem).appendingPathExtension("cutline")
             try? FileManager.default.removeItem(at: bundleURL)
             let archived = try ProjectBundle.create(at: bundleURL, project: collected)
@@ -588,7 +594,16 @@ extension Toolbox {
                 note = ", trimmed to the used ranges (plus 1 s handles). Media keep their ids; transcripts and analysis are re-timed to the copies (source time 0 is each copy's first frame, so word numbers count from the copy's first word)"
                 if !split.isEmpty { note += "; media used in separate ranges have one copy per range: " + split.joined(separator: ", ") }
             }
-            return .text("Archived to \(bundleURL.path) with \(collected.media.count) media files (\(String(format: "%.1f", Double(bytes) / 1_048_576)) MB)\(note).")
+            var lines = ["Archived to \(bundleURL.path) with \(collected.media.count) media files (\(String(format: "%.1f", Double(bytes) / 1_048_576)) MB) from \(Set(plan.items.map(\.mediaId)).count) of the project's \(p.media.count) media\(note)."]
+            let skipped = plan.skipped(p)
+            if !skipped.isEmpty {
+                let groups = Dictionary(grouping: skipped, by: \.reason).sorted { $0.key < $1.key }
+                lines.append("Not copied: " + groups.map { "\($0.value.count) \($0.key) (\($0.value.prefix(8).map(\.mediaId).joined(separator: ", "))\($0.value.count > 8 ? ", …" : ""))" }.joined(separator: "; ") + ".")
+            }
+            if trim, !allTimelines, !p.timelines.isEmpty {
+                lines.append("Timelines \(p.timelines.map(\.name).joined(separator: ", ")) aren't in the archive: trim keeps the current timeline (\(p.currentTimelineName)); all_timelines:true keeps every timeline and its media.")
+            }
+            return .text(lines.joined(separator: "\n"))
         default:
             throw EditError("deliver is video, audio, stems, stills, image_sequence, gif or archive")
         }

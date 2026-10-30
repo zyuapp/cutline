@@ -342,7 +342,8 @@ final class AAFReader {
                         guard let i = tracks[vt].clips.firstIndex(where: { c in
                             !heard.contains(c.id) && c.mediaId == a.mediaId && abs(c.speed - a.speed) < 1e-6
                                 && (exact ? abs(c.start - a.start) < half && abs(c.duration - a.duration) < half && abs(c.sourceIn - a.sourceIn) < half
-                                    : a.start < c.end + half && c.start < a.end + half && abs((a.sourceIn - a.start * a.speed) - (c.sourceIn - c.start * c.speed)) < half * max(a.speed, 1))
+                                    : a.start < c.end + half && c.start < a.end + half && abs((a.sourceIn - a.start * a.speed) - (c.sourceIn - c.start * c.speed)) < half * max(a.speed, 1)
+                                        && abs(c.start - a.start) <= Importer.maxSplit + half && abs(a.end - c.end) <= Importer.maxSplit + half)
                         }) else { continue }
                         hear(a, in: &tracks[vt].clips[i])
                         heard.insert(tracks[vt].clips[i].id)
@@ -354,6 +355,7 @@ final class AAFReader {
         }
         for t in tracks.indices where tracks[t].kind == .audio { tracks[t].clips.removeAll { folded.contains($0.id) } }
         tracks.removeAll { $0.kind == .audio && $0.clips.isEmpty }
+        Importer.linkSeparateSound(&tracks, half: half)
         for t in tracks.indices where tracks[t].kind == .video {
             for c in tracks[t].clips.indices where !heard.contains(tracks[t].clips[c].id) {
                 if tracks[t].clips[c].mediaId.flatMap(mediaAsset)?.hasAudio == true { tracks[t].clips[c].volume = 0 }

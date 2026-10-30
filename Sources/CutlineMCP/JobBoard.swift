@@ -119,6 +119,14 @@ final class JobBoard: @unchecked Sendable {
     func enqueue(_ mediaId: String, named features: [String], bundle: URL, language: String = "en-US", explicit: Bool = false, analyze: Bool? = nil, keys: [String]? = nil) -> String {
         if lock.withLock({ bundleURL }) != bundle { attach(bundle, run: false) }
         let id = mutate { list -> String in
+            // The same work already waiting (or, for automatic work, already running) isn't queued twice.
+            if let i = list.firstIndex(where: { j in
+                (j.status == "queued" || (j.status == "running" && !explicit)) && j.mediaId == mediaId && Set(j.features) == Set(features)
+                    && (j.language ?? "en-US") == language && j.analyze == analyze && j.keys == keys
+            }) {
+                if explicit { list[i].explicit = true }
+                return list[i].id
+            }
             let id = "job\((list.compactMap { Int($0.id.dropFirst(3)) }.max() ?? 0) + 1)"
             list.append(Job(id: id, mediaId: mediaId, features: features, status: "queued", progress: 0, language: language, explicit: explicit, analyze: analyze, keys: keys))
             return id

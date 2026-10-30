@@ -138,7 +138,7 @@ extension Toolbox {
             lines.append("  Loudness target \(target): " + drift + (range == nil ? "" : " (measured over the range; export measures what it delivers)"))
         }
         if tracks {
-            for track in p.tracks where track.clips.contains(where: { $0.kind == .media && ($0.mediaId.flatMap { p.mediaAsset($0) }?.hasAudio ?? false) }) && !track.muted {
+            for track in p.tracks where track.clips.contains(where: { $0.kind == .sequence || ($0.kind == .media && ($0.mediaId.flatMap { p.mediaAsset($0) }?.hasAudio ?? false)) }) && !track.muted {
                 var solo = p
                 for i in solo.tracks.indices where solo.tracks[i].id != track.id { solo.tracks[i].muted = true }
                 let r = try await LoudnessMeter.measure(try await session.timeline(for: solo), range: range)

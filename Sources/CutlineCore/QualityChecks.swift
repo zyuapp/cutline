@@ -56,6 +56,9 @@ extension Project {
             }
         }
         out += unseenClips()
+        out += uncoveredFrame()
+        out += doubledSound()
+        out += droppedWords(transcripts: transcripts, dialogue: dialogue)
         // Music that stops dead at the end of the edit.
         let speech = Set(timelineWords(transcripts: transcripts).map(\.clipId))
         for t in tracks where t.kind == .audio && !t.muted {

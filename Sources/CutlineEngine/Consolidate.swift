@@ -7,8 +7,8 @@ public enum Consolidate {
     /// Copies media into `dir` following `ConsolidatePlan`. Trimmed copies are passthrough exports
     /// (no re-encode) of each used range plus `handles`. Returns the project pointing at the copies,
     /// the bytes written and the plan, whose items re-time analysis to the copies.
-    public static func collect(_ project: Project, to dir: URL, trim: Bool, handles: Seconds = 1, transcripts: [String: Transcript] = [:], progress: (@Sendable (Double) -> Void)? = nil) async throws -> (project: Project, bytes: Int64, plan: ConsolidatePlan) {
-        let plan = ConsolidatePlan(project, trim: trim, handles: handles)
+    public static func collect(_ project: Project, to dir: URL, trim: Bool, handles: Seconds = 1, allTimelines: Bool = false, transcripts: [String: Transcript] = [:], progress: (@Sendable (Double) -> Void)? = nil) async throws -> (project: Project, bytes: Int64, plan: ConsolidatePlan) {
+        let plan = ConsolidatePlan(project, trim: trim, handles: handles, allTimelines: allTimelines)
         let fm = FileManager.default
         let missing = Set(plan.items.map(\.sourcePath).filter { !fm.fileExists(atPath: $0) })
         guard missing.isEmpty else { throw EditError("Missing media: \(missing.sorted().joined(separator: ", ")); relink it first") }
