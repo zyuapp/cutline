@@ -67,7 +67,7 @@ extension Toolbox {
             let b = try session.open(url)
             var msg = ""
             if args.bool("open_preview", default: false) { msg = try session.openPreview() + "\n" }
-            if !session.resumed.isEmpty { msg += "Resumed analysis an exited server left unfinished: " + session.resumed.joined(separator: ", ") + " (analysis_read wait:300 blocks until done)\n" }
+            if !session.resumed.isEmpty { msg += "Resumed analysis left unfinished, continuing in the background worker: " + session.resumed.joined(separator: ", ") + " (analysis_read wait:300 blocks until done)\n" }
             return .text(msg + Describe.project(try b.loadProject(), bundle: b))
         })
 

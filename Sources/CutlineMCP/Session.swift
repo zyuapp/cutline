@@ -18,10 +18,12 @@ final class Session {
     /// The last loudness measured for a mix, by master stem key, so status can show drift without re-measuring.
     var measuredMix: [String: LoudnessReport] = [:]
     let jobs = JobBoard()
-    /// Processed-picture renders queued on `jobs`, by request key.
-    let pictureJobs = KeySet()
-    /// Jobs the last `open` re-queued from an exited server.
+    /// Jobs left pending in the bundle when the last `open` found it, which a runner continues.
     var resumed: [String] = []
+
+    init() {
+        jobs.factory = { [weak self] in self?.work(for: $0) }
+    }
 
     static var stateURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Cutline", isDirectory: true)

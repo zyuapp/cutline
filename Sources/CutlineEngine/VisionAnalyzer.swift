@@ -12,14 +12,14 @@ public enum VisionAnalyzer {
     static let concurrency = 4
     static let genericLabels: Set<String> = ["structure", "outdoor", "indoor", "material", "textile", "liquid", "consumer electronics", "machine", "wood processed", "document"]
 
-    struct Sample {
+    struct Sample: Codable {
         var t: Seconds
         var faces: [NormRect]
         var bodies: [NormRect]
         var luma: [UInt8]
     }
 
-    struct Details {
+    struct Details: Codable {
         var labels: [String] = []
         var text: [String] = []
         var aesthetics: Double?
@@ -30,7 +30,26 @@ public enum VisionAnalyzer {
 
     /// Describes each shot (spans between `sceneCuts`, split to at most 8 s) and follows faces across samples.
     /// Still images yield one shot covering `duration`.
-    public static func analyze(url: URL, mediaId: String, sceneCuts: [Seconds], duration: Seconds, samplesPerSecond: Double = 2, progress: (@Sendable (Double) -> Void)? = nil) async throws -> ShotAnalysis {
+    /// Frames sampled and described so far, saved after every segment so a restarted analysis continues from them.
+    struct Partial: Codable {
+        struct Described: Codable {
+            var requested: Seconds
+            var sample: Sample
+            var details: Details
+        }
+
+        var key: String
+        var gridDone: [Seconds] = []
+        var samples: [Sample] = []
+        var described: [Described] = []
+    }
+
+    /// Frames per checkpointed segment.
+    static let segment = 40
+
+    /// With `checkpoint`, finished segments are saved there and a later call with the same arguments skips them;
+    /// the file is removed once the analysis completes.
+    public static func analyze(url: URL, mediaId: String, sceneCuts: [Seconds], duration: Seconds, samplesPerSecond: Double = 2, checkpoint: URL? = nil, progress: (@Sendable (Double) -> Void)? = nil) async throws -> ShotAnalysis {
         let rate = max(0.1, samplesPerSecond)
         if UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
             guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -49,7 +68,15 @@ public enum VisionAnalyzer {
         let last = max(0, duration - 0.05)
         let grid = Array(Set(stride(from: 0.5 / rate, to: duration, by: 1 / rate).map { min($0, last) })).sorted()
         let total = Double(grid.count + spans.count)
+        let key = "\(mediaId) \(duration) \(rate) \(cuts)"
+        var partial = checkpoint.flatMap { try? JSONDecoder().decode(Partial.self, from: Data(contentsOf: $0)) }.flatMap { $0.key == key ? $0 : nil } ?? Partial(key: key)
+        func save() {
+            guard let checkpoint else { return }
+            try? FileManager.default.createDirectory(at: checkpoint.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? JSONEncoder().encode(partial).write(to: checkpoint, options: .atomic)
+        }
         let counter = Counter()
+        for _ in 0..<(partial.gridDone.count + partial.described.count) { _ = counter.increment() }
 
         let gridGen = AVAssetImageGenerator(asset: asset)
         gridGen.appliesPreferredTrackTransform = true
@@ -57,11 +84,20 @@ public enum VisionAnalyzer {
         let tolerance = CMTime(seconds: min(0.5 / rate, 0.25), preferredTimescale: 600)
         gridGen.requestedTimeToleranceBefore = tolerance
         gridGen.requestedTimeToleranceAfter = tolerance
-        var samples = try await process(gridGen, times: grid) { img, t in
-            let s = detect(img, t: t)
-            progress?(counter.increment() / total)
-            return s
-        }.map(\.value)
+        let gridDone = Set(partial.gridDone)
+        let gridTodo = grid.filter { !gridDone.contains($0) }
+        for lo in stride(from: 0, to: gridTodo.count, by: segment) {
+            let times = Array(gridTodo[lo..<min(gridTodo.count, lo + segment)])
+            let found = try await process(gridGen, times: times) { img, t in
+                let s = detect(img, t: t)
+                progress?(counter.increment() / total)
+                return s
+            }
+            partial.samples += found.map(\.value)
+            partial.gridDone += times
+            save()
+        }
+        var samples = partial.samples
 
         let detailGen = AVAssetImageGenerator(asset: asset)
         detailGen.appliesPreferredTrackTransform = true
@@ -69,15 +105,22 @@ public enum VisionAnalyzer {
         detailGen.requestedTimeToleranceBefore = CMTime(value: 1, timescale: 60)
         detailGen.requestedTimeToleranceAfter = CMTime(value: 1, timescale: 60)
         let middles = spans.map { min(($0.start + $0.end) / 2, last) }
-        let described = try await process(detailGen, times: middles) { img, t in
-            let r = (detect(img, t: t), describe(img))
-            progress?(counter.increment() / total)
-            return r
+        let describedDone = Set(partial.described.map(\.requested))
+        let middlesTodo = Array(Set(middles.filter { !describedDone.contains($0) })).sorted()
+        for lo in stride(from: 0, to: middlesTodo.count, by: segment) {
+            let found = try await process(detailGen, times: Array(middlesTodo[lo..<min(middlesTodo.count, lo + segment)])) { img, t in
+                let r = (detect(img, t: t), describe(img))
+                progress?(counter.increment() / total)
+                return r
+            }
+            partial.described += found.map { Partial.Described(requested: $0.requested, sample: $0.value.0, details: $0.value.1) }
+            save()
         }
-        samples += described.map(\.value.0)
+        samples += partial.described.map(\.sample)
         samples.sort { $0.t < $1.t }
 
-        let details = Dictionary(described.map { ($0.requested, $0.value.1) }, uniquingKeysWith: { a, _ in a })
+        let details = Dictionary(partial.described.map { ($0.requested, $0.details) }, uniquingKeysWith: { a, _ in a })
+        if let checkpoint { try? FileManager.default.removeItem(at: checkpoint) }
         let shots = spans.enumerated().map { i, span in
             let inside = samples.filter { span.start <= $0.t && $0.t < span.end || (i == spans.count - 1 && $0.t >= span.end) }
             return makeShot(index: i, span: span, samples: inside, details: details[middles[i]] ?? Details())

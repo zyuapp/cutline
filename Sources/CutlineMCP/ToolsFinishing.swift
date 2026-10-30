@@ -2,16 +2,6 @@ import CutlineCore
 import CutlineEngine
 import Foundation
 
-/// Strings shared across threads.
-final class KeySet: @unchecked Sendable {
-    private let lock = NSLock()
-    private var keys: Set<String> = []
-
-    /// False when `key` was already there.
-    func insert(_ key: String) -> Bool { lock.withLock { keys.insert(key).inserted } }
-    func remove(_ key: String) { lock.withLock { _ = keys.remove(key) } }
-}
-
 extension Session {
     static let pictureJob = "picture"
 
@@ -19,8 +9,9 @@ extension Session {
     func queuePictures(_ p: Project) -> [String] {
         guard let b = bundle else { return [] }
         var lines: [String] = []
-        for r in ProcessedPicture.requests(p) where ProcessedPicture.cached(r) == nil && pictureJobs.insert(r.key) {
-            let id = jobs.enqueue(r.media.id, named: [Session.pictureJob], bundle: b.url, pictureWork([r]))
+        let queued = Set(jobs.active.filter { $0.features == [Session.pictureJob] }.flatMap { $0.keys ?? [] })
+        for r in ProcessedPicture.requests(p) where ProcessedPicture.cached(r) == nil && !queued.contains(r.key) {
+            let id = jobs.enqueue(r.media.id, named: [Session.pictureJob], bundle: b.url, keys: [r.key])
             lines.append("\(r.summary) on \(r.clipId) renders in the background (\(id), \(fmt1(r.range.duration))s of source); the preview plays the unprocessed picture until it is done, and timeline_frames and export wait for it.")
         }
         return lines
@@ -28,7 +19,6 @@ extension Session {
 
     func pictureWork(_ requests: [ProcessedPicture.Request]) -> JobBoard.Work {
         { [self] progress in
-            defer { requests.forEach { pictureJobs.remove($0.key) } }
             let began = Date()
             for (k, r) in requests.enumerated() {
                 let n = Double(requests.count)
@@ -37,14 +27,6 @@ extension Session {
             try? sendPreview(["action": "rebuild"])
             return requests.map { "\($0.summary) on \($0.clipId)" }.joined(separator: ", ") + " ready in \(fmt1(Date().timeIntervalSince(began)))s"
         }
-    }
-
-    /// Re-queues a processed-picture job an exited server left unfinished; false when nothing is left to render.
-    func resumePictures(_ job: JobBoard.Job, _ p: Project) -> Bool {
-        let pending = ProcessedPicture.requests(p).filter { $0.media.id == job.mediaId && ProcessedPicture.cached($0) == nil && pictureJobs.insert($0.key) }
-        guard !pending.isEmpty else { return false }
-        jobs.resume(job, pictureWork(pending))
-        return true
     }
 }
 

@@ -3,17 +3,21 @@ import CutlineEngine
 import Foundation
 
 extension Session {
-    func analyzePerception(_ media: MediaAsset, _ want: Set<Feature>, bundle b: ProjectBundle, heard: URL? = nil, progress: (@Sendable (Double) -> Void)?) async throws -> [String] {
+    func analyzePerception(_ media: MediaAsset, _ want: Set<Feature>, bundle b: ProjectBundle, heard: URL? = nil, progress: (@Sendable (Double) -> Void)?, finished: (Feature, [String]) -> Void = { _, _ in }) async throws -> [String] {
         var notes: [String] = []
         if want.contains(.proxy), media.hasVideo, !media.isImage, Proxies.cached(media, quality: .half) == nil,
            Proxies.shouldProxy(media, format: await Proxies.format(of: media)) {
             let made = try await Proxies.transcode(media, quality: .half) { p in progress?(0.65 * p) }
             try? sendPreview(["action": "rebuild"])
             notes.append("proxy: \(Int(made.size.width))×\(Int(made.size.height)) ProRes Proxy for smooth preview (\(String(format: "%.1f", made.realtimeFactor))× realtime); export uses the original")
+            finished(.proxy, [notes.last!])
+        } else if want.contains(.proxy) {
+            finished(.proxy, [])
         }
         if want.contains(.shots), media.hasVideo {
             let cuts = b.visualAnalysis(media.id)?.sceneCuts ?? []
-            let shots = try await VisionAnalyzer.analyze(url: media.url, mediaId: media.id, sceneCuts: cuts, duration: media.isImage ? 1 : media.duration) { p in progress?(0.65 + 0.25 * p) }
+            let checkpoint = b.cacheURL.appendingPathComponent("checkpoints", isDirectory: true).appendingPathComponent("\(media.id)-shots.json")
+            let shots = try await VisionAnalyzer.analyze(url: media.url, mediaId: media.id, sceneCuts: cuts, duration: media.isImage ? 1 : media.duration, checkpoint: checkpoint) { p in progress?(0.65 + 0.25 * p) }
             try b.saveAnalysis(shots, media.id, "shots")
             let people = shots.shots.map(\.people).max() ?? 0
             notes.append("shots: \(shots.shots.count) described (\(media.id).s0…s\(max(0, shots.shots.count - 1))), \(people == 0 ? "no people" : "up to \(people) people"), \(shots.faces.count) face tracks")
@@ -23,6 +27,7 @@ extension Session {
             try b.saveAnalysis(events, media.id, "sounds")
             let labels = Dictionary(grouping: events.events, by: \.label).map { ($0.key, $0.value.map(\.duration).reduce(0, +)) }.sorted { $0.1 > $1.1 }.prefix(5)
             notes.append("sounds: " + (labels.isEmpty ? "nothing distinct" : labels.map { "\($0.0) \(fmt1($0.1))s" }.joined(separator: ", ")))
+            finished(.sounds, [notes.last!])
         }
         if (want.contains(.shots) || want.contains(.speakers)), media.hasVideo, !media.isImage,
            let speakers = b.analysis(SpeakerAnalysis.self, media.id, "speakers"), let shots = b.analysis(ShotAnalysis.self, media.id, "shots"), !shots.faces.isEmpty,
@@ -40,6 +45,8 @@ extension Session {
                 notes.append("on-screen speakers: " + active.speakerFaces.sorted { $0.key < $1.key }.map { "\($0.key)=face\($0.value)" }.joined(separator: ", "))
             }
         }
+        // Shots count as done only with the active speakers that read them.
+        if want.contains(.shots), media.hasVideo { finished(.shots, notes.filter { $0.hasPrefix("shots:") || $0.hasPrefix("speakers with") || $0.hasPrefix("on-screen") }) }
         progress?(1)
         return notes
     }
@@ -62,9 +69,7 @@ extension Toolbox {
             if let id = args.optString("media_id"), let m = p.mediaAsset(id), let feature = Toolbox.feature(for: what),
                !Toolbox.hasAnalysis(feature, id, b), !session.jobs.active.contains(where: { $0.mediaId == id && $0.features.contains(feature.rawValue) }) {
                 if args.bool("start_missing", default: false) {
-                    let job = session.jobs.enqueue(id, [feature], bundle: b.url, explicit: true) { [session] progress in
-                        try await session.analyze(m, features: [feature], language: "en-US", explicit: true, progress: progress)
-                    }
+                    let job = session.jobs.enqueue(id, [feature], bundle: b.url, explicit: true)
                     lines.append("Started \(feature.rawValue) analysis of \(id) (\(job)).")
                 } else {
                     lines.append("\(feature.rawValue) analysis of \(id) was never run and isn't queued, so waiting won't help. Pass start_missing:true (with wait) or run media_analyze media_id:\"\(id)\" features:[\"\(feature.rawValue)\"].")

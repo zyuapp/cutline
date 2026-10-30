@@ -23,7 +23,7 @@ extension Toolbox {
             "color_space": "rec709 (default), p3, rec2020_hlg, rec2020_pq (HDR)",
             "drop_frame": "Drop-frame timecode in EDL/FCPXML/XML; default at 29.97/59.94",
             "timecode_start": "\"hh:mm:ss:ff\" of the first frame, default 01:00:00:00",
-            "width": "", "height": "", "fps": "Default 30; with no size/fps given the first video import sets both", "background": "Hex, default #000000", "name": "", "open_preview": "Default true",
+            "width": "", "height": "", "fps": "Default: first video's, else 30", "background": "Hex, default #000000", "name": "", "open_preview": "Default true",
             "edl_fps": "EDL frame rate, default 30",
         ]),
         "project_open": ToolBrief(text: "Open a .cutline project.", args: ["open_preview": "Default false", "path": ""]),
@@ -144,9 +144,9 @@ extension Toolbox {
         "param_set": ToolBrief(text: "Set or animate any parameter by path (transform.*, blend, fade.*, audio.volume/channels/pan_*, text.*, fx.<id>.<param>) or bind it to analysis. Keys [time, value, ease?] in timeline time or anchors; eases in catalog. project_status target=<clip> lists paths.", args: [
             "target": "Clip, track, \"V1/*\", \"group:<id>\", \"master\" or a list",
             "set": "{path: value}", "animate": "{path: [[time, value, ease?], …]}; replaces that path's keys",
-            "unset": "Paths to reset", "relative": "Key times from each clip's start", "subframe": "audio.fade_*/lead/lag off the frame grid",
+            "unset": "Paths to reset", "relative": "Key times from each clip's start",
             "bind": "{path: {source, map, smooth, offset, decay, keep_centered}}; sources beats, downbeats, audio:<media>, face:<media>[:n].x|y|size, track:<id>.x|y|width|height. catalog tool=param_set explains",
-        ]),
+        ], hide: ["subframe"]),
         "effect_add": ToolBrief(text: "Add, update (existing id), reorder or remove a picture or audio effect on clips, tracks, adjustment layers or the master. catalog lists types and parameters.", args: [
             "target": "Clip, track, \"V1/*\", \"group:<id>\", \"master\" or a list",
             "type": "Effect type (catalog)", "params": "", "id": "Default from type, e.g. vignette1", "index": "Stack position, 0 first",
@@ -158,11 +158,11 @@ extension Toolbox {
         "transition_set": ToolBrief(text: "Add, change or remove transitions on cuts (borrowing handles), or in/out over what lies beneath. Types in catalog; part sound/both crossfades audio.", args: [
             "cut": "\"clip_a|clip_b\" or a list", "track": "Every cut on this track (skips misfits)", "from": "Alone: transition out", "to": "Alone: transition in",
             "type": "Default dissolve", "duration": "Default 0.5", "align": "Default center", "ease": "", "part": "Default both",
-            "params": "e.g. {\"direction\": \"left\"}", "id": "Existing transition", "remove": "", "subframe": "Duration off the frame grid",
-        ]),
+            "params": "e.g. {\"direction\": \"left\"}", "id": "Existing transition", "remove": "",
+        ], hide: ["subframe"]),
         "trim": ToolBrief(text: "Trim an edit: plain, ripple, roll, slip or slide; part audio moves only the sound edge (J/L cut). Give to or by.", args: [
             "clip_id": "", "mode": "Default plain", "edge": "Default end", "to": "Timeline time or anchor for the edge",
-            "by": "Seconds, + later (source seconds for slip)", "part": "", "all_tracks": "Ripple every track", "subframe": "Audio edge off the frame grid",
+            "by": "Seconds, + later (source seconds for slip)", "part": "", "all_tracks": "Ripple every track", "subframe": "Off the frame grid",
         ]),
         "project_patch": ToolBrief(text: "Last resort: RFC 6902 JSON Patch on project.json (project_status detail=json), validated, one undo step.", args: [
             "ops": "[{op, path, value?, from?}]",

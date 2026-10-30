@@ -73,9 +73,7 @@ extension Toolbox {
             for id in ids {
                 guard let m = p.mediaAsset(id) else { throw EditError("No media \(id)") }
                 if args.bool("background", default: false) {
-                    let job = session.jobs.enqueue(m.id, requested, bundle: try session.requireBundle().url) { [session] progress in
-                        try await session.analyze(m, features: requested, language: language, explicit: explicit, progress: progress)
-                    }
+                    let job = session.jobs.enqueue(m.id, requested, bundle: try session.requireBundle().url, language: language, explicit: explicit)
                     lines.append("\(id): queued \(job)")
                 } else {
                     lines.append("\(id): " + (try await session.analyze(m, features: requested, language: language, explicit: explicit)).ifEmptyText("nothing to analyze"))

@@ -106,7 +106,7 @@ extension Toolbox {
         for m in imported {
             var line = "\(m.conformPath) → \(m.id): " + Toolbox.mediaFacts(m)
             if let info = deferred[m.id] {
-                let job = session.jobs.enqueue(m.id, named: [Session.transcodeJob], bundle: b.url, language: language, session.transcodeWork(m, info: info, language: language, analyze: analyze))
+                let job = session.jobs.enqueue(m.id, named: [Session.transcodeJob], bundle: b.url, language: language, analyze: analyze)
                 line += " — \(fmt1(m.duration))s of \(info.codecSummary) is transcoding to ProRes 422 HQ in the background (\(job)); don't use \(m.id) until analysis_read wait:600 shows it done"
                 lines.append(line)
                 continue
@@ -116,9 +116,7 @@ extension Toolbox {
                 let notes = try await session.analyze(m, features: now, language: language, explicit: false)
                 if !notes.isEmpty { line += " — " + notes }
                 if !later.isEmpty {
-                    let job = session.jobs.enqueue(m.id, later, bundle: b.url) { [session] progress in
-                        try await session.analyze(m, features: later, language: language, explicit: false, progress: progress)
-                    }
+                    let job = session.jobs.enqueue(m.id, later, bundle: b.url, language: language)
                     line += " — \(later.map(\.rawValue).joined(separator: " and ")) analyzing in the background (\(job))"
                 }
             }
@@ -176,11 +174,11 @@ extension Toolbox {
                         if let i = p.media.firstIndex(where: { $0.id == id }) { p.media[i] = Session.relinked(p.media[i], to: ready) }
                     }
                     notes.append("\(id): transcoded \(ready.transcoded ?? "")")
-                case .deferred(let placeholder, let info):
+                case .deferred(let placeholder, _):
                     try session.edit("Mark \(id) for transcoding") { p in
                         if let i = p.media.firstIndex(where: { $0.id == id }) { p.media[i].originalPath = placeholder.originalPath; p.media[i].transcoded = placeholder.transcoded }
                     }
-                    let job = session.jobs.enqueue(id, named: [Session.transcodeJob], bundle: b.url, session.transcodeWork(placeholder, info: info, language: "en-US", analyze: false))
+                    let job = session.jobs.enqueue(id, named: [Session.transcodeJob], bundle: b.url, analyze: false)
                     notes.append("\(id): transcoding in the background (\(job))")
                 }
             } catch {
