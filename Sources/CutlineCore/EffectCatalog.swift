@@ -20,17 +20,34 @@ public enum EffectCatalog {
         ParamSpec("limit_roundness", .number, .number(0), min: 0, max: 0.5, "Rounded rectangle corners"),
         ParamSpec("limit_feather", .number, .number(0.05), min: 0, max: 0.5, unit: "of frame height", "Soft edge of the window"),
         ParamSpec("limit_invert", .bool, .bool(false), "Apply outside the window, to everything but the qualified colors, or outside their intersection"),
-        ParamSpec("q_hue", .number, .number(30), min: 0, max: 360, unit: "degrees", animatable: false, "Qualifier hue center (0 red, 30 skin/orange, 120 green, 210 sky blue)"),
-        ParamSpec("q_hue_width", .number, .number(40), min: 1, max: 360, unit: "degrees", animatable: false, "Qualifier hue range"),
-        ParamSpec("q_sat_min", .number, .number(0.1), min: 0, max: 1, animatable: false, "Minimum saturation"),
-        ParamSpec("q_sat_max", .number, .number(1), min: 0, max: 1, animatable: false, "Maximum saturation"),
-        ParamSpec("q_luma_min", .number, .number(0), min: 0, max: 1, animatable: false, "Minimum lightness"),
-        ParamSpec("q_luma_max", .number, .number(1), min: 0, max: 1, animatable: false, "Maximum lightness"),
-        ParamSpec("q_softness", .number, .number(0.15), min: 0, max: 1, animatable: false, "Softness of the qualifier's edges"),
+        ParamSpec("q_preset", .choice(["none", "skin"]), .string("none"), "Starting ranges: skin covers red-orange hues of moderate saturation (any complexion) with matte cleanup; q_* parameters you set refine it. Pair with an ellipse window (ellipse+qualifier) or bind the window to a face for one person's skin. recipe qualify samples ranges from the picture instead"),
+        ParamSpec("q_hue", .number, .number(30), min: 0, max: 360, unit: "degrees", animatable: false, "Qualifier hue center, HSV hue of the display picture (0 red, 13 skin, 30 orange, 60 yellow, 120 green, 210 sky blue, 240 blue)"),
+        ParamSpec("q_hue_width", .number, .number(40), min: 1, max: 360, unit: "degrees", animatable: false, "Full-strength hue range around the center; 360 ignores hue"),
+        ParamSpec("q_hue_soft", .number, .number(10), min: 0, max: 90, unit: "degrees", animatable: false, "Hue falloff beyond the range"),
+        ParamSpec("q_sat_min", .number, .number(0.1), min: 0, max: 1, animatable: false, "Low end of the saturation range (HSV saturation; near-black pixels count as unsaturated)"),
+        ParamSpec("q_sat_max", .number, .number(1), min: 0, max: 1, animatable: false, "High end of the saturation range"),
+        ParamSpec("q_sat_soft", .number, .number(0.05), min: 0, max: 0.5, animatable: false, "Saturation falloff beyond the range"),
+        ParamSpec("q_luma_min", .number, .number(0), min: 0, max: 1, animatable: false, "Low end of the luma range (Rec. 709 luma of the display picture)"),
+        ParamSpec("q_luma_max", .number, .number(1), min: 0, max: 1, animatable: false, "High end of the luma range"),
+        ParamSpec("q_luma_soft", .number, .number(0.05), min: 0, max: 0.5, animatable: false, "Luma falloff beyond the range"),
+        ParamSpec("q_softness", .number, .number(0.15), min: 0, max: 1, animatable: false, "Sets hue (×90°), saturation and luma softness at once when they are not set themselves"),
+        ParamSpec("q_clean_black", .number, .number(0), min: 0, max: 0.49, animatable: false, "Matte cleanup: key values up to this become black, removing faint noise in the background"),
+        ParamSpec("q_clean_white", .number, .number(0), min: 0, max: 0.49, animatable: false, "Matte cleanup: key values above 1 minus this become white, filling a patchy subject"),
+        ParamSpec("q_denoise", .number, .number(0.0015), min: 0, max: 0.02, unit: "of frame height", animatable: false, "Matte cleanup: removes specks and fills pinholes smaller than this (morphological open, then close)"),
+        ParamSpec("q_blur", .number, .number(0.002), min: 0, max: 0.05, unit: "of frame height", animatable: false, "Matte softness: blurs the key's edge"),
+    ]
+
+    /// Grade nodes (see `EffectNodes`): group effects into nodes and mix them in parallel or as layers.
+    public static let nodeSpecs: [ParamSpec] = [
+        ParamSpec("node", .text, .string(""), "Node label: consecutive effects with the same label form one node (several tools in one grade node); empty makes the effect its own node"),
+        ParamSpec("node_mode", .choice(EffectNodes.Mode.allCases.map(\.rawValue)), .string("serial"), "serial: after the node before. parallel: consecutive parallel nodes all start from the same input and their changes add up (mark every branch). layer: consecutive layer nodes start from the same input and are composited in order (later on top) with node_blend and node_opacity, inside their key. outside: applies where the previous node's key (limit) is not, e.g. grade the background around a qualified face"),
+        ParamSpec("node_blend", .choice(BlendMode.allCases.map(\.rawValue)), .string("normal"), "Layer nodes: how the layer combines with the layers under it"),
+        ParamSpec("node_opacity", .number, .number(1), min: 0, max: 1, "Strength of the whole node: fades its result into its input (for layers, the layer's opacity)"),
     ]
 
     static let limited: [String: EffectType] = Dictionary(uniqueKeysWithValues: all.filter { ["blur", "color", "stylize", "distort"].contains($0.category) && $0.id != "distort.stabilize" && $0.id != "distort.corner_pin" }.map { t in
-        (t.id, EffectType(id: t.id, category: t.category, summary: t.summary, params: t.params + limitSpecs))
+        let nodal = !["stylize.drop_shadow", "stylize.border"].contains(t.id)
+        return (t.id, EffectType(id: t.id, category: t.category, summary: t.summary, params: t.params + limitSpecs + (nodal ? nodeSpecs : [])))
     })
 
     public static let categories: [(String, String)] = [

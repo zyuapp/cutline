@@ -315,6 +315,7 @@ enum Describe {
             lines.append(line)
         }
         if c.effects.isEmpty { lines.append("Effects: none (effect_add to add; catalog lists types)") }
+        else if let graph = EffectNodes.describe(c.effects) { lines.append(graph) }
         else { lines.append("Effects, applied in order: " + c.effects.map { "\($0.id) \($0.type)\($0.enabled ? "" : " (off)")" }.joined(separator: " → ")) }
         lines.append("Key times are seconds from the clip start (\(fmt2(c.start)) on the timeline).")
         return lines.joined(separator: "\n")

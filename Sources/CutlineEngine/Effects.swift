@@ -23,29 +23,119 @@ enum EffectRenderer {
 
     static let masks = MaskCache()
 
-    /// Applies a stack in order. `param` returns the (possibly animated) value of fx.<id>.<name>.
+    /// Applies a stack through its nodes (see `EffectNodes`); a stack without node parameters runs in order.
+    /// `param` returns the (possibly animated) value of fx.<id>.<name>.
     ///
     /// While the picture is still whole (opaque and not yet reshaped by a mask, shadow, border or corner pin), each
     /// effect's output is masked to the picture's rectangle, so edge-extended blurs and color kernels never
     /// reach into letterbox bars.
     static func apply(_ effects: [Effect], to image: CIImage, context: Context, param: @escaping (Effect, String) -> ParamValue?) -> CIImage {
+        run(effects, image, context, param, matteFor: nil).image
+    }
+
+    struct Pass {
+        var image: CIImage
+        var key: CIImage?
+        var matte: CIImage?
+    }
+
+    /// Runs the stack; with `matteFor`, also returns where that effect acts (see `matte`).
+    static func run(_ effects: [Effect], _ image: CIImage, _ context: Context, _ param: @escaping (Effect, String) -> ParamValue?, matteFor: String?) -> Pass {
+        let nodes = EffectNodes.nodes(effects)
+        let frame = image.extent
         var img = image
         var whole = context.opaque
-        for e in effects where e.enabled {
+        var matte: CIImage?
+        var keys: [CIImage?] = []
+        func opacity(_ n: EffectNodes.Node) -> Double {
+            let e = effects[n.opacityFrom]
+            return min(max(param(e, "node_opacity")?.number ?? e.params["node_opacity"]?.number ?? 1, 0), 1)
+        }
+        var i = 0
+        while i < nodes.count {
+            let n = nodes[i]
+            switch n.mode {
+            case .serial, .outside:
+                let input = img
+                var pass = node(n, effects, input, frame, context, param, whole: &whole, skipKey: false, matteFor: matteFor)
+                if n.mode == .outside {
+                    let outside = (i > 0 ? keys[i - 1] : nil).map { $0.applyingFilter("CIColorInvert") } ?? CIImage(color: .black).cropped(to: input.extent)
+                    pass.image = pass.image.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: input, kCIInputMaskImageKey: outside]).cropped(to: input.extent)
+                    pass.matte = pass.matte.map { $0.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: outside]).cropped(to: input.extent) }
+                }
+                let o = opacity(n)
+                img = o >= 0.999 ? pass.image : dissolve(from: input, to: pass.image, mix: o)
+                matte = pass.matte ?? matte
+                keys.append(pass.key)
+                i += 1
+            case .parallel, .layer:
+                var j = i
+                while j < nodes.count && nodes[j].mode == n.mode { j += 1 }
+                let input = img
+                let e = input.extent
+                // Sums of differences need straight colors at full alpha; coverage is restored afterwards.
+                let straight = n.mode == .parallel && !context.opaque
+                let base = straight ? input.unpremultiplyingAlpha().settingAlphaOne(in: e) : input
+                let negative = base.applyingFilter("CIColorMatrix", parameters: [
+                    "inputRVector": CIVector(x: -1, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: -1, z: 0, w: 0), "inputBVector": CIVector(x: 0, y: 0, z: -1, w: 0),
+                ])
+                var acc = base
+                var changes: [CIImage] = []
+                for m in nodes[i..<j] {
+                    var branchWhole = whole
+                    let pass = node(m, effects, base, frame, context, param, whole: &branchWhole, skipKey: m.mode == .layer, matteFor: matteFor)
+                    matte = pass.matte ?? matte
+                    keys.append(pass.key)
+                    let o = opacity(m)
+                    if m.mode == .parallel {
+                        let out = o >= 0.999 ? pass.image : dissolve(from: base, to: pass.image, mix: o)
+                        changes.append(out.applyingFilter("CIAdditionCompositing", parameters: [kCIInputBackgroundImageKey: negative]))
+                    } else {
+                        let layered = blend(pass.image, over: acc, mode: m.blend).cropped(to: e)
+                        var mask = pass.key ?? CIImage(color: .white).cropped(to: e)
+                        if o < 0.999 { mask = mask.applyingFilter("CIColorMatrix", parameters: ["inputRVector": CIVector(x: o, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: o, z: 0, w: 0), "inputBVector": CIVector(x: 0, y: 0, z: o, w: 0)]) }
+                        acc = layered.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: acc, kCIInputMaskImageKey: mask]).cropped(to: e)
+                    }
+                }
+                if n.mode == .parallel {
+                    for c in changes { acc = c.applyingFilter("CIAdditionCompositing", parameters: [kCIInputBackgroundImageKey: acc]) }
+                    acc = acc.settingAlphaOne(in: e).cropped(to: e)
+                    if straight { acc = acc.applyingFilter("CISourceInCompositing", parameters: [kCIInputBackgroundImageKey: input]).cropped(to: e) }
+                    else if whole { acc = confine(acc, to: frame) }
+                }
+                img = acc
+                i = j
+            }
+        }
+        return Pass(image: img, key: nil, matte: matte)
+    }
+
+    /// One node's effects in order. `key` is its key effect's limit mask, measured on that effect's input; with `skipKey`
+    /// the key effect applies everywhere and the caller masks the node's result with the key instead.
+    static func node(_ n: EffectNodes.Node, _ effects: [Effect], _ input: CIImage, _ frame: CGRect, _ context: Context, _ param: @escaping (Effect, String) -> ParamValue?, whole: inout Bool, skipKey: Bool, matteFor: String?) -> Pass {
+        var img = input
+        var key: CIImage?
+        var matte: CIImage?
+        for index in n.effects {
+            let e = effects[index]
             guard let type = EffectCatalog.type(e.type), type.category != "generator" else { continue }
             let value = values(e, type, param)
+            let limit = limitMask(img, context, value, e)
+            if index == n.key { key = limit }
+            if e.id == matteFor { matte = effectMatte(e, type, img, context, value, limit) }
+            guard e.enabled else { continue }
             let mix = min(max(param(e, "mix")?.number ?? e.mix, 0), 1)
             guard mix > 0.001 else { continue }
             var out = render(e.type, img, context, value)
-            if let mask = limitMask(img, context, value) {
-                out = out.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: img, kCIInputMaskImageKey: mask]).cropped(to: img.extent)
+            if let limit, !(skipKey && index == n.key) {
+                out = out.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: img, kCIInputMaskImageKey: limit]).cropped(to: img.extent)
             }
             let reshapes = reshapes(e.type, type.category)
-            if whole && !reshapes { out = confine(out, to: image.extent) }
+            if whole && !reshapes { out = confine(out, to: frame) }
             img = mix >= 0.999 ? out : dissolve(from: img, to: out, mix: mix)
             if reshapes { whole = false }
         }
-        return img
+        return Pass(image: img, key: key, matte: matte)
     }
 
     static func values(_ e: Effect, _ type: EffectType, _ param: @escaping (Effect, String) -> ParamValue?) -> (String) -> ParamValue {
@@ -68,14 +158,17 @@ enum EffectRenderer {
     }
 
     /// Where effect `id` acts, as an opaque gray image over the picture it receives: white where it applies fully,
-    /// black where it leaves the picture alone. Covers limit windows and qualifiers, masks, keys and segmentation;
-    /// effects without either are white everywhere. Nil when the stack has no such effect.
+    /// black where it leaves the picture alone. Covers limit windows and qualifiers, masks, keys, segmentation and
+    /// outside nodes; effects without any are white everywhere. Nil when the stack has no such effect.
     static func matte(_ effects: [Effect], id: String, to image: CIImage, context: Context, param: @escaping (Effect, String) -> ParamValue?) -> CIImage? {
-        guard let i = effects.firstIndex(where: { $0.id == id }), let type = EffectCatalog.type(effects[i].type) else { return nil }
-        let e = effects[i]
-        let input = apply(Array(effects[..<i]), to: image, context: context, param: param)
+        guard effects.contains(where: { $0.id == id }), let m = run(effects, image, context, param, matteFor: id).matte else { return nil }
+        // Mattes hold blend weights in linear light; show them as those weights.
+        return m.applyingFilter("CISRGBToneCurveToLinear").cropped(to: m.extent)
+    }
+
+    /// Where one effect acts on `input`: the coverage a mask keeps (white for other effects), times its limit.
+    static func effectMatte(_ e: Effect, _ type: EffectType, _ input: CIImage, _ context: Context, _ value: @escaping (String) -> ParamValue, _ limit: CIImage?) -> CIImage {
         let extent = input.extent
-        let value = values(e, type, param)
         let black = CIImage(color: .black).cropped(to: extent)
         var m: CIImage
         if type.category == "mask" && e.type != "mask.matte" {
@@ -89,7 +182,7 @@ enum EffectRenderer {
         } else {
             m = CIImage(color: .white).cropped(to: extent)
         }
-        if let limit = limitMask(input, context, value) {
+        if let limit {
             m = m.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: limit])
         }
         return m.composited(over: black).cropped(to: extent)
@@ -220,7 +313,7 @@ enum EffectRenderer {
 
     /// White where the clip is kept, black elsewhere, covering the image extent.
     /// The window or qualifier an effect is limited to, or nil when it applies everywhere.
-    static func limitMask(_ img: CIImage, _ ctx: Context, _ v: @escaping (String) -> ParamValue) -> CIImage? {
+    static func limitMask(_ img: CIImage, _ ctx: Context, _ v: @escaping (String) -> ParamValue, _ effect: Effect) -> CIImage? {
         let parts = Set((v("limit").string ?? "none").split(separator: "+").map(String.init))
         let n: (String) -> CGFloat = { CGFloat(v($0).number ?? 0) }
         let e = img.extent
@@ -229,15 +322,38 @@ enum EffectRenderer {
             let names = ["center_x": "limit_x", "center_y": "limit_y", "width": "limit_width", "height": "limit_height", "feather": "limit_feather", "roundness": "limit_roundness"]
             masks.append(maskImage(shape == "rect" ? "mask.rect" : "mask.ellipse", extent: e, unit: ctx.unit, n: { n(names[$0] ?? $0) }, invert: false))
         }
-        if parts.contains("qualifier"), let cube = ColorCubes.qualifier(hue: Float(n("q_hue")), width: Float(n("q_hue_width")), sat: (Float(n("q_sat_min")), Float(n("q_sat_max"))), luma: (Float(n("q_luma_min")), Float(n("q_luma_max"))), softness: Float(n("q_softness")), invert: false) {
-            let key = img.applyingFilter("CIColorCubeWithColorSpace", parameters: ["inputCubeDimension": cube.size, "inputCubeData": cube.data, "inputColorSpace": ColorCubes.space])
-                .cropped(to: e).composited(over: CIImage(color: .black).cropped(to: e))
-            masks.append(key.clampedToExtent().applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: 1]).applyingGaussianBlur(sigma: 1.5).cropped(to: e))
+        if parts.contains("qualifier") {
+            masks.append(qualifierKey(img, Qualifier(params: effect.params), unit: ctx.unit))
         }
         guard var mask = masks.first else { return nil }
         for m in masks.dropFirst() { mask = m.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: mask]).cropped(to: e) }
         if v("limit_invert").bool ?? false { mask = mask.applyingFilter("CIColorInvert") }
         return mask
+    }
+
+    /// The qualifier's matte over `img`: the raw key, then denoise (open, then close), clean black/white levels and blur.
+    static func qualifierKey(_ img: CIImage, _ q: Qualifier, unit: CGFloat) -> CIImage {
+        let e = img.extent
+        let cube = ColorCubes.qualifier(q)
+        var key = img.applyingFilter("CIColorCubeWithColorSpace", parameters: ["inputCubeDimension": cube.size, "inputCubeData": cube.data, "inputColorSpace": ColorCubes.space])
+            .cropped(to: e).composited(over: CIImage(color: .black).cropped(to: e))
+        let r = CGFloat(q.denoise) * unit
+        if r >= 0.5 {
+            key = key.clampedToExtent()
+                .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: r]).applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: r])
+                .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: r]).applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: r])
+                .cropped(to: e)
+        }
+        if q.cleanBlack > 0.001 || q.cleanWhite > 0.001 {
+            let lo = CGFloat(q.cleanLevels.low), s = 1 / CGFloat(q.cleanLevels.high - q.cleanLevels.low)
+            key = key.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: s, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: s, z: 0, w: 0), "inputBVector": CIVector(x: 0, y: 0, z: s, w: 0),
+                "inputBiasVector": CIVector(x: -lo * s, y: -lo * s, z: -lo * s, w: 0),
+            ]).applyingFilter("CIColorClamp").cropped(to: e)
+        }
+        let blur = CGFloat(q.blur) * unit
+        if blur > 0.3 { key = key.clampedToExtent().applyingGaussianBlur(sigma: Double(blur) / 2).cropped(to: e) }
+        return key
     }
 
     /// A white shape on black from points in frame fractions (top-left origin), optionally smoothed with Catmull-Rom curves.
@@ -280,12 +396,14 @@ enum EffectRenderer {
                 kCIInputExtentKey: CIVector(cgRect: rect), kCIInputRadiusKey: radius, kCIInputColorKey: CIColor.white,
             ])?.outputImage ?? CIImage(color: .white).cropped(to: rect)
         } else {
+            // A circle drawn at full size, then stretched: a unit circle scaled up would be resampled into a soft blob.
+            let r = h / 2
             let gradient = CIFilter(name: "CIRadialGradient", parameters: [
-                kCIInputCenterKey: CIVector(x: 0, y: 0), "inputRadius0": 0.4999, "inputRadius1": 0.5,
+                kCIInputCenterKey: CIVector(x: 0, y: 0), "inputRadius0": max(0, r - 0.5), "inputRadius1": r + 0.5,
                 "inputColor0": CIColor.white, "inputColor1": CIColor(red: 0, green: 0, blue: 0, alpha: 0),
             ])?.outputImage ?? CIImage.empty()
-            shape = gradient.cropped(to: CGRect(x: -0.5, y: -0.5, width: 1, height: 1))
-                .transformed(by: CGAffineTransform(scaleX: w, y: h).concatenating(CGAffineTransform(translationX: cx, y: cy)))
+            shape = gradient.cropped(to: CGRect(x: -r - 1, y: -r - 1, width: 2 * r + 2, height: 2 * r + 2))
+                .transformed(by: CGAffineTransform(scaleX: w / h, y: 1).concatenating(CGAffineTransform(translationX: cx, y: cy)))
         }
         var mask = shape.composited(over: black).cropped(to: e)
         if feather > 0.5 { mask = mask.clampedToExtent().applyingGaussianBlur(sigma: Double(feather) / 2).cropped(to: e) }
@@ -377,35 +495,14 @@ enum ColorCubes {
         return cube
     }
 
-    /// A key that is white where colors match the hue, saturation and lightness ranges.
-    static func qualifier(hue: Float, width: Float, sat: (Float, Float), luma: (Float, Float), softness: Float, invert: Bool) -> Cube? {
-        let key = String(format: "q|%.1f|%.1f|%.3f|%.3f|%.3f|%.3f|%.3f|%d", hue, width, sat.0, sat.1, luma.0, luma.1, softness, invert ? 1 : 0) as NSString
+    /// A gray key of the qualifier's raw strength, encoded so that after the cube's sRGB decode the working value
+    /// is the strength itself.
+    static func qualifier(_ q: Qualifier) -> Cube {
+        let key = ("q2|" + Qualifier.names.map { String(format: "%.4f", q[keyPath: $0.1]) }.joined(separator: "|")) as NSString
         if let hit = cache.object(forKey: key) { return hit }
-        let soft = max(0.001, softness)
-        func ramp(_ x: Float, _ lo: Float, _ hi: Float, _ s: Float) -> Float {
-            let a = min(1, max(0, (x - (lo - s)) / s)), b = min(1, max(0, ((hi + s) - x) / s))
-            return min(a, b)
-        }
-        let data = ColorMath.cubeData(size: 33) { c in
-            let mx = max(c.x, c.y, c.z), mn = min(c.x, c.y, c.z)
-            let l = (mx + mn) / 2
-            let d = mx - mn
-            let s = d < 1e-5 ? 0 : d / (1 - abs(2 * l - 1) + 1e-5)
-            var h: Float = 0
-            if d > 1e-5 {
-                if mx == c.x { h = 60 * ((c.y - c.z) / d).truncatingRemainder(dividingBy: 6) }
-                else if mx == c.y { h = 60 * ((c.z - c.x) / d + 2) } else { h = 60 * ((c.x - c.y) / d + 4) }
-                if h < 0 { h += 360 }
-            }
-            var dh = abs(h - hue).truncatingRemainder(dividingBy: 360)
-            if dh > 180 { dh = 360 - dh }
-            let hw = width >= 359 ? Float(1) : min(1, max(0, (width / 2 + soft * 90 - dh) / (soft * 90)))
-            var w = hw * ramp(min(s, 1), sat.0, sat.1, soft) * ramp(l, luma.0, luma.1, soft)
-            if d < 1e-5 && width < 359 { w = 0 }
-            if invert { w = 1 - w }
-            return SIMD3(w, w, w)
-        }
-        let cube = Cube(size: 33, data: data.withUnsafeBufferPointer { Data(buffer: $0) })
+        let size = 48
+        let data = ColorMath.cubeData(size: size) { c in SIMD3(repeating: ChromaKey.srgbEncode(q.weight(c))) }
+        let cube = Cube(size: size, data: data.withUnsafeBufferPointer { Data(buffer: $0) })
         cache.setObject(cube, forKey: key)
         return cube
     }
