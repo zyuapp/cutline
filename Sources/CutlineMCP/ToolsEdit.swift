@@ -493,7 +493,9 @@ extension Toolbox {
             let run: (inout Project) throws -> Void = { p in
                 for (i, op) in ops.enumerated() {
                     let name = op["tool"]?.string ?? ""
-                    guard let e = self.edits[name] else { throw EditError("Operation \(i + 1): \(name) is not an edit tool") }
+                    guard let e = self.edits[name] else {
+                        throw EditError("Operation \(i + 1): \(name) can't run inside batch" + (name == "recipe" ? "; call recipe on its own (it is already one undo step)" : "") + ". Batchable tools: \(self.edits.keys.sorted().joined(separator: ", "))")
+                    }
                     let opArgs = Toolbox.substitute(op["args"] ?? [:], vars)
                     let clipsBefore = Set(p.tracks.flatMap(\.clips).map(\.id))
                     let fxBefore = Set(p.tracks.flatMap { t in t.effects.map(\.id) + t.clips.flatMap { $0.effects.map(\.id) } })

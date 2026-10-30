@@ -9,7 +9,8 @@ extension Toolbox {
         "audio:<media id>" (loudness where that media plays; map dB, default [-40, 0, out_lo, out_hi]), \
         "face:<media id>[:n].x|y|size" and "track:<track id>.x|y|width|height" (a face or tracked object, in canvas fractions where the media plays; \
         for transform.x/y the value is the offset from center, for anything else (text.x/y, fx.<id>.limit_x/y, effect centers) the absolute position; add offset to place beside it). \
-        Example: {"transform.scale": {"source": "beats", "map": [0, 1, 1, 1.06]}} pumps scale on every beat.
+        Example: {"transform.scale": {"source": "beats", "map": [0, 1, 1, 1.06]}} pumps scale on every beat. \
+        To reframe a clip on a face or object in its own picture, add "keep_centered": true on transform.x/y: the picture pans so the subject stays centered (clamped so the frame stays covered).
         """
 
     func applyBindings(_ p: inout Project, targets: [Target], _ bind: [String: JSON]) throws -> String {
@@ -89,11 +90,28 @@ extension Toolbox {
             }
             guard let m = p.mediaAsset(mediaId) else { throw EditError("No media \(mediaId)") }
             let absolute = !path.hasPrefix("transform.")
+            let centering = a.bool("keep_centered", default: false) && (path == "transform.x" || path == "transform.y")
             values = times.map { local in
                 let t = c.start + local
                 guard let host = p.tracks.flatMap(\.clips).first(where: { $0.mediaId == mediaId && $0.kind == .media && t >= $0.start && t < $0.end }) else { return nil }
                 let s = host.sourceTime(atTimeline: t)
                 guard let near = samples.min(by: { abs($0.t - s) < abs($1.t - s) }), abs(near.t - s) < 0.75 else { return nil }
+                if centering, host.id == c.id {
+                    // Pan the clip's own picture: with no offset the subject sits at `r`; shift by the distance to center.
+                    var still = host
+                    still.anim["transform.x"] = nil
+                    still.anim["transform.y"] = nil
+                    still.transform.x = 0
+                    still.transform.y = 0
+                    let r0 = Toolbox.canvasRect(near.box, in: still, media: m, canvas: p.canvas, at: local + c.start - host.start)
+                    let xf = still.resolvedTransform(at: local)
+                    let cw = Double(p.canvas.width), ch = Double(p.canvas.height)
+                    let pw = (xf.fit == .fill ? max(cw / Double(m.width), ch / Double(m.height)) : min(cw / Double(m.width), ch / Double(m.height))) * Double(m.width) * xf.scale / cw
+                    let ph = (xf.fit == .fill ? max(cw / Double(m.width), ch / Double(m.height)) : min(cw / Double(m.width), ch / Double(m.height))) * Double(m.height) * xf.scale / ch
+                    let room = field == "y" ? max(0, (ph - 1) / 2) : max(0, (pw - 1) / 2)
+                    let shift = field == "y" ? 0.5 - r0.midY : 0.5 - r0.midX
+                    return min(room, max(-room, shift)) + offset
+                }
                 let r = Toolbox.canvasRect(near.box, in: host, media: m, canvas: p.canvas, at: local + c.start - host.start)
                 let v: Double = switch field {
                 case "y": absolute ? r.midY : r.midY - 0.5
