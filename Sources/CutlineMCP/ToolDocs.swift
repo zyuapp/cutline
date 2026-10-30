@@ -25,7 +25,7 @@ extension Toolbox {
             "timecode_start": "\"hh:mm:ss:ff\" of the first frame, default 01:00:00:00",
             "width": "", "height": "", "fps": "Default 30", "background": "Hex, default #000000", "name": "", "open_preview": "Default true",
             "edl_fps": "EDL frame rate, default 30",
-        ]),
+        ], hide: ["master_peak_nits"]),
         "project_open": ToolBrief(text: "Open a .cutline project.", args: ["open_preview": "Default false", "path": ""]),
         "project_status": ToolBrief(text: "The project: canvas, media and analysis, tracks and clips with timeline and source times, effects, captions, open comments, warnings. target=<clip> lists its parameter paths and keys; detail=json the raw project.", args: [
             "target": "Clip id", "detail": "",
@@ -36,7 +36,7 @@ extension Toolbox {
             "drop_frame": "Drop-frame timecode in interchange files",
             "timecode_start": "\"hh:mm:ss:ff\" of the first frame",
             "width": "", "height": "", "fps": "", "background": "Hex",
-        ]),
+        ], hide: ["master_peak_nits"]),
         "history": ToolBrief(text: "Edit history: list, undo, redo, restore an entry, diff against a version, or fork into a separate copy.", args: [
             "id": "Entry for restore or diff", "path": "For fork: the new .cutline", "steps": "For undo/redo, default 1", "limit": "For list, default 20", "action": "",
         ]),
@@ -183,7 +183,7 @@ extension Toolbox {
         ]),
         "export": ToolBrief(text: "Render the timeline (default HEVC .mp4 in <project>/exports). platform picks the codec and checks shape, length, loudness, true peak and UI-safe text; strict refuses on failures. Also subtitles, chapters, captions, interchange files, stems, stills, archive, variants. catalog tool=export explains every option.", args: [
             "path": "", "platform": "", "strict": "Refuse to export when the platform check fails", "check_only": "Only run the platform checks",
-            "hdr": "PQ HEVC: {mastering, max_nits, min_nits, max_cll, max_fall}; MaxCLL/FALL measured when omitted",
+            "hdr": "PQ HDR10 metadata; MaxCLL/FALL measured if omitted",
             "hdr.mastering": "", "hdr.max_nits": "", "hdr.min_nits": "", "hdr.max_cll": "", "hdr.max_fall": "",
             "preset": "Default hevc; dnxhr_* and xdcam_hd422 need ffmpeg", "container": "mov carries timecode; mxf for DNxHR", "bitrate_mbps": "", "start": "", "end": "",
             "deliver": "Default video; stems is one file per audio role", "audio_format": "", "downmix": "", "image_format": "", "times": "For stills",
@@ -192,9 +192,10 @@ extension Toolbox {
             "timecode_start": "\"hh:mm:ss:ff\" of the program", "subtitles": "Soft subtitles from the transcripts, default none", "subtitle_formats": "srt, vtt, ttml, imsc, ebu-tt-d",
             "subtitle_position": "", "subtitle_speakers": "Color speakers in TTML", "closed_captions": "CEA-608 plus .scc",
             "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml", "trim": "For archive: used parts only",
-            "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each applied, exported, then undone",
+            "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported, then undone",
+            "sdr_from_hdr": "true or {method, target_nits}",
         ]),
-        "timeline_measure": ToolBrief(text: "Measure the export: sound (LUFS, peaks), picture (exposure, clipping, cast per shot, flashes), text (contrast, title-safe), scopes, compare (shot color continuity).", args: [
+        "timeline_measure": ToolBrief(text: "Measure the export: sound (LUFS, peaks), picture (exposure, clipping, cast per shot, flashes; nits if HDR), text (contrast, title-safe), scopes, compare (shot color continuity).", args: [
             "what": "sound, picture, text, scopes, compare; default the first three", "start": "", "end": "", "at": "For scopes",
             "tracks": "Each track's sound too", "platform": "Text against its UI-free area", "reference": "For compare: clip id or time",
         ]),

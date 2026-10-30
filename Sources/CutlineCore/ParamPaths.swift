@@ -461,6 +461,8 @@ extension Effect {
         switch (type, param) {
         case ("color.curves", _):
             _ = try ColorMath.curves(master: s, red: nil, green: nil, blue: nil)
+        case ("color.hue_curves", _):
+            if let f = HueCurves.Family(rawValue: param) { _ = try HueCurves { $0 == f ? s : nil } }
         case ("shape", "shapes"):
             _ = try ShapeLayers.parse(s)
         case ("particles", "image"):

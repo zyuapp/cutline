@@ -90,29 +90,22 @@ extension Toolbox {
             let lo = try a.optTime("start") ?? 0, hi = try a.optTime("end") ?? current.duration
             let beats = current.timelineBeats(index).filter { $0 >= lo - 1e-3 && $0 <= hi + 1e-3 }
             guard beats.count >= 2 else { throw EditError("No analyzed music beats between \(fmt2(lo)) and \(fmt2(hi)); put music on the timeline and run media_analyze features:[\"beats\"]") }
-            var pool: [(mediaId: String, range: TimeRange)] = []
+            var spans: [(mediaId: String, range: TimeRange?)] = []
             if let sources = a.value("sources")?.array {
                 for s in sources {
                     let sa = Args(s)
-                    pool.append((try sa.string("media"), TimeRange(try sa.optSourceTime("start") ?? 0, try sa.optSourceTime("end") ?? current.mediaAsset(try sa.string("media"))?.duration ?? 0)))
+                    let id = try sa.string("media")
+                    guard let m = current.mediaAsset(id) else { throw EditError("No media \(id)") }
+                    spans.append((id, TimeRange(try sa.optSourceTime("start") ?? 0, try sa.optSourceTime("end") ?? m.duration)))
                 }
             } else {
                 guard let ids = a.strings("media") else { throw EditError("Pass media or sources") }
                 for id in ids {
-                    guard let m = current.mediaAsset(id) else { throw EditError("No media \(id)") }
-                    if let shots = b.analysis(ShotAnalysis.self, id, "shots"), !m.isImage {
-                        pool += shots.shots.sorted { ($0.aesthetics ?? 0) > ($1.aesthetics ?? 0) }.map { (id, TimeRange($0.start, $0.end)) }
-                    } else if let cuts = index.shots[id], cuts.count > 1 {
-                        pool += cuts.map { (id, $0) }
-                    } else if m.isImage {
-                        pool.append((id, TimeRange(0, 3600)))
-                    } else {
-                        // Unanalyzed footage: windows spread across the file rather than its opening seconds.
-                        let n = max(1, min(8, Int(m.duration / 4)))
-                        pool += (0..<n).map { k in (id, TimeRange(m.duration * Double(k) / Double(n), m.duration * Double(k + 1) / Double(n))) }
-                    }
+                    guard current.mediaAsset(id) != nil else { throw EditError("No media \(id)") }
+                    spans.append((id, nil))
                 }
             }
+            let (footage, notes, shots) = try await beatFootage(spans, project: current, bundle: b)
             let align = try a.optString("align").map { v -> BeatAlign in
                 guard let al = BeatAlign(rawValue: v) else { throw EditError("align is fill, zero or first_beat") }
                 return al
@@ -123,10 +116,19 @@ extension Toolbox {
                     if let id = c.mediaId, index.music.contains(id), index.beats[id] != nil { music.append(c.id) }
                 }
             }
+            let loudness = current.timelineBeatEnergy(index)
+            let energy: ((TimeRange) -> Double?)? = loudness.isEmpty ? nil : { r in
+                let inside = loudness.filter { $0.t >= r.start - 1e-3 && $0.t < r.end - 1e-3 }.map(\.energy)
+                if !inside.isEmpty { return inside.reduce(0, +) / Double(inside.count) }
+                return loudness.min { abs($0.t - r.start) < abs($1.t - r.start) }?.energy
+            }
             return try runEdit("Cut to the beat", dry: dry) { p in
                 var trackId = a.optString("track") ?? "new"
                 if trackId == "new" { trackId = p.addTrack(kind: .video, name: "Beat cut").id }
-                return try p.beatCut(pool: pool, beats: beats, every: a.optInt("every") ?? 2, trackId: trackId, from: lo, align: align, music: music)
+                let before = p
+                return try p.beatCut(footage: footage, beats: beats, every: a.optInt("every") ?? 2, trackId: trackId, from: lo, align: align, music: music, energy: energy) { c in
+                    Toolbox.fillFraming(c, before, shots)
+                } + notes.map { "\n" + $0 }.joined()
             }
         case "music_fit":
             let clipId = try a.string("clip")
@@ -304,9 +306,9 @@ extension Toolbox {
         }
     }
 
-    static func shotIndex(_ b: ProjectBundle, _ p: Project) -> [String: ShotAnalysis] {
+    static func shotIndex(_ b: ProjectBundle, _ p: Project, media only: Set<String>? = nil) -> [String: ShotAnalysis] {
         var out: [String: ShotAnalysis] = [:]
-        for m in p.media {
+        for m in p.media where only?.contains(m.id) ?? true {
             guard var s = b.analysis(ShotAnalysis.self, m.id, "shots") else { continue }
             // With active-speaker analysis, keep only the talking face at each moment so framing follows dialogue.
             if let active = b.analysis(ActiveSpeakers.self, m.id, "activespeakers"), !active.spans.isEmpty {
@@ -428,14 +430,21 @@ extension Toolbox {
         let shots = MulticamPlan.shots(words: words, range: TimeRange(lo, hi), first: words.first?.angle ?? angles[0], options: options)
         let at = try a.optTime("at") ?? 0
         let summary = notes
+        let framingShots = Toolbox.shotIndex(b, current, media: Set(angles))
         return try runEdit("Multicam edit from \(angles.count) angles", dry: dry) { p in
             guard let ti = p.trackIndex(trackId), p.tracks[ti].kind == .video else { throw EditError("No video track \(trackId)") }
             p.deleteRange(TimeRange(at, at + (hi - lo)), trackIds: [trackId], ripple: false)
             // Cut points snap to frames and each shot ends where the next begins, so no slivers of background show.
             let cutsAt = shots.map { p.canvas.snap(at + $0.start - lo) } + [p.canvas.snap(at + hi - lo)]
+            var framed = 0
             for (i, s) in shots.enumerated() where cutsAt[i + 1] - cutsAt[i] >= p.canvas.frameDuration {
                 var c = Clip(id: Project.newClipId(), kind: .media, mediaId: s.angle, start: cutsAt[i], duration: cutsAt[i + 1] - cutsAt[i], sourceIn: cutsAt[i] - at + lo + (offsets[s.angle] ?? 0))
                 c.transform.fit = .fill
+                if let f = Toolbox.fillFraming(c, p, framingShots) {
+                    c.transform.x = f.x
+                    c.transform.y = f.y
+                    framed += 1
+                }
                 c.volume = 0
                 try p.addClip(c, trackId: trackId, mode: .overwrite)
             }
@@ -446,7 +455,9 @@ extension Toolbox {
             let extras = shots.filter { $0.kind != "speaker" }
             let longest = shots.map(\.duration).max() ?? 0
             return "Synced: " + (summary.isEmpty ? "single angle" : summary.joined(separator: ", ")) + ". Speakers from \(how). Cut \(shots.count) shots on \(trackId) (" + counts.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ") + ", none under \(fmt2(options.minShot))s, longest \(fmt2(longest))s, cuts in the pauses before each new speaker"
-                + (extras.isEmpty ? "" : ", \(extras.count) reaction/wide cutaway(s)") + ") with \(audioId)'s sound on \(audioTrack.id). Recut by hand with recipe multicam_switch cuts:[{at, angle}]."
+                + (extras.isEmpty ? "" : ", \(extras.count) reaction/wide cutaway(s)") + ") with \(audioId)'s sound on \(audioTrack.id)."
+                + (framed > 0 ? " \(framed) shot(s) framed so faces stay in view where fill crops the angle." : "")
+                + " Recut by hand with recipe multicam_switch cuts:[{at, angle}]."
         }
     }
 }

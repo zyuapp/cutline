@@ -287,8 +287,8 @@ enum EffectRenderer {
             ]).composited(over: CIImage(color: .clear).cropped(to: e)).cropped(to: e)
         case "stylize.glitch":
             return TransitionRenderer.glitch(img, amount: Double(n("amount")), frame: Int((ctx.time * 30).rounded()), e)
-        case "color.grade", "color.wheels", "color.curves", "color.hsl", "color.look", "color.lut", "color.cdl":
-            guard let cube = ColorCubes.cube(type, v) else { return img }
+        case "color.grade", "color.wheels", "color.curves", "color.hsl", "color.look", "color.lut", "color.cdl", "color.hue_curves", "color.hdr_zones":
+            guard let cube = ColorCubes.cube(type, v, space: ctx.gradeSpace) else { return img }
             return img.applyingFilter("CIColorCubeWithColorSpace", parameters: [
                 "inputCubeDimension": cube.size, "inputCubeData": cube.data, "inputColorSpace": ctx.gradeSpace,
             ]).cropped(to: e)
@@ -507,9 +507,11 @@ enum ColorCubes {
         return c
     }()
 
-    static func cube(_ type: String, _ v: @escaping (String) -> ParamValue) -> Cube? {
+    static func cube(_ type: String, _ v: @escaping (String) -> ParamValue, space: CGColorSpace = ColorCubes.space) -> Cube? {
         guard let spec = EffectCatalog.type(type) else { return nil }
         var key = type
+        let encoding = lightEncoding(space)
+        if type == "color.hdr_zones" { key += "|\(encoding)" }
         for p in spec.params {
             let value = v(p.name)
             key += "|" + (value.number.map { String(format: "%.4f", $0) } ?? value.description)
@@ -519,7 +521,7 @@ enum ColorCubes {
             key += "|\(mtime)"
         }
         if let hit = cache.object(forKey: key as NSString) { return hit }
-        guard let cube = make(type, v) else { return nil }
+        guard let cube = make(type, v, encoding: encoding) else { return nil }
         cache.setObject(cube, forKey: key as NSString)
         return cube
     }
@@ -536,11 +538,27 @@ enum ColorCubes {
         return cube
     }
 
-    static func make(_ type: String, _ v: @escaping (String) -> ParamValue) -> Cube? {
+    /// The encoding grade cubes see in `space`: the canvas's own HDR curve, otherwise sRGB.
+    static func lightEncoding(_ space: CGColorSpace) -> LightEncoding {
+        if space.name == CGColorSpace.itur_2100_PQ { return .pq }
+        if space.name == CGColorSpace.itur_2100_HLG { return .hlg }
+        return .sdr
+    }
+
+    static func make(_ type: String, _ v: @escaping (String) -> ParamValue, encoding: LightEncoding = .sdr) -> Cube? {
         let n: (String) -> Float = { Float(v($0).number ?? 0) }
         let text: (String) -> String? = { v($0).string.flatMap { $0.isEmpty ? nil : $0 } }
         let f: ColorMath.Transform
         switch type {
+        case "color.hdr_zones":
+            let zones = HDRZones { v($0).number }
+            guard !zones.isIdentity else { return nil }
+            let data = ColorMath.cubeData(size: 48, zones.transform(encoding))
+            return Cube(size: 48, data: data.withUnsafeBufferPointer { Data(buffer: $0) })
+        case "color.hue_curves":
+            guard let curves = try? HueCurves({ text($0.rawValue) }), !curves.isIdentity else { return nil }
+            let data = ColorMath.cubeData(size: 64, curves.transform)
+            return Cube(size: 64, data: data.withUnsafeBufferPointer { Data(buffer: $0) })
         case "color.grade":
             let tint: (String) -> RGBA? = { v($0).color }
             f = ColorMath.grade(lift: n("lift"), gamma: n("gamma"), gain: n("gain"), shadowsTint: tint("shadows"), shadowsAmount: n("shadows_amount"), midtonesTint: tint("midtones"), midtonesAmount: n("midtones_amount"), highlightsTint: tint("highlights"), highlightsAmount: n("highlights_amount"))

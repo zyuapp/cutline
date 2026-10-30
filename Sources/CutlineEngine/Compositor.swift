@@ -44,6 +44,8 @@ public final class RenderScene: @unchecked Sendable {
 
     /// When set, every frame is the matte of this clip effect in white on black, placed like the clip.
     public var matteView: MatteView?
+    /// HDR canvases: frames leave the compositor tone-mapped to Rec. 709 (see `BuiltTimeline.sdrVersion`).
+    var sdrTrim: SDRTrim?
 
     /// Draws the frame at a timeline time. `source` returns the decoded frame of a clip.
     func render(at t: Seconds, background: Bool = true, source: (String) -> CVPixelBuffer?) -> CIImage {
@@ -505,6 +507,8 @@ public class CutlineCompositor: NSObject, AVVideoCompositing, @unchecked Sendabl
     static let device = MTLCreateSystemDefaultDevice()
     static let colorSpace = CGColorSpace(name: CGColorSpace.itur_709)!
     class var space: WorkingSpace { .rec709 }
+    /// Ten-bit sources with HDR and wide-color frames allowed.
+    class var deepSources: Bool { space != .rec709 }
 
     static func compositorClass(_ w: WorkingSpace) -> AVVideoCompositing.Type {
         switch w {
@@ -526,7 +530,7 @@ public class CutlineCompositor: NSObject, AVVideoCompositing, @unchecked Sendabl
 
     public var sourcePixelBufferAttributes: [String: any Sendable]? {
         // Ten-bit sources keep log and HDR footage from banding; 8-bit SDR stays cheap.
-        let formats: [OSType] = Self.space == .rec709
+        let formats: [OSType] = !Self.deepSources
             ? [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_32BGRA]
             : [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, kCVPixelFormatType_64RGBAHalf]
         return [kCVPixelBufferPixelFormatTypeKey as String: formats.map { NSNumber(value: $0) }, kCVPixelBufferMetalCompatibilityKey as String: true]
@@ -536,8 +540,8 @@ public class CutlineCompositor: NSObject, AVVideoCompositing, @unchecked Sendabl
         [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: ColorManagement.pixelFormat(Self.space)), kCVPixelBufferMetalCompatibilityKey as String: true]
     }
 
-    public var supportsHDRSourceFrames: Bool { Self.space.isHDR }
-    public var supportsWideColorSourceFrames: Bool { Self.space != .rec709 }
+    public var supportsHDRSourceFrames: Bool { Self.space.isHDR || Self.deepSources }
+    public var supportsWideColorSourceFrames: Bool { Self.deepSources }
 
     public func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {
         queue.sync { renderContext = newRenderContext }
@@ -553,10 +557,10 @@ public class CutlineCompositor: NSObject, AVVideoCompositing, @unchecked Sendabl
                     return
                 }
                 let scene = instruction.scene
-                let image = scene.render(at: request.compositionTime.seconds) { clipId in
+                let image = scene.delivered(scene.render(at: request.compositionTime.seconds) { clipId in
                     guard let id = scene.trackIDs[clipId] else { return nil }
                     return request.sourceFrame(byTrackID: id)
-                }
+                })
                 let w = CVPixelBufferGetWidth(out), h = CVPixelBufferGetHeight(out)
                 let canvas = scene.canvasRect
                 let fitted = canvas.width == CGFloat(w) && canvas.height == CGFloat(h)
@@ -582,4 +586,9 @@ final class CutlineCompositorHLG: CutlineCompositor, @unchecked Sendable {
 
 final class CutlineCompositorPQ: CutlineCompositor, @unchecked Sendable {
     override class var space: WorkingSpace { .rec2020_pq }
+}
+
+/// Rec. 709 output of an HDR canvas through the scene's `sdrTrim`.
+final class CutlineCompositorSDRTrim: CutlineCompositor, @unchecked Sendable {
+    override class var deepSources: Bool { true }
 }

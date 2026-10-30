@@ -171,7 +171,7 @@ extension Toolbox {
             .init("offset_y", .number, "Fraction of the frame, default 0; negative is above"),
             .init("smooth", .number, "Default 0.2"),
         ]),
-        RecipeSpec(name: "beat_cut", group: "Rhythm", summary: "Cuts footage to the analyzed music beats.", args: [
+        RecipeSpec(name: "beat_cut", group: "Rhythm", summary: "Cuts footage to the analyzed music beats, picking each shot by quality (shot analysis: aesthetics, faces; else a quick sharpness sample) with motion matched to the music's energy, never repeating a moment and alternating sources; fill-framed shots keep faces in view. Waits briefly for running shot analysis and says how it picked.", args: [
             .init("media", .ids, "Media ids (analyzed shots, best first)"),
             .init("sources", .objects, "Or explicit source ranges", fields: [
                 .init("media", .string, "Media id"),

@@ -41,7 +41,7 @@ extension Toolbox {
     ]
 
     func registerEditTools() {
-        addEdit(EditTool(name: "clip_add", description: "Put media, a solid color, or an adjustment layer on the timeline. Default track: V1 for video and images, A1 for audio-only files; \"new\" makes a new layer on top. Without start the clip is appended after the track's last clip. An adjustment layer has no picture: effects on it (effect_add) apply to every layer below it for its duration. Retiming sound past ±10% (fit to fill or speed) is reported as a warning; to fill time with ambience, room tone or a music bed, pass loop:true, which repeats the source range instead of stretching it.", schema: Schema.object([
+        addEdit(EditTool(name: "clip_add", description: "Put media, a solid color, or an adjustment layer on the timeline. Default track: V1 for video and images, A1 for audio-only files; \"new\" makes a new layer on top. Without start the clip is appended after the track's last clip. An adjustment layer has no picture: effects on it (effect_add) apply to every layer below it for its duration. Retiming sound past ±10% (fit to fill or speed) is reported as a warning; to fill time with ambience, room tone or a music bed, pass loop:true, which repeats the source range instead of stretching it. A media clip set to transform.fit fill is framed from shot analysis so faces (else the salient subject) stay in view, unless transform.x or transform.y is set.", schema: Schema.object([
             "media_id": Schema.string("Media to place"),
             "color": Schema.string("Hex color for a solid color clip"),
             "adjustment": Schema.bool("Make an adjustment layer"),
@@ -125,6 +125,14 @@ extension Toolbox {
                 throw EditError("Pass media_id, color, generator, or adjustment: true")
             }
             try Toolbox.applySet(&clip, args)
+            let placedBy = Set(args.raw["set"]?.object?.keys.map { $0 } ?? [])
+            var framing = ""
+            if clip.kind == .media, clip.transform.fit == .fill, placedBy.isDisjoint(with: ["transform.x", "transform.y"]), let mid = clip.mediaId, let b = try? session.requireBundle(),
+               let f = Toolbox.fillFraming(clip, p, Toolbox.shotIndex(b, p, media: [mid])) {
+                clip.transform.x = f.x
+                clip.transform.y = f.y
+                framing = "; framed to keep faces or the subject in view (transform.x \(fmt2(f.x)), y \(fmt2(f.y)))"
+            }
             let split = args.optString("channels") == "split"
             if let raw = args.optString("channels"), !split {
                 guard clip.kind == .media else { throw EditError("channels is for media clips") }
@@ -170,7 +178,7 @@ extension Toolbox {
                 return "Added \(ids.count) clip(s) on \(trackId) at \(fmt(pieces.first?.start ?? at))–\(fmt(pieces.last.map { $0.start + $0.duration } ?? at)), looping \(clip.mediaId!) \(fmt2(loopSource.start))–\(fmt2(loopSource.end))s: \(ids.joined(separator: ", "))"
             }
             let placed = try p.addClip(clip, trackId: trackId, mode: mode)
-            return "Added \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))" + (warning.map { ". " + $0 } ?? "")
+            return "Added \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))" + framing + (warning.map { ". " + $0 } ?? "")
         })
 
         addEdit(EditTool(name: "text_add", description: "Add a title, lower third, label or call-out. Goes on a text layer above the video (created as needed, a new one if the range is busy).", schema: Schema.object(Toolbox.textProps.merging([

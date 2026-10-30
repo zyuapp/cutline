@@ -179,6 +179,21 @@ public enum EffectCatalog {
             ParamSpec("saturation", .number, .number(0), min: -1, max: 1, "-1 removes the color, 1 doubles it"),
             ParamSpec("lightness", .number, .number(0), min: -1, max: 1, "Darker or lighter"),
         ]),
+        EffectType(id: "color.hue_curves", category: "color", summary: "Secondary curves like Resolve's: hue vs hue, hue vs saturation, hue vs luminance, luminance vs saturation and saturation vs saturation. Each is a point list \"x,y x,y\"; hue x is degrees (0 red, 30 orange, 60 yellow, 120 green, 180 aqua, 225 blue, 270 purple, 315 magenta) and wraps at 360, joined by a smooth periodic spline that never overshoots; one point alone is a bump that fades to neutral 60° either side. Grays are untouched, and saturation and luminance changes keep hue. Examples: greens less saturated hue_sat \"60,1 120,0.5 180,1\"; skin toward orange hue_hue \"0,0 20,6 45,0\"; darker deeper sky hue_lum \"225,0.8\" with hue_sat \"225,1.3\"; desaturate shadows lum_sat \"0,0.5 0.25,1 1,1\"; tame already-vivid colors sat_sat \"0,1 0.6,1 1,0.75\"", params: [
+            ParamSpec("hue_hue", .text, .string(""), "Hue shift in degrees (-180…180) by input hue, e.g. \"20,6\" pushes skin (≈20°) 6° toward orange"),
+            ParamSpec("hue_sat", .text, .string(""), "Saturation multiplier (0…4, 1 unchanged) by hue, e.g. \"120,0.5\" halves the greens"),
+            ParamSpec("hue_lum", .text, .string(""), "Brightness multiplier (0…4, 1 unchanged) by hue, e.g. \"225,0.8\" darkens blues"),
+            ParamSpec("lum_sat", .text, .string(""), "Saturation multiplier by luma 0…1, e.g. \"0,0.6 0.3,1 1,1\" pulls color out of the shadows"),
+            ParamSpec("sat_sat", .text, .string(""), "Saturation multiplier by input saturation 0…1, e.g. \"0,1.3 0.4,1 1,1\" lifts muted colors only"),
+        ]),
+        EffectType(id: "color.hdr_zones", category: "color", summary: "HDR palette: exposure (stops) and saturation per luminance zone, like Resolve's HDR wheels. Zones are centered in cd/m² (black 0.1, dark 2, shadow 15, light 80 for skin and diffuse white, highlight 400, specular 1500) and blend with a smooth raised-cosine crossover in stops, so moving one zone never bands. Works on PQ and HLG canvases in absolute nits, and on SDR canvases with white at 100 cd/m². Examples: tame speculars specular_exposure -1; open the shadows shadow_exposure 0.5; less saturated highlights highlight_saturation -0.3. Measure with timeline_measure picture/scopes, which report nits on HDR timelines", params: HDRZones.names.flatMap { z in
+            let i = HDRZones.names.firstIndex(of: z)!
+            return [
+                ParamSpec("\(z)_exposure", .number, .number(0), min: -4, max: 4, unit: "stops", "Exposure of the \(z) zone"),
+                ParamSpec("\(z)_saturation", .number, .number(0), min: -1, max: 1, "Saturation of the \(z) zone: -1 gray, 1 double"),
+                ParamSpec("\(z)_nits", .number, .number(HDRZones.defaultNits[i]), min: 0.001, max: 10_000, unit: "cd/m²", animatable: false, "Center of the \(z) zone"),
+            ]
+        } + [ParamSpec("softness", .number, .number(1), min: 0.1, max: 1, "Crossover width as a share of the distance between zone centers; lower confines each zone's change more tightly")]),
         EffectType(id: "color.look", category: "color", summary: "Finished creative grades: teal_orange, warm_film, cool_night, bleach_bypass, vintage_fade, high_contrast_bw, golden_hour, matrix_green, pastel, noir", params: [
             ParamSpec("look", .choice(["teal_orange", "warm_film", "cool_night", "bleach_bypass", "vintage_fade", "high_contrast_bw", "golden_hour", "matrix_green", "pastel", "noir"]), .string("teal_orange"), "Look"),
             ParamSpec("amount", .number, .number(1), min: 0, max: 1, "Strength"),
@@ -380,7 +395,7 @@ public enum EffectCatalog {
     public static func title(_ type: String) -> String {
         let titles = [
             "blur.gaussian": "blur", "blur.motion": "motion blur", "blur.zoom": "zoom blur", "blur.sharpen": "sharpening",
-            "color.adjust": "color correction", "color.grade": "color wheels", "color.wheels": "primary grade", "color.curves": "curves", "color.hsl": "HSL", "color.look": "look", "color.lut": "LUT", "color.cdl": "CDL", "color.monochrome": "black and white", "color.invert": "invert",
+            "color.adjust": "color correction", "color.grade": "color wheels", "color.wheels": "primary grade", "color.curves": "curves", "color.hsl": "HSL", "color.hue_curves": "hue curves", "color.hdr_zones": "HDR zones", "color.look": "look", "color.lut": "LUT", "color.cdl": "CDL", "color.monochrome": "black and white", "color.invert": "invert",
             "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask", "mask.person": "person mask", "mask.subject": "subject mask", "key.chroma": "chroma key",
             "distort.bulge": "bulge", "distort.twirl": "twirl",
             "mask.object": "object mask", "video.denoise": "noise reduction", "video.remove_object": "object removal",

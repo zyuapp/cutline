@@ -184,12 +184,18 @@ extension Project {
 
     // MARK: Rhythm
 
-    /// Lays footage on a track so each cut lands on a beat. `pool` is source spans to draw from, in order.
-    /// Cuts footage from `pool` on every `every`-th beat. With `from` (the start of the cut range) before the first
-    /// beat, `align` decides what plays there: `.fill` stretches the first shot back to `from` so no background shows;
-    /// `.firstBeat` trims the head of the `music` clips so their first beat lands on `from`.
+    /// Lays footage on a track so each cut lands on a beat. `pool` is source spans to draw from, unscored.
     public mutating func beatCut(pool: [(mediaId: String, range: TimeRange)], beats: [Seconds], every: Int, trackId: String, from: Seconds? = nil, align: BeatAlign = .fill, music: [String] = []) throws -> String {
-        guard !pool.isEmpty else { throw EditError("No footage to cut") }
+        try beatCut(footage: pool.map { BeatFootage(mediaId: $0.mediaId, range: $0.range) }, beats: beats, every: every, trackId: trackId, from: from, align: align, music: music)
+    }
+
+    /// Cuts footage on every `every`-th beat, picking each shot with `BeatCutPlan` (quality, motion matched to the
+    /// music's `energy` over each shot's timeline span, no moment twice, spread over the media).
+    /// With `from` (the start of the cut range) before the first beat, `align` decides what plays there: `.fill`
+    /// stretches the first shot back to `from` so no background shows; `.firstBeat` trims the head of the `music`
+    /// clips so their first beat lands on `from`. `framing` gives each fill-framed clip its transform x and y.
+    public mutating func beatCut(footage: [BeatFootage], beats: [Seconds], every: Int, trackId: String, from: Seconds? = nil, align: BeatAlign = .fill, music: [String] = [], energy: ((TimeRange) -> Double?)? = nil, framing: ((Clip) -> (x: Double, y: Double)?)? = nil) throws -> String {
+        guard !footage.isEmpty else { throw EditError("No footage to cut") }
         var marks: [Seconds] = []
         for i in stride(from: 0, to: beats.count, by: max(1, every)) {
             let t = canvas.snap(beats[i])
@@ -197,6 +203,7 @@ extension Project {
         }
         guard marks.count >= 2 else { throw EditError("Need at least two beats in the range") }
         var lead = ""
+        var moved: Seconds = 0
         if let from, marks[0] > canvas.snap(from) + 1e-6 {
             let start = canvas.snap(from), shift = marks[0] - start
             switch align {
@@ -204,6 +211,7 @@ extension Project {
                 marks[0] = start
                 lead = " The first shot also covers \(fmt2(start))–\(fmt2(start + shift))s before the first beat."
             case .firstBeat:
+                moved = shift
                 guard !music.isEmpty else { throw EditError("align first_beat needs the music clip on the timeline") }
                 for id in music {
                     guard var c = clip(id) else { continue }
@@ -222,32 +230,30 @@ extension Project {
                 lead = " The music now starts \(fmt2(shift))s later in the song so its first beat lands at \(fmt2(start))s."
             }
         }
-        var placed: [String] = []
-        var next = 0
-        var used: [String: Seconds] = [:]
-        for (a, b) in zip(marks, marks.dropFirst()) {
-            let need = b - a
-            var tries = 0
-            while tries < pool.count {
-                let item = pool[next % pool.count]
-                next += 1
-                tries += 1
-                let key = item.mediaId + "\(item.range.start)"
-                guard item.range.duration >= need - 1e-6 else { continue }
-                // First use takes the middle of the span, away from its edges; later uses continue after it.
-                let fresh = item.range.start + (item.range.duration - need) / 2
-                let from = used[key] ?? fresh
-                let start = item.range.end - from >= need - 1e-6 ? from : item.range.start
-                used[key] = start + need
-                var c = Clip(id: Project.newClipId(), kind: .media, mediaId: item.mediaId, start: a, duration: need, sourceIn: start)
-                c.transform.fit = .fill
-                c.volume = 0
-                try addClip(c, trackId: trackId, mode: .overwrite)
-                placed.append(c.id)
-                break
+        let spans = zip(marks, marks.dropFirst()).map { TimeRange($0, $1) }
+        // Energy is read where the music played before a first_beat shift moved it.
+        let plan = BeatCutPlan.choose(footage, segments: spans.map { .init(need: $0.duration, energy: energy?(TimeRange($0.start + moved, $0.end + moved))) })
+        var placed: [Clip] = []
+        for (span, pick) in zip(spans, plan.picks) {
+            guard let pick else { continue }
+            var c = Clip(id: Project.newClipId(), kind: .media, mediaId: footage[pick.footage].mediaId, start: span.start, duration: span.duration, sourceIn: pick.sourceIn)
+            c.transform.fit = .fill
+            if let f = framing?(c) {
+                c.transform.x = f.x
+                c.transform.y = f.y
             }
+            c.volume = 0
+            try addClip(c, trackId: trackId, mode: .overwrite)
+            placed.append(c)
         }
-        return "Cut \(placed.count) shots on \(trackId) to the beat (every \(every) beat\(every == 1 ? "" : "s")) from \(fmt2(marks.first!))s to \(fmt2(marks.last!))s." + lead
+        var note = "Cut \(placed.count) shots on \(trackId) to the beat (every \(every) beat\(every == 1 ? "" : "s")) from \(fmt2(marks.first!))s to \(fmt2(marks.last!))s." + lead
+        let byMedia = Dictionary(grouping: placed) { $0.mediaId ?? "" }.mapValues(\.count)
+        if byMedia.count > 1 { note += " Shots per media: " + byMedia.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ") + "." }
+        if plan.scored { note += plan.energyMatched ? " Picked by quality, with motion following the music's energy (louder passages get busier shots)." : " Picked by quality." }
+        if plan.repeats > 0 { note += " \(plan.repeats) shot(s) reuse a moment already shown; add media or sources to avoid repeats." }
+        let framed = placed.filter { $0.transform.x != 0 || $0.transform.y != 0 }.count
+        if framed > 0 { note += " \(framed) shot(s) framed to keep faces or the subject in view." }
+        return note
     }
 
     // MARK: Reframing
