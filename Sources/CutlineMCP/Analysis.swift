@@ -6,34 +6,51 @@ enum Feature: String, CaseIterable {
     case transcript, scenes, beats, speakers, shots, sounds, proxy
 }
 
-/// Background analysis, mirrored to the bundle's jobs.json so the preview app can show progress.
+/// Background analysis, mirrored to the bundle's jobs.json so the preview app can show progress and a
+/// later server can resume work an exited one left queued or running.
 final class JobBoard: @unchecked Sendable {
-    struct Job: Codable {
+    struct Job: Codable, Equatable {
         var id: String
         var mediaId: String
         var features: [String]
         var status: String
         var progress: Double
         var message: String?
+        /// Speech language for transcript work.
+        var language: String?
+        var explicit: Bool?
+        /// The server process running the job.
+        var pid: Int32?
+
+        var isPending: Bool { status == "queued" || status == "running" }
     }
+
+    typealias Work = @Sendable (_ progress: @escaping @Sendable (Double) -> Void) async throws -> String
 
     private let lock = NSLock()
     private var list: [Job] = []
     private var tail: Task<Void, Never>?
-    private var bundleURL: URL?
+    private(set) var bundleURL: URL?
+    let pid = ProcessInfo.processInfo.processIdentifier
 
     var all: [Job] { lock.withLock { list } }
-    var active: [Job] { all.filter { $0.status == "queued" || $0.status == "running" } }
+    /// Pending jobs this process runs; ones another live server owns are listed but not waited on.
+    var active: [Job] { all.filter { $0.isPending && ($0.pid == nil || $0.pid == pid) } }
 
     /// Queues work after every earlier job, one at a time.
-    func enqueue(_ mediaId: String, _ features: [Feature], bundle: URL, _ work: @escaping @Sendable (_ progress: @escaping @Sendable (Double) -> Void) async throws -> String) -> String {
+    func enqueue(_ mediaId: String, _ features: [Feature], bundle: URL, language: String = "en-US", explicit: Bool = false, _ work: @escaping Work) -> String {
         let id = lock.withLock { () -> String in
             if bundleURL != bundle { list.removeAll(); bundleURL = bundle }
-            let id = "job\(list.count + 1)"
-            list.append(Job(id: id, mediaId: mediaId, features: features.map(\.rawValue), status: "queued", progress: 0))
+            let id = "job\((list.compactMap { Int($0.id.dropFirst(3)) }.max() ?? 0) + 1)"
+            list.append(Job(id: id, mediaId: mediaId, features: features.map(\.rawValue), status: "queued", progress: 0, language: language, explicit: explicit, pid: pid))
             return id
         }
         save()
+        schedule(id, work)
+        return id
+    }
+
+    private func schedule(_ id: String, _ work: @escaping Work) {
         let previous = lock.withLock { tail }
         let task = Task.detached { [self] in
             await previous?.value
@@ -46,8 +63,38 @@ final class JobBoard: @unchecked Sendable {
             }
         }
         lock.withLock { tail = task }
-        return id
     }
+
+    /// Loads a bundle's jobs.json and claims every pending job whose server has exited, returning them to
+    /// run again. Jobs of a live server stay as they are.
+    func restore(bundle: URL, alive: (Int32) -> Bool = JobBoard.isAlive) -> [Job] {
+        let file = bundle.appendingPathComponent("jobs.json")
+        let saved = (try? JSONDecoder().decode([Job].self, from: Data(contentsOf: file))) ?? []
+        let claimed = lock.withLock { () -> [Job] in
+            guard bundleURL != bundle || !list.contains(where: { $0.isPending && $0.pid == pid }) else { return [] }
+            bundleURL = bundle
+            list = saved
+            var out: [Job] = []
+            for i in list.indices where list[i].isPending {
+                if let owner = list[i].pid, owner != pid, alive(owner) { continue }
+                list[i].status = "queued"
+                list[i].progress = 0
+                list[i].pid = pid
+                list[i].message = "resumed after the previous server exited"
+                out.append(list[i])
+            }
+            return out
+        }
+        save()
+        return claimed
+    }
+
+    /// Runs a restored job under its own id.
+    func resume(_ job: Job, _ work: @escaping Work) {
+        schedule(job.id, work)
+    }
+
+    static func isAlive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 || errno == EPERM }
 
     func update(_ id: String, _ body: (inout Job) -> Void) {
         lock.withLock {
@@ -62,16 +109,44 @@ final class JobBoard: @unchecked Sendable {
         try? data.write(to: url.appendingPathComponent("jobs.json"), options: .atomic)
     }
 
-    /// Waits until the queue is empty or the timeout passes.
-    func wait(timeout: Seconds) async {
+    /// Waits until this process's pending jobs (for `mediaId` when given) finish or the timeout passes;
+    /// false on timeout.
+    @discardableResult
+    func wait(timeout: Seconds, mediaId: String? = nil) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        while !active.isEmpty && Date() < deadline { try? await Task.sleep(nanoseconds: 200_000_000) }
+        func pending() -> Bool { active.contains { mediaId == nil || $0.mediaId == mediaId } }
+        while pending() && Date() < deadline { try? await Task.sleep(nanoseconds: 200_000_000) }
+        return !pending()
     }
 
     var statusLine: String? {
         let a = active
         guard !a.isEmpty else { return nil }
         return "Analysis running: " + a.map { "\($0.mediaId) \($0.features.joined(separator: "+")) \(Int($0.progress * 100))%" }.joined(separator: ", ")
+    }
+}
+
+extension Session {
+    /// Re-queues analysis an exited server left unfinished in this bundle.
+    @discardableResult
+    func resumeJobs(_ b: ProjectBundle) -> [String] {
+        let claimed = jobs.restore(bundle: b.url)
+        guard !claimed.isEmpty, let p = try? b.loadProject() else { return [] }
+        var out: [String] = []
+        for job in claimed {
+            let features = job.features.compactMap(Feature.init(rawValue:))
+            guard let m = p.mediaAsset(job.mediaId), !features.isEmpty else {
+                jobs.update(job.id) { $0.status = "failed"; $0.message = "media \(job.mediaId) is no longer in the project" }
+                continue
+            }
+            let language = job.language ?? "en-US"
+            let explicit = job.explicit ?? (Set(features) != Set(Session.defaultFeatures(m).later))
+            jobs.resume(job) { [self] progress in
+                try await analyze(m, features: features, language: language, explicit: explicit, progress: progress)
+            }
+            out.append("\(job.id) \(job.mediaId) \(job.features.joined(separator: "+"))")
+        }
+        return out
     }
 }
 

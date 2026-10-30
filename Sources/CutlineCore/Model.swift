@@ -89,16 +89,19 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
     public var background: RGBA
     /// Output color: Rec.709 SDR (default), Display P3, or HDR as Rec.2100 HLG or PQ.
     public var colorSpace: WorkingSpace
+    /// Timecode of the first timeline frame ("hh:mm:ss:ff"); nil uses TimecodeFormat.defaultStart.
+    public var timecodeStart: String?
 
-    public init(width: Int = 1920, height: Int = 1080, fps: Double = 30, background: RGBA = .black, colorSpace: WorkingSpace = .rec709) {
+    public init(width: Int = 1920, height: Int = 1080, fps: Double = 30, background: RGBA = .black, colorSpace: WorkingSpace = .rec709, timecodeStart: String? = nil) {
         self.width = width
         self.height = height
         self.fps = fps
         self.background = background
         self.colorSpace = colorSpace
+        self.timecodeStart = timecodeStart
     }
 
-    enum CodingKeys: String, CodingKey { case width, height, fps, background, colorSpace }
+    enum CodingKeys: String, CodingKey { case width, height, fps, background, colorSpace, timecodeStart }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -107,6 +110,7 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
         fps = try c.decode(Double.self, forKey: .fps)
         background = try c.decodeIfPresent(RGBA.self, forKey: .background) ?? .black
         colorSpace = try c.decodeIfPresent(WorkingSpace.self, forKey: .colorSpace) ?? .rec709
+        timecodeStart = try c.decodeIfPresent(String.self, forKey: .timecodeStart)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -116,6 +120,7 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
         try c.encode(fps, forKey: .fps)
         try c.encode(background, forKey: .background)
         if colorSpace != .rec709 { try c.encode(colorSpace, forKey: .colorSpace) }
+        try c.encodeIfPresent(timecodeStart, forKey: .timecodeStart)
     }
 
     public func snap(_ t: Seconds) -> Seconds {

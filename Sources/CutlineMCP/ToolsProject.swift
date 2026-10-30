@@ -26,6 +26,7 @@ extension Toolbox {
             "fps": Schema.number("Frame rate, default 30"),
             "background": Schema.string("Background color as hex, default #000000"),
             "color_space": Schema.string("Output color: rec709 (SDR, default), p3 (Display P3), rec2020_hlg or rec2020_pq (HDR, exports as 10-bit HEVC)", values: WorkingSpace.allCases.map(\.rawValue)),
+            "timecode_start": Schema.string("Timecode of the first timeline frame in exports, \"hh:mm:ss:ff\" (drop frame at 29.97 and 59.94); default 01:00:00:00"),
         ]
 
         add(Tool(name: "project_create", description: "Create a new Cutline project (a .cutline folder holding the timeline, history, comments and analysis), open it in this session and, by default, in the preview app the human watches.", schema: Schema.object(canvasProps.merging([
@@ -63,6 +64,7 @@ extension Toolbox {
             let b = try session.open(url)
             var msg = ""
             if args.bool("open_preview", default: false) { msg = try session.openPreview() + "\n" }
+            if !session.resumed.isEmpty { msg += "Resumed analysis an exited server left unfinished: " + session.resumed.joined(separator: ", ") + " (analysis_read wait:300 blocks until done)\n" }
             return .text(msg + Describe.project(try b.loadProject(), bundle: b))
         })
 
@@ -180,6 +182,12 @@ extension Toolbox {
         if let f = args.optDouble("fps") { c.fps = f }
         if let bg = try args.color("background") { c.background = bg }
         if let cs = try args.enumValue("color_space", WorkingSpace.self) { c.colorSpace = cs }
+        guard c.fps >= 1, c.fps <= 240 else { throw EditError("fps must be between 1 and 240") }
+        if let tc = args.optString("timecode_start") {
+            let format = TimecodeFormat(fps: c.fps)
+            guard let frames = format.frames(tc) else { throw EditError("timecode_start is hh:mm:ss:ff, e.g. 01:00:00:00, with frames below \(format.nominal)") }
+            c.timecodeStart = format.string(frames)
+        }
         guard c.width >= 16, c.height >= 16, c.width <= 8192, c.height <= 8192 else { throw EditError("Canvas must be between 16 and 8192 pixels") }
         guard c.fps >= 1, c.fps <= 240 else { throw EditError("fps must be between 1 and 240") }
         c.width -= c.width % 2

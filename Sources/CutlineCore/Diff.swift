@@ -4,9 +4,12 @@ import Foundation
 extension Project {
     public func changes(from old: Project) -> [String] {
         var out: [String] = []
-        if canvas != old.canvas {
+        var shape = canvas
+        shape.timecodeStart = old.canvas.timecodeStart
+        if shape != old.canvas {
             out.append("canvas \(old.canvas.width)×\(old.canvas.height)@\(old.canvas.fps) \(old.canvas.colorSpace.rawValue) → \(canvas.width)×\(canvas.height)@\(canvas.fps) \(canvas.colorSpace.rawValue)")
         }
+        if canvas.startTimecode != old.canvas.startTimecode { out.append("start timecode \(old.canvas.startTimecode) → \(canvas.startTimecode)") }
         let oldMedia = Set(old.media.map(\.id)), newMedia = Set(media.map(\.id))
         for id in newMedia.subtracting(oldMedia).sorted() { out.append("+ media \(id)") }
         for id in oldMedia.subtracting(newMedia).sorted() { out.append("- media \(id)") }

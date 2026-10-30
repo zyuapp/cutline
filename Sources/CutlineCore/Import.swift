@@ -1720,8 +1720,8 @@ extension Project {
     /// from or to nothing go through black. Only media clips are listed.
     public func edl(title: String) -> String {
         let grid = FrameGrid(fps: canvas.fps)
-        let nominal = max(1, Int(grid.rate.rounded()))
-        let drop = grid.num == 1001 && EDLTimecode.dropFrames(nominal) > 0
+        let format = TimecodeFormat(fps: canvas.fps)
+        let nominal = format.nominal, drop = format.dropFrame
         let origin = EDLTimecode.frames(1, 0, 0, 0, nominal: nominal, drop: drop)
         func tc(_ f: Int) -> String { EDLTimecode.string(f, nominal: nominal, drop: drop) }
         func pad(_ s: String, _ n: Int) -> String { s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }

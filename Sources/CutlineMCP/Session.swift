@@ -14,6 +14,8 @@ final class Session {
     let library = MediaLibrary()
     var built: (project: Project, transcripts: [String: Transcript], timeline: BuiltTimeline)?
     let jobs = JobBoard()
+    /// Jobs the last `open` re-queued from an exited server.
+    var resumed: [String] = []
 
     static var stateURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Cutline", isDirectory: true)
@@ -30,8 +32,7 @@ final class Session {
         let b = ProjectBundle(url: url)
         bundle = b
         built = nil
-        // Jobs from a server that has exited will never finish.
-        if jobs.active.isEmpty { try? FileManager.default.removeItem(at: url.appendingPathComponent("jobs.json")) }
+        resumed = resumeJobs(b)
         var recent = Session.recentProjects.filter { $0 != url.path }
         recent.insert(url.path, at: 0)
         try? JSONEncoder().encode(Array(recent.prefix(10))).write(to: Session.stateURL)

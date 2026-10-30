@@ -45,14 +45,28 @@ extension Toolbox {
             "what": Schema.string("What to read", values: ["summary", "beats", "speakers", "shots", "sounds", "faces", "levels", "jobs"]),
             "start": Schema.time("From this source time"),
             "end": Schema.time("Until this source time"),
-            "wait": Schema.number("Seconds to wait for running analysis to finish first (up to 600), e.g. before reframing on face data"),
+            "wait": Schema.number("Seconds to wait for running or resumed analysis of this media (all media without media_id) to finish first (up to 600), e.g. before reframing on face data"),
+            "start_missing": Schema.bool("When the requested analysis was never run and isn't queued, start it in the background (then wait applies to it); default false"),
         ])) { [unowned self] args in
-            if let w = args.optDouble("wait"), w > 0 { await session.jobs.wait(timeout: min(w, 600)) }
             let b = try session.requireBundle()
             let p = try session.project()
             let what = args.optString("what") ?? "summary"
-            let lo = try args.optSourceTime("start") ?? 0, hi = try args.optSourceTime("end") ?? .infinity
             var lines: [String] = []
+            if let id = args.optString("media_id"), let m = p.mediaAsset(id), let feature = Toolbox.feature(for: what),
+               !Toolbox.hasAnalysis(feature, id, b), !session.jobs.active.contains(where: { $0.mediaId == id && $0.features.contains(feature.rawValue) }) {
+                if args.bool("start_missing", default: false) {
+                    let job = session.jobs.enqueue(id, [feature], bundle: b.url, explicit: true) { [session] progress in
+                        try await session.analyze(m, features: [feature], language: "en-US", explicit: true, progress: progress)
+                    }
+                    lines.append("Started \(feature.rawValue) analysis of \(id) (\(job)).")
+                } else {
+                    lines.append("\(feature.rawValue) analysis of \(id) was never run and isn't queued, so waiting won't help. Pass start_missing:true (with wait) or run media_analyze media_id:\"\(id)\" features:[\"\(feature.rawValue)\"].")
+                }
+            }
+            if let w = args.optDouble("wait"), w > 0, !(await session.jobs.wait(timeout: min(w, 600), mediaId: args.optString("media_id"))) {
+                lines.append("Analysis still running after \(Int(min(w, 600)))s.")
+            }
+            let lo = try args.optSourceTime("start") ?? 0, hi = try args.optSourceTime("end") ?? .infinity
             guard let id = args.optString("media_id") else {
                 let index = b.anchorIndex(for: p)
                 if what == "summary" || what == "beats" {
@@ -119,6 +133,21 @@ extension Toolbox {
             }
             return .text(lines.joined(separator: "\n").ifEmptyText("No \(what) analysis for \(id)."))
         })
+    }
+
+    /// The analysis feature an analysis_read `what` needs; nil for reads of import-time results.
+    static func feature(for what: String) -> Feature? {
+        switch what {
+        case "shots", "faces": .shots
+        case "beats": .beats
+        case "speakers": .speakers
+        case "sounds": .sounds
+        default: nil
+        }
+    }
+
+    static func hasAnalysis(_ f: Feature, _ mediaId: String, _ b: ProjectBundle) -> Bool {
+        FileManager.default.fileExists(atPath: b.analysisURL.appendingPathComponent("\(mediaId).\(f.rawValue).json").path)
     }
 
     /// "12:3.50, 13:4.00 …" with each time's index in the full list.

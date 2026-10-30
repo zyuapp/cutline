@@ -397,7 +397,7 @@ extension Project {
             }
         }
         let sequence = XMLElem("sequence", [
-            ("format", sequenceFormat), ("duration", grid.fcp(end)), ("tcStart", "0s"), ("tcFormat", "NDF"),
+            ("format", sequenceFormat), ("duration", grid.fcp(end)), ("tcStart", "0s"), ("tcFormat", TimecodeFormat(fps: canvas.fps).dropFrame ? "DF" : "NDF"),
             ("audioLayout", "stereo"), ("audioRate", "48k"),
         ], children: [XMLElem("spine", children: spineElems)])
         let root = XMLElem("fcpxml", [("version", "1.11")], children: [
