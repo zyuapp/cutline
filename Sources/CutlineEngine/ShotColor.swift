@@ -59,7 +59,8 @@ public enum ShotColor {
     /// seconds into the clip, as an sRGB image of the same size.
     public static func picture(_ frame: CGImage, effects: [Effect], before effect: String?, clip: Clip?, at local: Seconds) -> CGImage {
         let upTo = effect.flatMap { id in effects.firstIndex { $0.id == id } } ?? effects.count
-        let stack = effects[..<upTo].filter { !EffectCatalog.isAudio($0.type) && EffectCatalog.type($0.type)?.category != "mask" }
+        let source = clip.map { $0.sourceTime(atTimeline: $0.start + local) }
+        let stack = effects[..<upTo].filter { e in source.map { e.acts(atSource: $0) } ?? true }.filter { !EffectCatalog.isAudio($0.type) && EffectCatalog.type($0.type)?.category != "mask" }
         guard !stack.isEmpty else { return frame }
         let img = CIImage(cgImage: frame)
         let ctx = EffectRenderer.Context(unit: img.extent.height, time: local, opaque: true)

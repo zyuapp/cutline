@@ -337,6 +337,7 @@ enum Describe {
         if c.effects.isEmpty { lines.append("Effects: none (effect_add to add; catalog lists types)") }
         else if let graph = EffectNodes.describe(c.effects) { lines.append(graph) }
         else { lines.append("Effects, applied in order: " + c.effects.map { "\($0.id) \($0.type)\($0.enabled ? "" : " (off)")" }.joined(separator: " → ")) }
+        for e in c.effects { if let r = e.sourceRange { let t = c.timelineSpan(ofSource: r); lines.append("\(e.id) acts only in the shot at \(fmt2(t.start))–\(fmt2(t.end))s (source \(fmt2(r.start))–\(fmt2(r.end))s); effect_add id:\(e.id) scope:\"clip\" lifts that") } }
         lines.append("Key times are seconds from the clip start (\(fmt2(c.start)) on the timeline).")
         return lines.joined(separator: "\n")
     }

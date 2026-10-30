@@ -107,7 +107,7 @@ public final class RenderScene: @unchecked Sendable {
                 guard opacity > 0.001 else { continue }
                 flush()
                 let ctx = EffectRenderer.Context(unit: unit, time: t, opaque: true, gradeSpace: gradeSpace)
-                var adjusted = EffectRenderer.apply(clip.effects, to: out, context: ctx) { e, name in clip.anim["fx.\(e.id).\(name)"]?.value(at: local) }
+                var adjusted = EffectRenderer.apply(clip.effects(atTimeline: t), to: out, context: ctx) { e, name in clip.anim["fx.\(e.id).\(name)"]?.value(at: local) }
                 adjusted = EffectRenderer.apply(track.effects, to: adjusted, context: ctx) { _, _ in nil }
                 adjusted = EffectRenderer.confine(adjusted, to: cover)
                 if opacity < 0.999 { adjusted = alpha(adjusted, opacity) }
@@ -242,12 +242,14 @@ public final class RenderScene: @unchecked Sendable {
             ctx.source = MaskCache.Key(mediaId: mid, time: images[mid] != nil ? 0 : clip.sourceTime(atTimeline: t))
             ctx.crop = xf.crop
         }
+        let effects = clip.effects(atTimeline: t)
         if let view = matteView, view.clip == clip.id {
-            guard let m = EffectRenderer.matte(clip.effects, id: view.effect, to: layer, context: ctx, param: param) else { return nil }
-            layer = m
+            guard let m = EffectRenderer.matte(effects, id: view.effect, to: layer, context: ctx, param: param) else { return nil }
+            // An effect limited to another shot acts nowhere in this one.
+            layer = effects.first { $0.id == view.effect }?.enabled == false && clip.effects.first { $0.id == view.effect }?.enabled == true ? CIImage(color: .black).cropped(to: m.extent) : m
             xf.opacity = 1
-        } else if !clip.effects.isEmpty {
-            layer = EffectRenderer.apply(clip.effects, to: layer, context: ctx, param: param)
+        } else if !effects.isEmpty {
+            layer = EffectRenderer.apply(effects, to: layer, context: ctx, param: param)
         }
         if xf.threeD { return place3D(layer, center: center, xf: xf, camera: camera(at: t)) }
         return place(layer, center: center, xf: xf)
@@ -406,7 +408,7 @@ public final class RenderScene: @unchecked Sendable {
 
     func captionImage(at t: Seconds) -> CIImage? {
         guard let seg = captions.first(where: { t >= $0.start && t < $0.end }) else { return nil }
-        let style = project.captions.style
+        let style = project.captionStyle
         let words = seg.words
         let active = words.lastIndex { $0.start <= t + 0.02 } ?? -1
         let mode = style.animation
@@ -438,7 +440,19 @@ public final class RenderScene: @unchecked Sendable {
             scale = 0.82 + 0.18 * Easing.easeOut.apply(age / 0.16)
         }
         let fadeOut = min(1, max(0, (seg.end - t) / 0.08))
-        return place(img!, center: CGPoint(x: canvas.midX, y: canvas.height * (1 - style.y)), scale: scale, rotation: 0, opacity: fadeOut)
+        var center = CGPoint(x: canvas.minX + canvas.width * (style.x ?? 0.5), y: canvas.minY + canvas.height * (1 - style.y))
+        // Inside a platform's UI-free area, a cue still too big for it (one long word) shrinks and moves in.
+        if let area = project.captionSafeArea?.rect {
+            let m: CGFloat = 0.01
+            let lo = canvas.minX + canvas.width * (area.minX + m), hi = canvas.minX + canvas.width * (area.maxX - m)
+            let bottom = canvas.minY + canvas.height * (1 - area.maxY + m), top = canvas.minY + canvas.height * (1 - area.minY - m)
+            let e = img!.extent
+            let fit = min(1, (hi - lo) / max(e.width, 1), (top - bottom) / max(e.height, 1))
+            let w = e.width * fit / 2, h = e.height * fit / 2
+            center = CGPoint(x: min(max(center.x, lo + w), hi - w), y: min(max(center.y, bottom + h), top - h))
+            scale *= fit
+        }
+        return place(img!, center: center, scale: scale, rotation: 0, opacity: fadeOut)
     }
 }
 

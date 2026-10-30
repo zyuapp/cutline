@@ -48,7 +48,7 @@ public enum GeneratorRenderer {
 
     /// Renders with `params` over the catalog defaults.
     public static func render(type: String, params: [String: ParamValue], canvas: CGSize, time: Double = 0, duration: Double = 0) -> CGImage? {
-        render(type: type, value: { params[$0] ?? GeneratorCatalog.spec(type: type, name: $0, params: params)?.defaultValue ?? .number(0) }, canvas: canvas, time: time, duration: duration)
+        render(type: type, value: { params[$0] ?? GeneratorCatalog.defaultValue(type: type, name: $0, params: params) ?? .number(0) }, canvas: canvas, time: time, duration: duration)
     }
 
     struct Values {

@@ -173,6 +173,11 @@ extension Toolbox {
             .init("offset_y", .number, "Fraction of the frame, default 0; negative is above"),
             .init("smooth", .number, "Default 0.2"),
         ]),
+        RecipeSpec(name: "safe_zone_fix", group: "Framing", summary: "Moves every title and text graphic that pokes out of a platform's UI-free area back inside (shrinking it when it can't fit) and keeps captions inside it.", args: [
+            .init("platform", .string, "Platform id (tiktok, instagram_reels, youtube_shorts…); default captions' platform, or the vertical platforms' shared area on a 9:16 canvas"),
+            .init("clips", .ids, "Only these clips"),
+            .init("margin", .number, "Distance kept from the area's edge, default 0.01"),
+        ]),
         RecipeSpec(name: "beat_cut", group: "Rhythm", summary: "Cuts footage to the analyzed music beats, picking each shot by quality (shot analysis: aesthetics, faces; else a quick sharpness sample) with motion matched to the music's energy, never repeating a moment and alternating sources; fill-framed shots keep faces in view. Waits briefly for running shot analysis and says how it picked.", args: [
             .init("media", .ids, "Media ids (analyzed shots, best first)"),
             .init("sources", .objects, "Or explicit source ranges", fields: [
@@ -230,9 +235,11 @@ extension Toolbox {
             .init("direction", .string, "Default left"),
             .init("duration", .number, "Seconds, default 0.35"),
         ]),
-        RecipeSpec(name: "kinetic_text", group: "Style", summary: "Spoken words appear as they are said.", args: [
+        RecipeSpec(name: "kinetic_text", group: "Style", summary: "Spoken words appear as they are said, or your own words (text) evenly or on the music's beats.", args: [
             .init("start", .time, "Timeline time or word anchor"),
-            .init("end", .time, "Timeline time or word anchor"),
+            .init("end", .time, "Timeline time or word anchor; with text, default 0.5 s per word"),
+            .init("text", .any, "Your own words (a string or a list) instead of the transcript"),
+            .init("timing", .string, "With text: even (default), beats or downbeats (one word per beat of the timeline's music)"),
             .init("preset", .string, "Word animation, default pop"),
             .init("size", .number, "Default 0.09"),
             .init("y", .number, "Default 0.5"),
@@ -254,6 +261,7 @@ extension Toolbox {
             .init("reference_at", .time, "Timeline time of the exact reference frame (picks the clip there when reference is omitted)"),
             .init("strength", .number, "0…1, default 0.8"),
             .init("allow_large", .bool, "Lift the lightness cap, default false"),
+            .init("scope", .string, "shot (default): a clip that plays several shots (scene cuts) gets one LUT per shot, and a reference spanning several is measured in the shot at reference_at (else its middle); clip: one LUT per clip"),
         ]),
         RecipeSpec(name: "grade_group", group: "Color", summary: "Adds one shared effect with that id to every clip (clips added to an existing group copy its settings). Change the group with param_set target \"group:<id>\" and fx.<id>.<param>; effect_add target \"group:<id>\" works too.", args: [
             .init("clips", .ids, "Clip ids"),
@@ -275,7 +283,12 @@ extension Toolbox {
             .init("at", .time, "Default the clip's middle"),
             .init("effect", .string, "Existing effect id to key; default a new one"),
             .init("type", .string, "Type of a new effect, default color.wheels"),
-            .init("window", .bool, "With face: an ellipse window on the face (default true)"),
+            .init("window", .bool, "With face: an ellipse window on the face (default true); with shot analysis it follows that face through the shot"),
+            .init("scope", .string, "shot: act only in the shot (scene cuts) at at, the default when the clip plays several; each_shot: sample and key every shot on its own (face windows per shot); clip: the whole clip"),
+        ]),
+        RecipeSpec(name: "split_at_shots", group: "Color", summary: "Splits clips at their media's analyzed scene cuts (like Resolve's scene cut detector) so each shot can be graded on its own; linked sound splits with its picture.", args: [
+            .init("clips", .ids, "Clips to split; default every media clip on V1"),
+            .init("track", .string, "Or every media clip on this track"),
         ]),
         RecipeSpec(name: "remove_object", group: "Finishing", summary: "Paints an object out with the background from other frames where it shows (aligned to the camera's motion, temporal median), a clean plate if given, and patch-based inpainting that continues lines where no frame shows it; rendered in the background as a processed copy.", args: [
             .init("clip", .string, "Video clip"),

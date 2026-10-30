@@ -285,7 +285,8 @@ extension Toolbox {
             let inside = f.time >= clip.start && f.time < clip.end
             let (full, partial) = Toolbox.matteCoverage(f.image)
             frames[i].label += inside ? "" : " (clip not playing)"
-            lines.append("\(fmt2(f.time))s  " + (inside ? "\(Int((full * 100).rounded()))% of the frame white, \(Int((partial * 100).rounded()))% partial" : "\(clipId) is not on screen"))
+            let elsewhere = inside && !fx.acts(atSource: clip.sourceTime(atTimeline: f.time)) ? " (\(effectId) acts only in another shot)" : ""
+            lines.append("\(fmt2(f.time))s  " + (inside ? "\(Int((full * 100).rounded()))% of the frame white, \(Int((partial * 100).rounded()))% partial" + elsewhere : "\(clipId) is not on screen"))
         }
         guard let jpeg = Frames.contactSheet(frames, columns: large ? min(2, frames.count) : nil, cellWidth: cell) else { throw EditError("Could not render frames") }
         var r = ToolResult.text(lines.joined(separator: "\n"))

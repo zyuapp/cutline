@@ -162,9 +162,26 @@ public enum PictureMeter {
     /// Where each title and caption sits, and its WCAG contrast against the picture behind it.
     /// `background` renders the timeline without text at a time.
     public static func checkText(_ project: Project, captions: [CaptionSegment], safe: CGRect = CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9), background: (Seconds) async throws -> CGImage) async throws -> [TextCheck] {
+        var out: [TextCheck] = []
+        for (_, label, t, box, colors) in textSamples(project, captions: captions) {
+            let bg = try await background(t)
+            let contrast = colors.contrast(over: luminances(bg, box: box))
+            let overflow = max(0, safe.minX - box.minX, box.maxX - safe.maxX, safe.minY - box.minY, box.maxY - safe.maxY)
+            out.append(TextCheck(label: label, time: t, box: box, contrast: contrast, safeOverflow: overflow))
+        }
+        return out
+    }
+
+    /// Where each title, text-bearing graphic and the longest captions sit: clip id (nil for captions), label,
+    /// the time sampled and the box in canvas fractions (origin top left).
+    public static func textBoxes(_ project: Project, captions: [CaptionSegment] = []) -> [(clip: String?, label: String, time: Seconds, box: CGRect)] {
+        textSamples(project, captions: captions).map { ($0.0, $0.1, $0.2, $0.3) }
+    }
+
+    static func textSamples(_ project: Project, captions: [CaptionSegment]) -> [(String?, String, Seconds, CGRect, TextStyleColors)] {
         let scene = RenderScene(project: project, captions: captions, trackIDs: [:], orientations: [:], images: [:])
         let canvas = scene.canvasRect
-        var samples: [(String, Seconds, CGRect, TextStyleColors)] = []
+        var samples: [(String?, String, Seconds, CGRect, TextStyleColors)] = []
         for track in project.tracks where track.kind == .video && !track.hidden {
             for clip in track.clips where clip.kind == .text {
                 let t = clip.start + min(clip.duration * 0.5, max(0.5, clip.duration * 0.3))
@@ -175,7 +192,7 @@ public enum PictureMeter {
                 let cx = canvas.width * (spec.x + xf.x), cyTop = canvas.height * (spec.y + xf.y)
                 let box = CGRect(x: (cx - size.width / 2) / canvas.width, y: (cyTop - size.height / 2) / canvas.height, width: size.width / canvas.width, height: size.height / canvas.height)
                 let name = "\(clip.id) \"\(spec.text.prefix(24))\""
-                samples.append((name, t, box, TextStyleColors(text: spec.color, background: spec.background, stroke: spec.strokeWidth > 0.04 ? spec.stroke : nil)))
+                samples.append((clip.id, name, t, box, TextStyleColors(text: spec.color, background: spec.background, stroke: spec.strokeWidth > 0.04 ? spec.stroke : nil)))
             }
             // Lower thirds, callouts and counters are titles too.
             for clip in track.clips where clip.kind == .generator {
@@ -185,27 +202,20 @@ public enum PictureMeter {
                       let drawn = opaqueBounds(img) else { continue }
                 let xf = clip.resolvedTransform(at: local)
                 let box = CGRect(x: 0.5 + (drawn.minX - 0.5) * xf.scale + xf.x, y: 0.5 + (drawn.minY - 0.5) * xf.scale + xf.y, width: drawn.width * xf.scale, height: drawn.height * xf.scale)
-                samples.append(("\(clip.id) \"\(words.text.prefix(24))\"", clip.start + local, box, TextStyleColors(text: words.color, background: words.background, stroke: nil)))
+                samples.append((clip.id, "\(clip.id) \"\(words.text.prefix(24))\"", clip.start + local, box, TextStyleColors(text: words.color, background: words.background, stroke: nil)))
             }
         }
         if project.captions.enabled {
-            let style = project.captions.style
+            let style = project.captionStyle
             for seg in captions.sorted(by: { $0.text.count > $1.text.count }).prefix(4) {
                 let t = (seg.start + seg.end) / 2
                 guard let img = scene.captionImage(at: t) else { continue }
                 let e = img.extent
                 let box = CGRect(x: e.minX / canvas.width, y: (canvas.height - e.maxY) / canvas.height, width: e.width / canvas.width, height: e.height / canvas.height)
-                samples.append(("caption \"\(seg.text.replacingOccurrences(of: "\n", with: " ").prefix(24))\"", t, box, TextStyleColors(text: style.color, background: style.background, stroke: style.strokeWidth > 0.04 ? style.stroke : nil)))
+                samples.append((nil, "caption \"\(seg.text.replacingOccurrences(of: "\n", with: " ").prefix(24))\"", t, box, TextStyleColors(text: style.color, background: style.background, stroke: style.strokeWidth > 0.04 ? style.stroke : nil)))
             }
         }
-        var out: [TextCheck] = []
-        for (label, t, box, colors) in samples {
-            let bg = try await background(t)
-            let contrast = colors.contrast(over: luminances(bg, box: box))
-            let overflow = max(0, safe.minX - box.minX, box.maxX - safe.maxX, safe.minY - box.minY, box.maxY - safe.maxY)
-            out.append(TextCheck(label: label, time: t, box: box, contrast: contrast, safeOverflow: overflow))
-        }
-        return out
+        return samples
     }
 
     /// The box around a canvas-sized image's visible pixels, in fractions of the image (origin top left).

@@ -266,6 +266,7 @@ extension Toolbox {
             if c.contrast < 3 { s += " — hard to read; add text.stroke, text.background, a darker/lighter color, or move it" }
             else if c.contrast < 4.5 { s += " — fine for large text only" }
             s += c.safeOverflow > 0.001 ? ", outside \(safeName) by \(fmt1(c.safeOverflow * 100))% of the frame" : ", inside \(safeName)"
+            if c.safeOverflow > 0.001, let platform { s += c.label.hasPrefix("caption") ? "; captions_set platform:\"\(platform.id)\" keeps captions inside" : "; recipe safe_zone_fix {\"platform\": \"\(platform.id)\"} moves every title and graphic inside" }
             lines.append(s)
         }
         return lines

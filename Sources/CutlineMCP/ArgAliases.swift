@@ -42,6 +42,25 @@ extension Toolbox {
         ArgAliasGroup(["comment_id", "comment", "id"], only: ["comment_reply"]),
         ArgAliasGroup(["id", "effect_id", "effect"], only: ["effect_add"]),
         ArgAliasGroup(["id", "transition_id", "transition"], only: ["transition_set"]),
+        ArgAliasGroup(["operations", "ops", "steps", "edits", "patch", "patches"], only: ["batch", "project_patch"]),
+        ArgAliasGroup(["cut", "cuts"], only: ["transition_set", "whip_pan"]),
+        ArgAliasGroup(["edge", "side"], only: ["transition_set"]),
+        ArgAliasGroup(["args", "arguments", "parameters"], only: ["recipe"]),
+        ArgAliasGroup(["type", "transition_type", "kind"], only: ["transition_set"]),
+        ArgAliasGroup(["params", "parameters", "settings", "options"], only: ["effect_add", "audio_bus", "transition_set"]),
+        ArgAliasGroup(["set", "values", "params", "parameters"], only: ["param_set"]),
+        ArgAliasGroup(["text", "words", "phrase", "content"], only: ["kinetic_text", "text_add"]),
+        ArgAliasGroup(["start", "at"], only: ["clip_add", "text_add"]),
+        ArgAliasGroup(["reference", "ref", "reference_clip", "match_to"], only: ["match_color", "timeline_measure"]),
+        ArgAliasGroup(["look", "style"], only: ["look"]),
+        ArgAliasGroup(["preset", "style"], only: ["captions_set"]),
+        ArgAliasGroup(["preset", "codec"], only: ["export"]),
+        ArgAliasGroup(["path", "output", "output_path", "file", "filename"], only: ["export"]),
+        ArgAliasGroup(["kind", "type"], only: ["track_add"]),
+        ArgAliasGroup(["platform", "target_platform"], only: ["export", "captions_set", "safe_zone_fix", "timeline_measure"]),
+        ArgAliasGroup(["scope", "per"], only: ["qualify", "match_color", "effect_add"]),
+        ArgAliasGroup(["timing", "on", "sync"], only: ["kinetic_text"]),
+        ArgAliasGroup(["amount_db", "amount", "depth", "depth_db"], only: ["duck"]),
     ]
 
     /// Every alias `tool` accepts and the declared argument it stands for.
@@ -98,7 +117,13 @@ extension Toolbox {
         guard var a = try args.map({ try Toolbox.applyingAliases(tool, $0, schema: schema) }) else { return nil }
         if tool == "batch", case .array(var ops)? = a["operations"] {
             for i in ops.indices {
-                guard case .object(var op) = ops[i], let name = op["tool"]?.string, let e = edits[name], let opArgs = op["args"] else { continue }
+                guard case .object(var op) = ops[i] else { continue }
+                // {name, arguments} and {tool, params} are other spellings of {tool, args}.
+                for (from, to) in [("name", "tool"), ("arguments", "args"), ("params", "args"), ("input", "args")] where op[to] == nil && op[from] != nil {
+                    op[to] = op.removeValue(forKey: from)
+                }
+                ops[i] = .object(op)
+                guard let name = op["tool"]?.string, let e = edits[name], let opArgs = op["args"] else { continue }
                 op["args"] = try Toolbox.applyingAliases(name, opArgs, schema: Toolbox.withDryRun(e.schema))
                 ops[i] = .object(op)
             }

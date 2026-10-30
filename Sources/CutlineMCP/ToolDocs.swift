@@ -135,6 +135,7 @@ extension Toolbox {
             "color": "Hex", "highlight_color": "Hex, spoken word", "background": "Hex or none", "stroke": "Hex or none", "stroke_width": "",
             "uppercase": "", "y": "Center, default 0.82", "max_width": "", "max_words_per_line": "", "max_lines": "Lines at once; longer cues page",
             "replacements": "{\"cut line\": \"Cutline\"}; \"\" deletes", "hidden_words": "Never captioned", "track_ids": "Default the dialogue tracks",
+            "platform": "Stay inside its UI-free area: id, auto (9:16 canvas) or none",
         ]),
         "markers": ToolBrief(text: "Timeline markers (anchors \"marker:<label>\"), or with media_id keyword/rating tags on source ranges.", args: [
             "add": "[{time, end, label, kind, color, note, rating}]", "add[].color": "", "add[].end": "", "add[].kind": "", "add[].label": "",
@@ -151,7 +152,7 @@ extension Toolbox {
         "effect_add": ToolBrief(text: "Add, update (existing id), reorder or remove a picture or audio effect on clips, tracks, adjustment layers or the master. catalog lists types and parameters.", args: [
             "target": "Clip, track, \"V1/*\", \"group:<id>\", \"master\" or a list",
             "type": "Effect type (catalog)", "params": "", "id": "Default from type, e.g. vignette1", "index": "Stack position, 0 first",
-            "mix": "0…1", "enabled": "", "remove": "Remove this id (or every effect of type)",
+            "mix": "0…1", "enabled": "", "remove": "Remove this id (or every effect of type)", "scope": "shot: only the shot at at", "at": "",
         ]),
         "catalog": ToolBrief(text: "Reference: no arguments lists effects, transitions, blends, eases, paths and anchors. type: one effect; search; paths; recipe: a recipe's arguments; tool: a tool's full manual; plugins: Audio Units.", args: [
             "type": "Effect, transition or raw", "search": "", "paths": "", "recipe": "Name or \"all\"", "plugins": "", "tool": "Tool name",
@@ -160,6 +161,7 @@ extension Toolbox {
             "cut": "\"clip_a|clip_b\" or a list", "track": "Every cut on this track (skips misfits)", "from": "Alone: transition out", "to": "Alone: transition in",
             "type": "Default dissolve", "duration": "Default 0.5", "align": "Default center", "ease": "", "part": "Default both",
             "params": "e.g. {\"direction\": \"left\"}", "id": "Existing transition", "remove": "",
+            "clip": "With edge: the cut into or out of it", "edge": "in, out or both",
         ], hide: ["subframe"]),
         "trim": ToolBrief(text: "Trim an edit: plain, ripple, roll, slip or slide; part audio moves only the sound edge (J/L cut). Give to or by.", args: [
             "clip_id": "", "mode": "Default plain", "edge": "Default end", "to": "Timeline time or anchor for the edge",

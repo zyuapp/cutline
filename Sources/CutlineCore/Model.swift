@@ -953,6 +953,8 @@ public struct CaptionStyle: Codable, Equatable, Hashable, Sendable {
     public var maxWordsPerLine: Int
     public var maxLines: Int
     public var animation: CaptionAnimation
+    /// Horizontal center as a fraction of canvas width; nil is the middle.
+    public var x: Double?
 
     public init(font: String = "system", size: Double = 0.055, weight: Int = 800, color: RGBA = .white, highlightColor: RGBA = RGBA(hex: "#FFD60A")!, background: RGBA? = nil, stroke: RGBA? = .black, strokeWidth: Double = 0.12, shadow: Bool = true, uppercase: Bool = false, y: Double = 0.82, maxWidth: Double = 0.86, maxWordsPerLine: Int = 6, maxLines: Int = 2, animation: CaptionAnimation = .karaoke) {
         self.font = font
@@ -985,6 +987,8 @@ public struct Captions: Codable, Equatable, Sendable {
     public var trackIds: [String]
     /// Corrections to individual cues, keyed by the source words they cover.
     public var edits: [CaptionEdit]
+    /// Platform whose UI-free area the captions stay inside (`Platform.id`), or "none"; nil picks one from the canvas.
+    public var platform: String?
 
     public init(enabled: Bool = false, style: CaptionStyle = CaptionStyle(), replacements: [String: String] = [:], hiddenWords: [String] = [], trackIds: [String] = [], edits: [CaptionEdit] = []) {
         self.enabled = enabled
@@ -995,7 +999,7 @@ public struct Captions: Codable, Equatable, Sendable {
         self.edits = edits
     }
 
-    enum CodingKeys: String, CodingKey { case enabled, style, replacements, hiddenWords, trackIds, edits }
+    enum CodingKeys: String, CodingKey { case enabled, style, replacements, hiddenWords, trackIds, edits, platform }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1005,6 +1009,7 @@ public struct Captions: Codable, Equatable, Sendable {
         hiddenWords = try c.decodeIfPresent([String].self, forKey: .hiddenWords) ?? []
         trackIds = try c.decodeIfPresent([String].self, forKey: .trackIds) ?? []
         edits = try c.decodeIfPresent([CaptionEdit].self, forKey: .edits) ?? []
+        platform = try c.decodeIfPresent(String.self, forKey: .platform)
     }
 }
 
