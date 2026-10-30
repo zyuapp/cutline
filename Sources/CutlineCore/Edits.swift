@@ -401,8 +401,9 @@ extension Project {
             if clip.kind == .generator && !clip.effects.contains(where: { GeneratorCatalog.type($0.type) != nil }) { throw EditError("Generator clip \(clip.id) has no generator") }
         case .sequence:
             guard let seq = clip.mediaId.flatMap({ sequence($0) }) else { throw EditError("\(clip.id) references unknown sequence \(clip.mediaId ?? "nil")") }
-            guard clip.sourceIn >= -eps, clip.sourceIn + clip.duration <= seq.duration + canvas.frameDuration else {
-                throw EditError("\(clip.id) plays \(fmt(clip.sourceIn))–\(fmt(clip.sourceIn + clip.duration))s of \(seq.name), which is \(fmt(seq.duration))s long")
+            let window = Project.sequenceWindow(clip)
+            guard clip.sourceIn >= -eps, window.end <= seq.duration + canvas.frameDuration else {
+                throw EditError("\(clip.id) plays \(fmt(clip.sourceIn))–\(fmt(window.end))s of \(seq.name), which is \(fmt(seq.duration))s long")
             }
         }
     }

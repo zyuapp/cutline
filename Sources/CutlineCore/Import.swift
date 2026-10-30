@@ -851,6 +851,15 @@ final class FCPReader {
         return (map, speed)
     }
 
+    /// A compound or multicam clip's constant speed; sequence clips don't play reversed.
+    func sequenceSpeed(_ clip: inout Clip, _ speed: Double, _ e: XMLElement) {
+        guard abs(speed - 1) > 1e-6 else { return }
+        if speed < 0 {
+            warnings.append("Reverse on \(label(e)) not kept; it plays forward at \(String(format: "%.3g", -speed))×")
+        }
+        clampSpeed(&clip, abs(speed), e)
+    }
+
     func clampSpeed(_ clip: inout Clip, _ speed: Double, _ e: XMLElement) {
         var s = abs(speed)
         if s > 100 || s < 0.01 {
@@ -972,8 +981,8 @@ final class FCPReader {
             compounds[ref] = seq
         }
         let (map, speed) = timeMap(e)
-        if abs(speed - 1) > 1e-6 { warnings.append("Speed of compound clip \(label(e)) not kept") }
         var clip = Clip(id: "", kind: .sequence, name: e.attr("name") ?? res.attr("name"), mediaId: seq.id, start: 0, duration: 0, sourceIn: map(start) - seq.tcStart)
+        sequenceSpeed(&clip, speed, e)
         if e.attr("srcEnable") == "video" { clip.volume = 0 }
         adjust(e, &clip)
         return (clip, e.attr("srcEnable") == "audio" ? .audio : .video)
@@ -1025,8 +1034,8 @@ final class FCPReader {
         let picture = pictureSource.flatMap { known.angles[$0.attr("angleID")!] } ?? setup?.videoAngles.first?.name ?? ""
         let sound = enabled(["all", "audio"]).compactMap { known.angles[$0.attr("angleID")!] }
         let (map, speed) = timeMap(e)
-        if abs(speed - 1) > 1e-6 { warnings.append("Speed of multicam clip \(label(e)) not kept") }
         var clip = Clip(id: "", kind: .sequence, name: e.attr("name") ?? res.attr("name"), mediaId: known.id, start: 0, duration: 0, sourceIn: map(start) - known.tcStart)
+        sequenceSpeed(&clip, speed, e)
         clip.multicam = MulticamSwitch(cuts: [AngleCut(at: 0, angle: picture)], audio: sources.isEmpty ? nil : sound)
         if clip.name == res.attr("name") { clip.name = nil }
         adjust(e, &clip)
@@ -2355,7 +2364,7 @@ extension Project {
         for (host, clip) in hosted {
             guard let seq = clip.mediaId.flatMap(sequence) else { continue }
             let inner = inside(seq).flattenedSequences()
-            let window = TimeRange(clip.sourceIn, clip.sourceIn + clip.duration)
+            let window = Project.sequenceWindow(clip)
             var kept = Set<String>()
             var counts: [TrackKind: Int] = [:]
             for track in inner.tracks where !(track.muted && track.kind == .audio) && !(track.hidden && track.kind == .video) {
@@ -2364,8 +2373,8 @@ extension Project {
                     var c = c
                     if c.start < window.start { c = Project.trimmedLeft(c, to: window.start) }
                     if c.end > window.end { c = Project.trimmedRight(c, to: window.end) }
+                    c = Project.placed(c, in: clip)
                     c.id = "\(clip.id)/\(c.id)"
-                    c.start = clip.start + (c.start - clip.sourceIn)
                     c.volume *= clip.volume * track.volume
                     return c
                 }
@@ -3223,9 +3232,11 @@ final class XMEMLReader {
                 if text(param("reverse"), "value")?.uppercased() == "TRUE" { reverse = true }
                 if let v = number(param("speed"), "value") {
                     if v < 0 { reverse = true }
-                    if v == 0 { freeze = true } else if speed == 1, abs(abs(v) - 100) > 1e-6 {
-                        // Percent in Final Cut Pro 7 and Premiere; Hiero writes the factor itself.
-                        speed = abs(v) > 10 ? abs(v) / 100 : abs(v)
+                    if v == 0 { freeze = true } else if abs(abs(v) - 100) > 1e-6 {
+                        // Percent in Final Cut Pro 7 and Premiere; Hiero writes the factor itself. More exact than
+                        // the frame counts, which round.
+                        let factor = abs(v) > 10 ? abs(v) / 100 : abs(v)
+                        if speed == 1 || abs(factor - speed) < 0.03 * factor { speed = factor }
                     }
                 }
             case "audiolevels":
@@ -3806,8 +3817,9 @@ extension Project {
                         }
                     case .sequence:
                         guard let seq = c.mediaId.flatMap({ scope.sequence($0) }) else { continue }
-                        let inner = f(c.sourceIn)
-                        kids += [leaf("in", "\(inner + r0 - s - head)"), leaf("out", "\(inner + r1 - s + tail)")]
+                        let inner = f(c.sourceIn), k = Project.sequenceRate(c)
+                        func through(_ n: Int) -> Int { Int((Double(n) * k).rounded()) }
+                        kids += [leaf("in", "\(inner + through(r0 - s - head))"), leaf("out", "\(inner + through(r1 - s + tail))")]
                         let ref = "sequence-\(seq.id)"
                         if let setup = seq.multicam {
                             let shown = scope.visibleAngleRanges(c).first
@@ -3817,6 +3829,14 @@ extension Project {
                         } else {
                             sequenceDescribed.insert(ref)
                             kids.append(sequenceElem(scope.inside(seq), id: ref, name: seq.name, markers: []))
+                        }
+                        if abs(k - 1) > 1e-9 {
+                            kids.append(XMLElem("filter", children: [effect("Time Remap", id: "timeremap", category: "motion", type: "motion", mediaType: "video", [
+                                parameter("variablespeed", "variablespeed", "0"),
+                                parameter("speed", "speed", number(k * 100)),
+                                parameter("reverse", "reverse", "FALSE"),
+                                parameter("frameblending", "frameblending", "FALSE"),
+                            ])]))
                         }
                     case .text where kind == .video:
                         let spec = c.text ?? TextSpec(text: c.name ?? "")

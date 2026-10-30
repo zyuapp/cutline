@@ -791,6 +791,10 @@ final class AAFReader {
         if let s = slots.first, let seg = s.strong(0x4803) {
             m.duration = seconds(Double(length(seg)), rate(s))
         }
+        // The master clip spans only what the edit uses (plus handles); the file's source mob spans the whole file.
+        if let file = files.first, let seg = file.slot.strong(0x4803) {
+            m.duration = max(m.duration, seconds(Double(length(seg)), rate(file.slot)))
+        }
         for v in visits {
             for d in descriptors(v.mob) {
                 if isA(d, AAFClass.digitalImageDescriptor) {

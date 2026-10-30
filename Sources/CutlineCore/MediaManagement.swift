@@ -169,7 +169,7 @@ extension Project {
                     use(prefix + clip.id, id, hull)
                 case .sequence:
                     guard let seq = c.mediaId.flatMap({ sequence($0) }) else { continue }
-                    let inner = TimeRange(max(0, c.sourceIn - head), c.sourceIn + c.duration + tail)
+                    let inner = TimeRange(max(0, c.sourceIn - head), Project.sequenceWindow(c).end + tail)
                     collectSourceUses(tracks: seq.tracks, transitions: seq.transitions, window: inner, clipWindows: clipWindows, depth: depth + 1, prefix: prefix + clip.id + "/", use)
                 default:
                     continue

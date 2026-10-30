@@ -92,8 +92,8 @@ extension Project {
     }
 
     /// Multicam time at timeline time `t` of a multicam clip, and back.
-    public static func multicamTime(_ clip: Clip, timeline t: Seconds) -> Seconds { clip.sourceIn + (t - clip.start) }
-    public static func timelineTime(_ clip: Clip, multicam m: Seconds) -> Seconds { clip.start + (m - clip.sourceIn) }
+    public static func multicamTime(_ clip: Clip, timeline t: Seconds) -> Seconds { clip.sourceIn + (t - clip.start) * sequenceRate(clip) }
+    public static func timelineTime(_ clip: Clip, multicam m: Seconds) -> Seconds { clip.start + (m - clip.sourceIn) / sequenceRate(clip) }
 
     /// Builds a multicam source sequence from synced angles. `offsets` are each angle's source time at the moment
     /// the angles share as zero; the earliest angle starts the sequence.
@@ -172,7 +172,7 @@ extension Project {
 
     /// The ranges a multicam clip shows on the timeline, in timeline time.
     public func visibleAngleRanges(_ clip: Clip) -> [AngleRange] {
-        let lo = clip.sourceIn, hi = clip.sourceIn + clip.duration
+        let lo = clip.sourceIn, hi = Project.sequenceWindow(clip).end
         return angleRanges(clip).compactMap { r in
             let a = max(r.range.start, lo), b = min(r.range.end, hi)
             guard b > a + eps else { return nil }
@@ -388,7 +388,8 @@ extension Project {
                 for c in tracks[t].clips.sorted(by: { $0.start < $1.start }) {
                     if var a = out.last, a.kind == .sequence, c.kind == .sequence, a.mediaId == c.mediaId,
                        let id = c.mediaId, all.first(where: { $0.id == id })?.multicam != nil, let sw = a.multicam, let next = c.multicam,
-                       abs(a.end - c.start) < half, abs(a.sourceIn + a.duration - c.sourceIn) < half, a.speed == 1, c.speed == 1,
+                       abs(a.end - c.start) < half, abs(Project.sequenceWindow(a).end - c.sourceIn) < half * Project.sequenceRate(a),
+                       abs(a.speed - c.speed) < 1e-6, !a.isRetimed, !c.isRetimed, !a.reverse, !c.reverse,
                        !transitions.contains(where: { $0.from == a.id && $0.to == c.id }) {
                         var cuts = sw.cuts
                         if let n = next.cuts.first {
