@@ -12,6 +12,8 @@ public final class RenderScene: @unchecked Sendable {
     let trackIDs: [String: CMPersistentTrackID]
     let orientations: [String: CGImagePropertyOrientation]
     let images: [String: CIImage]
+    /// Color space color effects grade in: sRGB for SDR canvases, the canvas's own encoding for HDR.
+    let gradeSpace: CGColorSpace
     /// Video transition windows by track id.
     let windows: [String: [TransitionWindow]]
     private let cache = NSCache<NSString, CIImage>()
@@ -22,6 +24,7 @@ public final class RenderScene: @unchecked Sendable {
         self.trackIDs = trackIDs
         self.orientations = orientations
         self.images = images
+        gradeSpace = project.canvas.colorSpace.isHDR ? ColorManagement.colorSpace(project.canvas.colorSpace) : ColorCubes.space
         windows = Dictionary(grouping: project.transitionWindows.filter(\.transition.hasVideo), by: \.trackId)
         cache.countLimit = 400
     }
@@ -40,7 +43,7 @@ public final class RenderScene: @unchecked Sendable {
                 let p = w.progress(at: t)
                 var combined = TransitionRenderer.render(w.transition, a: a.flatMap { layer($0, at: t, source: source) }, b: b.flatMap { layer($0, at: t, source: source) }, p: p, canvas: canvas, frame: Int((t * project.canvas.fps).rounded()))
                 if !track.effects.isEmpty {
-                    combined = EffectRenderer.apply(track.effects, to: combined, context: EffectRenderer.Context(unit: unit, time: t, opaque: false)) { _, _ in nil }
+                    combined = EffectRenderer.apply(track.effects, to: combined, context: EffectRenderer.Context(unit: unit, time: t, opaque: false, gradeSpace: gradeSpace)) { _, _ in nil }
                 }
                 let mode = (p < 0.5 ? a ?? b : b ?? a)?.blend ?? .normal
                 out = EffectRenderer.blend(combined, over: out, mode: mode).cropped(to: canvas)
@@ -51,7 +54,7 @@ public final class RenderScene: @unchecked Sendable {
                 let local = t - clip.start
                 let opacity = clip.resolvedTransform(at: local).opacity
                 guard opacity > 0.001 else { continue }
-                let ctx = EffectRenderer.Context(unit: unit, time: t, opaque: true)
+                let ctx = EffectRenderer.Context(unit: unit, time: t, opaque: true, gradeSpace: gradeSpace)
                 var adjusted = EffectRenderer.apply(clip.effects, to: out, context: ctx) { e, name in clip.anim["fx.\(e.id).\(name)"]?.value(at: local) }
                 adjusted = EffectRenderer.apply(track.effects, to: adjusted, context: ctx) { _, _ in nil }
                 if opacity < 0.999 { adjusted = alpha(adjusted, opacity) }
@@ -63,7 +66,7 @@ public final class RenderScene: @unchecked Sendable {
                 placed = matte(placed, fx, at: t, source: source)
             }
             if !track.effects.isEmpty {
-                placed = EffectRenderer.apply(track.effects, to: placed, context: EffectRenderer.Context(unit: unit, time: t, opaque: false)) { _, _ in nil }
+                placed = EffectRenderer.apply(track.effects, to: placed, context: EffectRenderer.Context(unit: unit, time: t, opaque: false, gradeSpace: gradeSpace)) { _, _ in nil }
             }
             out = EffectRenderer.blend(placed, over: out, mode: clip.blend).cropped(to: canvas)
         }
@@ -165,7 +168,7 @@ public final class RenderScene: @unchecked Sendable {
         }
         guard var layer else { return nil }
         // Effects run before the clip is scaled, so lengths are divided by the scale to stay in final frame units.
-        var ctx = EffectRenderer.Context(unit: unit / max(CGFloat(xf.scale), 0.01), time: t, opaque: opaque)
+        var ctx = EffectRenderer.Context(unit: unit / max(CGFloat(xf.scale), 0.01), time: t, opaque: opaque, gradeSpace: gradeSpace)
         if clip.kind == .media, let mid = clip.mediaId { ctx.source = MaskCache.Key(mediaId: mid, time: images[mid] != nil ? 0 : clip.sourceTime(atTimeline: t)) }
         if !clip.effects.isEmpty {
             layer = EffectRenderer.apply(clip.effects, to: layer, context: ctx, param: param)

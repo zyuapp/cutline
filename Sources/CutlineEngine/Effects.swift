@@ -17,6 +17,8 @@ enum EffectRenderer {
         var opaque: Bool
         /// Identifies the picture's source frame, so expensive per-frame masks can be cached.
         var source: MaskCache.Key? = nil
+        /// Encoding color LUTs work in; HDR canvases grade in their own curve so highlights above SDR white survive.
+        var gradeSpace: CGColorSpace = ColorCubes.space
     }
 
     static let masks = MaskCache()
@@ -112,7 +114,7 @@ enum EffectRenderer {
         case "color.grade", "color.curves", "color.hsl", "color.look", "color.lut":
             guard let cube = ColorCubes.cube(type, v) else { return img }
             return img.applyingFilter("CIColorCubeWithColorSpace", parameters: [
-                "inputCubeDimension": cube.size, "inputCubeData": cube.data, "inputColorSpace": ColorCubes.space,
+                "inputCubeDimension": cube.size, "inputCubeData": cube.data, "inputColorSpace": ctx.gradeSpace,
             ]).cropped(to: e)
         case "stylize.glow":
             return local("CIBloom", [kCIInputRadiusKey: n("radius") * ctx.unit, kCIInputIntensityKey: n("amount")])
