@@ -5,7 +5,7 @@ import Foundation
 
 extension Toolbox {
     func registerExportTools() {
-        add(Tool(name: "export", description: "Render the timeline, or check it against a platform first. platform (youtube, youtube_shorts, tiktok, instagram_reels, instagram_feed, x, linkedin, broadcast_eu, broadcast_us, broadcast, netflix_master, broadcast_uk_dpp) picks codec and checks shape, length, loudness, true peak and that text clears the app's UI; broadcast and mastering targets also check frame size, frame rate, mastering codec, audio track layout, timed text and start timecode (netflix_master measures loudness dialogue-gated and writes an IMSC 1.1 sidecar). .mov files carry a QuickTime timecode track starting at the canvas start timecode (01:00:00:00 unless canvas_set timecode_start); MP4 can't carry one. leader:true prepends bars and tone, a slate and a 2-pop so the program starts on the hour. Writes subtitles (embedded track and/or .srt/.vtt), chapters from markers (embedded and a YouTube description list), and interchange files for finishing in other editors (otio for DaVinci Resolve/Premiere via OTIO, fcpxml for Final Cut Pro). Defaults to <project>/exports/<name>.mp4 with HEVC. Blocks until done.", schema: Schema.object([
+        add(Tool(name: "export", description: "Render the timeline, or check it against a platform first. platform (youtube, youtube_shorts, tiktok, instagram_reels, instagram_feed, x, linkedin, broadcast_eu, broadcast_us, broadcast, netflix_master, broadcast_uk_dpp) picks codec and checks shape, length, loudness, true peak and that text clears the app's UI; broadcast and mastering targets also check frame size, frame rate, mastering codec, audio track layout, timed text and start timecode (netflix_master measures loudness dialogue-gated and writes an IMSC 1.1 sidecar). .mov files carry a QuickTime timecode track starting at the canvas start timecode (01:00:00:00 unless canvas_set timecode_start); MP4 can't carry one. leader:true prepends bars and tone, a slate and a 2-pop so the program starts on the hour. Writes subtitles (embedded track and/or .srt/.vtt), chapters from markers (embedded and a YouTube description list), and interchange files for finishing in other editors (otio for DaVinci Resolve/Premiere via OTIO, fcpxml for Final Cut Pro, aaf for Pro Tools and Media Composer). Defaults to <project>/exports/<name>.mp4 with HEVC. Blocks until done.", schema: Schema.object([
             "path": Schema.string("Output file path"),
             "preset": Schema.string("hevc (default, small and sharp), hevc_10bit (Main 10), h264 (most compatible, 8-bit only), prores (422), prores_hq (broadcast master), prores_lt, prores_proxy (offline), prores4444 (with alpha), prores4444xq, hevc_422_10bit (HEVC Main 4:2:2 10 via VideoToolbox, .mov). ProRes writes .mov. With ffmpeg installed: dnxhr_hq, dnxhr_hqx (10-bit), dnxhr_sq, dnxhr_lb (.mov, or container mxf for MXF OP1a), xdcam_hd422 (MPEG-2 4:2:2 50 Mb/s long GOP, 1920×1080, eight 24-bit PCM channels, MXF OP1a), h264_10bit (High 10 4:2:0, .mov/.mp4), h264_422_10bit (High 4:2:2 10-bit long GOP, 50 Mb/s default: the XAVC Long GOP picture, .mov/.mxf/.mp4), avc_intra_class100 (AVC-Intra 100, 1920×1080, MXF; UK DPP), xavc_intra_class100 (x264's Sony-flavor AVC-Intra 100, MXF) and av1 (AV1 Main 10 via SVT-AV1, .mp4); these render a ProRes intermediate that ffmpeg encodes, keeping timecode, audio tracks and color tags. IMF isn't made", values: ExportPreset.allCases.map(\.rawValue)),
             "platform": Schema.string("Delivery target; sets the preset and runs its checks", values: Platform.all.map(\.id)),
@@ -43,7 +43,8 @@ extension Toolbox {
             "interlaced": Schema.string("Interlaced master (1080i broadcast): tff (HD) or bff; renders at the field rate and weaves. ProRes, DNxHR and XDCAM presets; ffmpeg's DNxHR is progressive only, so interlaced DNx is written as DNxHD 1080i (1920×1080 at 25 or 29.97 fps, tff only: hq → DNxHD 220/185, hqx → 220x/185x, sq → 145/120; lb has no interlaced tier)", values: ["tff", "bff"]),
             "closed_captions": Schema.bool("Embed CEA-608 closed captions (broadcast, Apple TV, platform ingest) and write an .scc file beside the video, from the transcripts"),
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
-            "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video. Each comes with <name>.<format>.notes.txt listing, clip by clip, what the format can't carry (generators, effects, grades beyond a CDL, …); the report prints it"),
+            "interchange": Schema.strings("Also write otio, fcpxml, edl, xml (Final Cut Pro 7 XML, best for Premiere and Resolve) and/or aaf (Pro Tools, Media Composer, Resolve: linked media, one mono sound track per channel, clip gain, fades, crossfades, source timecode and reels, handles) next to the video. Each comes with <name>.<format>.notes.txt listing, clip by clip, what the format can't carry (generators, effects, grades beyond a CDL, …); the report prints it"),
+            "aaf_handles": Schema.number("AAF: seconds of media each master clip reaches past what the edit uses, each side (default 2), as an audio-post AAF's handles"),
             "render_graphics": Schema.bool("With interchange or a timeline file path: render each generator clip (shapes, particles, lower thirds, title presets) to <name>_graphics/<clip>.mov, ProRes 4444 with alpha, full frame, and reference it as media in the timeline file, as finishing houses take baked graphics. Without it, title presets become titles with their text and other graphics offline placeholders with that file name; Cutline reads either back as the original generator"),
             "bake_luts": Schema.bool("With interchange or a timeline file path: write each graded clip's whole color stack (CDL, wheels, curves, HSL, looks, LUTs, qualified corrections) as a 33³ .cube in <name>_luts/ and name it in the clip's note or comment (GRADE LUT <path>) for a colorist to load; Cutline reads it back as color.lut"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
@@ -120,7 +121,7 @@ extension Toolbox {
                 throw EditError("\(args.bool("check_only", default: false) ? "check_only" : "strict") needs a platform")
             }
 
-            if let target = args.optString("path").map({ session.resolve($0) }), ["otio", "fcpxml", "edl", "xml"].contains(target.pathExtension.lowercased()) {
+            if let target = args.optString("path").map({ session.resolve($0) }), ["otio", "fcpxml", "edl", "xml", "aaf"].contains(target.pathExtension.lowercased()) {
                 // A timeline file path writes just that file.
                 let p = try session.project()
                 let ext = target.pathExtension.lowercased()
@@ -211,7 +212,7 @@ extension Toolbox {
                 }
             }
             let kinds = try (args.strings("interchange") ?? []).map { kind -> InterchangeFormat in
-                guard let f = InterchangeFormat(rawValue: kind) else { throw EditError("interchange is otio, fcpxml, edl or xml (Final Cut Pro 7 XML for Premiere and Resolve)") }
+                guard let f = InterchangeFormat(rawValue: kind) else { throw EditError("interchange is otio, fcpxml, edl, xml (Final Cut Pro 7 XML for Premiere and Resolve) or aaf (Pro Tools, Media Composer)") }
                 return f
             }
             var made: InterchangeOptions?
@@ -329,7 +330,7 @@ extension Toolbox {
     /// Baked LUTs (bake_luts) and rendered graphics (render_graphics) beside `base`, for the interchange files.
     func interchangeOptions(_ p: Project, base: URL, args: Args, report: inout [String]) async throws -> InterchangeOptions {
         let graphics = URL(fileURLWithPath: base.path + "_graphics", isDirectory: true)
-        var o = InterchangeOptions(graphicsFolder: graphics.path)
+        var o = InterchangeOptions(graphicsFolder: graphics.path, aafHandles: max(0, args.optDouble("aaf_handles") ?? 2))
         if args.bool("bake_luts", default: false) {
             let dir = URL(fileURLWithPath: base.path + "_luts", isDirectory: true)
             let graded = p.gradedClips

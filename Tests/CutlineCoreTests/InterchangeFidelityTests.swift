@@ -63,6 +63,7 @@ private func read(_ format: InterchangeFormat, _ data: Data, into p: Project) th
     case .fcpxml: try Importer.fcpxml(data, relativeTo: nil)
     case .otio: try Importer.otio(data, relativeTo: nil)
     case .edl: try Importer.edl(String(decoding: data, as: UTF8.self), into: p)
+    case .aaf: try Importer.aaf(data, relativeTo: nil)
     }
 }
 
@@ -77,8 +78,9 @@ private func read(_ format: InterchangeFormat, _ data: Data, into p: Project) th
     #expect(q.tracks.filter { !$0.clips.isEmpty }.map(\.clips.count) == p.tracks.filter { !$0.clips.isEmpty }.map(\.clips.count), "\(format) \(fps):\n\(describe(q))")
     #expect(r.warnings.isEmpty, "\(format) \(r.warnings)")
     // EDLs have no audio fades; Cutline reads the room tone's back from its comments.
-    // FCP7 XML has no audio roles; room tone's subrole is the only thing it notes.
-    #expect(made.notes.allSatisfy { (format == .edl && $0.hasSuffix("fades not carried")) || (format == .xml && $0.hasSuffix("audio role dialogue.room tone not carried")) }, "\(format) \(made.notes)")
+    // FCP7 XML and AAF have no audio roles; room tone's subrole is the only thing they note, and AAF its short handles.
+    #expect(made.notes.allSatisfy { (format == .edl && $0.hasSuffix("fades not carried")) || ([.xml, .aaf].contains(format) && $0.hasSuffix("audio role dialogue.room tone not carried"))
+            || (format == .aaf && $0.hasPrefix("Handles: ")) }, "\(format) \(made.notes)")
     // Each room-tone piece's sound runs within a frame of where it did.
     let rt = p.tracks.last!.clips, back = q.tracks.last!.clips
     for (a, b) in zip(rt, back) {
@@ -229,7 +231,7 @@ func graphicsProject() throws -> Project {
     let path = "/tmp/fidelity/Graphics_luts/c1.cube"
     for format in InterchangeFormat.allCases where format != .otio {
         let made = try p.interchange(format, options: InterchangeOptions(luts: ["c1": path]))
-        #expect(String(decoding: made.data, as: UTF8.self).contains("GRADE LUT"), "\(format)")
+        #expect(String(decoding: made.data, as: UTF8.self).contains("GRADE LUT") || format == .aaf, "\(format)")
         let back = try read(format, made.data, into: p).project
         let first = try #require(back.tracks.first { $0.kind == .video }?.clips.first)
         #expect(first.effects.filter { $0.type.hasPrefix("color.") }.map(\.type) == ["color.lut"] && first.effects.first?.params["file"]?.string == path, "\(format) \(first.effects.map(\.type))")

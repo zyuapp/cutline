@@ -35,7 +35,7 @@ extension Toolbox {
             "path": Schema.string("Where to create the project; .cutline is appended if missing. Relative paths resolve against the working directory."),
             "name": Schema.string("Display name, default from the path"),
             "open_preview": Schema.bool("Open the preview app, default true"),
-            "import": Schema.string("Start from another editor's timeline: an .fcpxml/.fcpxmld (Final Cut Pro), .otio (DaVinci Resolve, Premiere via OTIO) or .edl (CMX 3600) file"),
+            "import": Schema.string("Start from another editor's timeline: an .fcpxml/.fcpxmld (Final Cut Pro), .otio (DaVinci Resolve, Premiere via OTIO) .edl (CMX 3600) or .aaf (Media Composer, Pro Tools) file"),
             "edl_fps": Schema.number("Frame rate of an EDL, default 30"),
         ]) { a, _ in a }, required: ["path"])) { [unowned self] args in
             var url = session.resolve(try args.string("path"))
@@ -231,6 +231,7 @@ extension Toolbox {
         case "xml" where String(decoding: data.prefix(4096), as: UTF8.self).contains("<xmeml"): result = try Importer.xmeml(data, relativeTo: base)
         case "fcpxml", "fcpxmld", "xml": result = try Importer.fcpxml(data, relativeTo: base)
         case "otio": result = try Importer.otio(data, relativeTo: base)
+        case "aaf": result = try Importer.aaf(data, relativeTo: base)
         case "edl":
             let text = String(decoding: data, as: UTF8.self)
             var media: [String: String] = [:]
@@ -242,7 +243,7 @@ extension Toolbox {
                 media[path] = id
                 return id
             }
-        default: throw EditError("Import reads .fcpxml, .fcpxmld, .otio or .edl")
+        default: throw EditError("Import reads .fcpxml, .fcpxmld, .otio, .edl, FCP7 .xml or .aaf")
         }
         var p = result.project
         p.name = name
