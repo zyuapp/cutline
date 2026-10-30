@@ -115,7 +115,15 @@ extension Toolbox {
             "search": Schema.string("Word to search for, e.g. \"blur\" or \"warm\""),
             "paths": Schema.bool("List every clip and track parameter path"),
             "recipe": Schema.string("A recipe's arguments, or \"all\""),
+            "plugins": Schema.bool("List installed Audio Unit effects (use their id as an effect_add type; catalog type=<id> lists parameters)"),
         ])) { args in
+            if args.bool("plugins", default: false) {
+                let list = AudioUnitHost.installedEffects()
+                return .text(list.isEmpty ? "No Audio Unit effects installed." : list.map { "\($0.id): \($0.name) by \($0.manufacturer)\($0.apple ? " (built in)" : "")" }.joined(separator: "\n"))
+            }
+            if let id = args.optString("type"), ProAudioCatalog.isPlugin(id) {
+                return .text(Toolbox.describeEffectType(try await Toolbox.registerPlugin(id)))
+            }
             if let r = args.optString("recipe") {
                 let split = Toolbox.recipeDocs.replacingOccurrences(of: #"\. (?=[a-z_]+: )"#, with: ".\n", options: .regularExpression)
                 let docs = split.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

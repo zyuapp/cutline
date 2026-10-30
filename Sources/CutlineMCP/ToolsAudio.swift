@@ -80,7 +80,7 @@ extension Toolbox {
         let mix = try await LoudnessMeter.measure(try await session.timeline(for: p), range: range)
         var lines = ["Sound mix: " + mix.summary + (p.master.gainDb != 0 ? " (master gain \(fmt1(p.master.gainDb)) dB)" : "")]
         if tracks {
-            for track in p.tracks where track.clips.contains(where: { $0.kind == .media }) && !track.muted {
+            for track in p.tracks where track.clips.contains(where: { $0.kind == .media && ($0.mediaId.flatMap { p.mediaAsset($0) }?.hasAudio ?? false) }) && !track.muted {
                 var solo = p
                 for i in solo.tracks.indices where solo.tracks[i].id != track.id { solo.tracks[i].muted = true }
                 let r = try await LoudnessMeter.measure(try await session.timeline(for: solo), range: range)

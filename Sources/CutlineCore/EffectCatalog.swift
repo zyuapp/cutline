@@ -6,7 +6,7 @@ import Foundation
 /// positions are fractions of the clip's frame with the origin at the top left,
 /// angles are degrees clockwise.
 public enum EffectCatalog {
-    public static func type(_ id: String) -> EffectType? { byId[id] ?? GeneratorCatalog.type(id) }
+    public static func type(_ id: String) -> EffectType? { byId[id] ?? ProAudioCatalog.type(id) ?? GeneratorCatalog.type(id) ?? PluginRegistry.type(id) }
 
     public static let categories: [(String, String)] = [
         ("blur", "Blurs and focus"),
@@ -17,7 +17,7 @@ public enum EffectCatalog {
         ("audio", "Sound processing on tracks (and the master bus): EQ, dynamics, voice cleanup, space, character"),
     ]
 
-    public static func isAudio(_ type: String) -> Bool { type.hasPrefix("audio.") }
+    public static func isAudio(_ type: String) -> Bool { type.hasPrefix("audio.") || ProAudioCatalog.isPlugin(type) }
 
     static func db(_ name: String, _ d: Double, _ lo: Double, _ hi: Double, _ summary: String) -> ParamSpec {
         ParamSpec(name, .number, .number(d), min: lo, max: hi, unit: "dB", animatable: false, summary)
@@ -234,6 +234,10 @@ public enum EffectCatalog {
     public static func shortName(_ type: String) -> String {
         let overrides = ["blur.gaussian": "blur", "color.adjust": "grade", "color.monochrome": "mono", "color.grade": "wheels"]
         if let o = overrides[type] { return o }
+        if ProAudioCatalog.isPlugin(type) {
+            let parts = type.split(separator: ".")
+            return parts.count > 2 ? String(parts[2]).filter(\.isLetter).lowercased().ifEmpty("plugin") : "plugin"
+        }
         let last = type.split(separator: ".").last.map(String.init) ?? type
         return last.split(separator: "_").last.map(String.init) ?? last
     }

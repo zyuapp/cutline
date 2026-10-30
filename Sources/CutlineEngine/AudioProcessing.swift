@@ -157,7 +157,7 @@ public final class AudioStems: @unchecked Sendable {
             defer { try? FileManager.default.removeItem(at: dry) }
             let built = try await TimelineBuilder.build(project, transcripts: transcripts, library: library, renderScale: 1, stems: self, dryTrack: track.id, masterStage: false)
             let frames = try await AudioIO.mixdown(built, range: nil, to: dry)
-            try AudioChain.process(dry: dry, frames: frames, effects: track.effects.filter { EffectCatalog.isAudio($0.type) && $0.enabled }, to: tmp)
+            try await AudioChain.process(dry: dry, frames: frames, effects: track.effects.filter { EffectCatalog.isAudio($0.type) && $0.enabled }, to: tmp)
         }
         return dest
     }
@@ -171,7 +171,7 @@ public final class AudioStems: @unchecked Sendable {
             defer { try? FileManager.default.removeItem(at: dry) }
             let built = try await TimelineBuilder.build(project, transcripts: transcripts, library: library, renderScale: 1, stems: self, dryTrack: nil, masterStage: false)
             let frames = try await AudioIO.mixdown(built, range: nil, to: dry)
-            try AudioChain.process(dry: dry, frames: frames, effects: project.master.effects.filter { EffectCatalog.isAudio($0.type) && $0.enabled }, to: tmp)
+            try await AudioChain.process(dry: dry, frames: frames, effects: project.master.effects.filter { EffectCatalog.isAudio($0.type) && $0.enabled }, to: tmp)
         }
         return dest
     }
@@ -242,56 +242,57 @@ enum AudioIO {
 enum AudioChain {
     static let tail: Double = 2
 
-    static func process(dry: URL, frames: AVAudioFramePosition, effects: [Effect], to url: URL) throws {
-        let engine = AVAudioEngine()
-        let player = AVAudioPlayerNode()
-        engine.attach(player)
-        let nodes = effects.flatMap { units(for: $0) }
-        for n in nodes { engine.attach(n) }
-        let format = AudioIO.format
-        var previous: AVAudioNode = player
-        for n in nodes {
-            engine.connect(previous, to: n, format: format)
-            previous = n
+    /// Runs dry sound through an effect chain: Cutline's DSP effects in code, built-in and third-party
+    /// Audio Units through offline manual rendering, in stack order. Writes ALAC at the stem rate.
+    static func process(dry: URL, frames: AVAudioFramePosition, effects: [Effect], to url: URL) async throws {
+        var plugins: [String: AVAudioUnit] = [:]
+        for e in effects where ProAudioCatalog.isPlugin(e.type) {
+            var numeric: [String: Double] = [:]
+            for (k, v) in e.params where k != ProAudioCatalog.presetParam { if let n = v.number { numeric[k] = n } }
+            plugins[e.id] = try await AudioUnitHost.makeUnit(id: e.type, params: numeric, preset: e.params[ProAudioCatalog.presetParam]?.string)
         }
-        engine.connect(previous, to: engine.mainMixerNode, format: format)
-        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
-        let source = try AVAudioFile(forReading: dry)
-        try engine.start()
-        player.scheduleFile(source, at: nil)
-        player.play()
-
-        let latency = nodes.compactMap { ($0 as? AVAudioUnit)?.auAudioUnit.latency }.reduce(0, +)
-        var skip = AVAudioFramePosition((latency * AudioStems.sampleRate).rounded())
-        let hasTail = effects.contains { ["audio.reverb", "audio.delay"].contains($0.type) }
-        let total = frames + skip + (hasTail ? AVAudioFramePosition(tail * AudioStems.sampleRate) : 0)
-        let out = try AVAudioFile(forWriting: url, settings: [
-            AVFormatIDKey: kAudioFormatAppleLossless, AVSampleRateKey: AudioStems.sampleRate,
-            AVNumberOfChannelsKey: 2, AVEncoderBitDepthHintKey: 24,
-        ], commonFormat: .pcmFormatFloat32, interleaved: false)
-        let buffer = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: engine.manualRenderingMaximumFrameCount)!
-        var rendered: AVAudioFramePosition = 0
-        while rendered < total {
-            let n = AVAudioFrameCount(min(AVAudioFramePosition(buffer.frameCapacity), total - rendered))
-            let status = try engine.renderOffline(n, to: buffer)
-            guard status == .success else { break }
-            rendered += AVAudioFramePosition(buffer.frameLength)
-            if skip > 0 {
-                let drop = min(skip, AVAudioFramePosition(buffer.frameLength))
-                skip -= drop
-                guard drop < AVAudioFramePosition(buffer.frameLength) else { continue }
-                let keep = AVAudioFrameCount(AVAudioFramePosition(buffer.frameLength) - drop)
-                let trimmed = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: keep)!
-                trimmed.frameLength = keep
-                for c in 0..<Int(buffer.format.channelCount) {
-                    trimmed.floatChannelData![c].update(from: buffer.floatChannelData![c] + Int(drop), count: Int(keep))
+        let pluginUnits = plugins
+        try await AudioDSP.offline {
+            var (x, rate) = try AudioDSP.read(dry)
+            let n = Int(frames)
+            x = x.map { ch in ch.count >= n ? Array(ch.prefix(n)) : ch + [Float](repeating: 0, count: n - ch.count) }
+            if x.count == 1 { x.append(x[0]) }
+            var i = 0
+            while i < effects.count {
+                if let processed = AudioDSP.apply(effects[i], to: x, sampleRate: rate) {
+                    x = processed
+                    i += 1
+                    continue
                 }
-                try out.write(from: trimmed)
-            } else {
-                try out.write(from: buffer)
+                var run: [Effect] = []
+                while i < effects.count, ProAudioCatalog.type(effects[i].type) == nil {
+                    run.append(effects[i])
+                    i += 1
+                }
+                let nodes = run.flatMap { e -> [AVAudioUnit] in
+                    if let u = pluginUnits[e.id] { return [u] }
+                    return AudioChain.units(for: e).compactMap { $0 as? AVAudioUnit }
+                }
+                guard !nodes.isEmpty else { continue }
+                let hasTail = run.contains { ["audio.reverb", "audio.delay"].contains($0.type) || ProAudioCatalog.isPlugin($0.type) }
+                x = try AudioUnitHost.render(x, sampleRate: rate, units: nodes, tail: hasTail ? tail : 0)
+            }
+            let out = try AVAudioFile(forWriting: url, settings: [
+                AVFormatIDKey: kAudioFormatAppleLossless, AVSampleRateKey: AudioStems.sampleRate,
+                AVNumberOfChannelsKey: 2, AVEncoderBitDepthHintKey: 24,
+            ], commonFormat: .pcmFormatFloat32, interleaved: false)
+            let count = x.map(\.count).min() ?? 0
+            let chunk = 65_536
+            var start = 0
+            while start < count {
+                let len = min(chunk, count - start)
+                let buf = AVAudioPCMBuffer(pcmFormat: AudioIO.format, frameCapacity: AVAudioFrameCount(len))!
+                buf.frameLength = AVAudioFrameCount(len)
+                for c in 0..<2 { x[c].withUnsafeBufferPointer { buf.floatChannelData![c].update(from: $0.baseAddress! + start, count: len) } }
+                try out.write(from: buf)
+                start += len
             }
         }
-        engine.stop()
     }
 
     static func number(_ e: Effect, _ name: String) -> Float {

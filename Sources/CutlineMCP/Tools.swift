@@ -71,6 +71,7 @@ final class Toolbox {
     func addEdit(_ e: EditTool) {
         edits[e.name] = e
         add(Tool(name: e.name, description: e.description, schema: Toolbox.withDryRun(e.schema)) { [unowned self] args in
+            try await registerPlugins(args)
             let before = try session.project()
             if args.bool("dry_run", default: false) {
                 var p = before
@@ -298,5 +299,37 @@ extension Toolbox {
         let fresh = Set(p.qualityIssues(transcripts: tr)).subtracting(before.qualityIssues(transcripts: b.transcripts(for: before)))
         guard !fresh.isEmpty else { return "" }
         return "\nCheck: " + fresh.sorted().prefix(5).joined(separator: "; ")
+    }
+}
+
+extension Toolbox {
+    /// Describes Audio Unit plug-ins named in the arguments or used by the project, so their
+    /// parameters validate like built-in effects.
+    func registerPlugins(_ args: Args) async throws {
+        var ids = Set<String>()
+        if let t = args.raw["type"]?.string, ProAudioCatalog.isPlugin(t) { ids.insert(t) }
+        if let p = try? session.project() {
+            for e in p.tracks.flatMap({ $0.effects + $0.clips.flatMap(\.effects) }) + p.master.effects where ProAudioCatalog.isPlugin(e.type) { ids.insert(e.type) }
+        }
+        for id in ids where PluginRegistry.type(id) == nil {
+            try await Toolbox.registerPlugin(id)
+        }
+    }
+
+    @discardableResult
+    static func registerPlugin(_ id: String) async throws -> EffectType {
+        if let t = PluginRegistry.type(id) { return t }
+        guard let info = AudioUnitHost.installedEffects().first(where: { $0.id == id }) else {
+            throw EditError("No installed Audio Unit \(id); catalog plugins:true lists them")
+        }
+        let params = try await AudioUnitHost.parameters(of: id).filter(\.writable)
+        let presets = (try? await AudioUnitHost.presets(of: id)) ?? []
+        var specs = params.map { p in
+            ParamSpec(p.id, .number, .number(p.defaultValue), min: p.min, max: p.max, unit: p.unit, animatable: false, p.name + (p.values.map { " (" + $0.enumerated().map { "\($0.offset)=\($0.element)" }.joined(separator: ", ") + ")" } ?? ""))
+        }
+        if !presets.isEmpty { specs.append(ParamSpec(ProAudioCatalog.presetParam, .choice(presets), .string(presets[0]), "Factory preset, applied before the parameters")) }
+        let t = EffectType(id: id, category: "audio", summary: "\(info.name) by \(info.manufacturer) (Audio Unit \(info.version))", params: specs)
+        PluginRegistry.register(t)
+        return t
     }
 }

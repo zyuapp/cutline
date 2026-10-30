@@ -235,6 +235,13 @@ public struct EffectType: Sendable {
     public var summary: String
     public var params: [ParamSpec]
 
+    public init(id: String, category: String, summary: String, params: [ParamSpec]) {
+        self.id = id
+        self.category = category
+        self.summary = summary
+        self.params = params
+    }
+
     public func spec(_ name: String) -> ParamSpec? { params.first { $0.name == name } }
 }
 
