@@ -354,6 +354,7 @@ extension Toolbox {
         lines += t.params.map { "  " + $0.line }
         lines.append("  mix: number 0…1, default 1, animatable. Blend between original and full effect.")
         lines.append("  enabled: bool, default true.")
+        if t.category == "generator", GeneratorCatalog.type(t.id) != nil { return (lines + Toolbox.generatorExample(t)).joined(separator: "\n") }
         let example = t.params.prefix(2).map { "\"\($0.name)\": \($0.defaultValue)" }.joined(separator: ", ")
         lines.append("Example: effect_add {\"target\": \"clip_ab12cd\", \"type\": \"\(t.id)\", \"params\": {\(example)}}")
         if let p = t.params.first(where: { $0.animatable }) {
@@ -400,7 +401,8 @@ extension Toolbox {
             "Secondaries and grade nodes (blur, color, stylize and distort effects): limit rect/ellipse/qualifier/rect+qualifier/ellipse+qualifier keys an effect to a window and/or an HSL qualifier (q_hue, q_hue_width, q_hue_soft, q_sat_min/max/soft, q_luma_min/max/soft, q_preset skin, cleanup q_clean_black, q_clean_white, q_denoise, q_blur; recipe qualify samples ranges from the picture; timeline_frames view:\"matte\" shows the key). node groups consecutive effects into one grade node; node_mode serial (default), parallel (branches from one input, changes added), layer (composited in order with node_blend and node_opacity inside each node's key) or outside (the inverse of the previous node's key). project_status target=<clip> shows the node graph.",
             "Blend modes (param_set blend): " + BlendMode.allCases.map(\.rawValue).joined(separator: ", "),
             "Eases for animation keys: " + Easing.allCases.map(\.rawValue).joined(separator: ", "),
-            "Parameter paths: transform.{scale,x,y,rotation,opacity,fit,crop.left|top|right|bottom}, blend, fade.{in,out}, audio.{volume,fade_in,fade_out,lead,lag,channels}, text.*, color, fx.<id>.<param>. catalog paths=true lists them all.",
+            "3D: param_set transform.3d true puts a layer in 3D space (transform.z depth, rotate_x/rotate_y/rotation); clip_add generator \"camera\" adds a camera that orbits, dollies, zooms and focuses (animate fx.gen.orbit, distance, fov, zoom, focus_distance, blur). Neighbouring 3D layers draw far to near.",
+            "Parameter paths: transform.{scale,x,y,rotation,opacity,fit,crop.left|top|right|bottom,3d,z}, blend, fade.{in,out}, audio.{volume,fade_in,fade_out,lead,lag,channels}, text.*, color, fx.<id>.<param>. catalog paths=true lists them all.",
             "Units: lengths are fractions of frame height; positions are fractions of the frame with 0,0 top left; angles are degrees clockwise.",
             "Time anchors (anywhere a time is taken): seconds, \"m:ss.f\", \"<media>.w12\" / \"<media>.w12.end\" (transcript words; source-time arguments resolve them in the media), \"<media>.b8\" / \"<media>.d2\" / \"<media>.s3\" (beats, downbeats, shots), \"beat:12\", \"<media>@01:00:12:10\" (that media's source timecode at its own rate, \";\" before the frames for drop frame; a source time), \"tc:00:00:10:00\" (timeline timecode), \"<clip id>.start\" / \".end\", \"marker:<label>\", \"start\", \"end\", each with optional +/- seconds.",
             "Every edit tool takes dry_run:true to preview its changes. batch groups edits into one undo step and can name results with as:\"x\" for later \"$x\".",

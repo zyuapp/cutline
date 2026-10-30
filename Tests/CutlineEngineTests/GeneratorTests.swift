@@ -48,15 +48,16 @@ private func render(_ type: String, _ params: [String: ParamValue] = [:], canvas
 }
 
 @Test func everyGeneratorRendersSomething() throws {
-    #expect(GeneratorCatalog.all.count == 11)
-    for type in GeneratorCatalog.all {
+    #expect(GeneratorCatalog.all.count == 22)
+    for type in GeneratorCatalog.all where type.id != "camera" {
         #expect(type.category == "generator")
-        let px = try #require(render(type.id), "\(type.id) rendered nil")
+        let px = try #require(GeneratorRenderer.render(type: type.id, params: [:], canvas: canvas, time: 2, duration: 5).map(Pixels.init), "\(type.id) rendered nil")
         #expect(px.width == 320 && px.height == 180)
         #expect(px.opaqueCount > 20, "\(type.id) drew \(px.opaqueCount) pixels")
     }
     #expect(GeneratorCatalog.type("shape.rect")?.spec("radius") != nil)
     #expect(GeneratorRenderer.render(type: "nope", params: [:], canvas: canvas) == nil)
+    #expect(GeneratorRenderer.render(type: "camera", params: [:], canvas: canvas) == nil)
 }
 
 @Test func rectFillsItsCenter() throws {
@@ -163,12 +164,12 @@ private func render(_ type: String, _ params: [String: ParamValue] = [:], canvas
     var worstType = ""
     for type in GeneratorCatalog.all {
         // Nudging a number each frame defeats the cache, as an animated graphic does.
-        let name = type.params.first { $0.kind == .number && $0.name != "decimals" }!.name
+        guard let name = type.params.first(where: { $0.kind == .number && $0.animatable })?.name else { continue }
         let base = type.spec(name)!.defaultValue.number!
-        _ = GeneratorRenderer.render(type: type.id, params: [name: .number(base + 0.0005)], canvas: hd)
+        _ = GeneratorRenderer.render(type: type.id, params: [name: .number(base + 0.0005)], canvas: hd, time: 2, duration: 5)
         let start = Date()
         for i in 1...10 {
-            _ = GeneratorRenderer.render(type: type.id, params: [name: .number(base - Double(i) * 0.001)], canvas: hd)
+            _ = GeneratorRenderer.render(type: type.id, params: [name: .number(base - Double(i) * 0.001)], canvas: hd, time: 2, duration: 5)
         }
         let ms = Date().timeIntervalSince(start) * 1000 / 10
         if ms > worst { worst = ms; worstType = type.id }

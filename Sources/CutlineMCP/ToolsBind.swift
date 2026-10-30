@@ -13,7 +13,7 @@ extension Toolbox {
         {"fx.skin1.limit_x": {"source": "face:<media>.x"}, "fx.skin1.limit_y": {"source": "face:<media>.y"}, "fx.skin1.limit_height": {"source": "face:<media>.size", "offset": 0.05}}. \
         Example: {"transform.scale": {"source": "beats", "map": [0, 1, 1, 1.06]}} pumps scale on every beat. \
         To reframe a clip on a face or object in its own picture, add "keep_centered": true on transform.x/y: the picture pans so the subject stays centered (clamped so the frame stays covered).
-        """
+        """ + expressionDocs
 
     func applyBindings(_ p: inout Project, targets: [Target], _ bind: [String: JSON]) throws -> String {
         let b = try session.requireBundle()
@@ -24,6 +24,10 @@ extension Toolbox {
             for (path, spec) in bind.sorted(by: { $0.key < $1.key }) {
                 let a = Args(spec)
                 let source = try a.string("source")
+                if let line = try applyExpression(source, path: path, clip: &c, project: p, args: a) {
+                    lines.append("\(id): \(line)")
+                    continue
+                }
                 let curve = try bindingCurve(source, path: Clip.canonical(path), clip: c, project: p, bundle: b, args: a)
                 guard curve.keys.count >= 1 else { throw EditError("\(source) has no data over \(id) (\(fmt2(c.start))–\(fmt2(c.end))s)") }
                 try c.animate(path, keys: curve.keys)
@@ -136,7 +140,7 @@ extension Toolbox {
                 return v + offset
             }
         } else {
-            throw EditError("Unknown bind source \(source). Sources: beats, downbeats, audio:<media>, face:<media>[:n].x|y|size, track:<id>.x|y|width|height")
+            throw EditError("Unknown bind source \(source). Sources: beats, downbeats, audio:<media>, face:<media>[:n].x|y|size, track:<id>.x|y|width|height, wiggle, time, loop, link:<clip>.<path>")
         }
         var filled = values
         if smooth > 0 {

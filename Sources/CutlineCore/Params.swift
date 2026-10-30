@@ -86,12 +86,22 @@ public struct CurveKey: Codable, Equatable, Hashable, Sendable {
 /// Keyframed values. Numbers and colors interpolate; other values hold until the next key.
 public struct Curve: Codable, Equatable, Hashable, Sendable {
     public var keys: [CurveKey]
+    /// Procedural motion layered on the keys: wiggle, loop, steady rate.
+    public var expression: CurveExpression?
+    /// Keys kept in step with another clip's parameter (`Project.refreshLinks`).
+    public var link: CurveLink?
 
     public init(keys: [CurveKey]) {
         self.keys = keys.sorted { $0.t < $1.t }
     }
 
     public func value(at t: Seconds) -> ParamValue? {
+        guard let x = expression else { return keyed(at: t) }
+        return x.apply(self, at: t)
+    }
+
+    /// The value from the keys alone.
+    public func keyed(at t: Seconds) -> ParamValue? {
         guard let first = keys.first else { return nil }
         if t <= first.t { return first.v }
         for (a, b) in zip(keys, keys.dropFirst()) where t < b.t {
@@ -133,7 +143,10 @@ public struct Curve: Codable, Equatable, Hashable, Sendable {
     }
 
     public func shifted(by dt: Seconds) -> Curve {
-        Curve(keys: keys.map { var k = $0; k.t += dt; return k })
+        var c = self
+        c.keys = keys.map { var k = $0; k.t += dt; return k }
+        c.expression?.origin += dt
+        return c
     }
 }
 

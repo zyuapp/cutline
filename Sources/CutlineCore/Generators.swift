@@ -46,7 +46,9 @@ public enum GeneratorCatalog {
         pos("y2", 0.4, "End, vertical"),
     ]
 
-    public static let all: [EffectType] = [
+    public static let all: [EffectType] = basic + motion
+
+    static let basic: [EffectType] = [
         EffectType(id: "shape.rect", category: "generator", summary: "Rectangle with optional rounded corners and outline", params: box + [
             len("radius", 0.02, 1, "Corner radius"),
         ] + paint),
@@ -159,7 +161,7 @@ extension Clip {
     /// A generator parameter's value at `local` seconds into the clip.
     public func generatorValue(_ name: String, at local: Seconds) -> ParamValue? {
         guard kind == .generator, let gen = effects.first(where: { GeneratorCatalog.type($0.type) != nil }) else { return nil }
-        return anim["fx.\(gen.id).\(name)"]?.value(at: local) ?? gen.params[name] ?? GeneratorCatalog.type(gen.type)?.spec(name)?.defaultValue
+        return anim["fx.\(gen.id).\(name)"]?.value(at: local) ?? gen.params[name] ?? GeneratorCatalog.spec(type: gen.type, name: name, params: gen.params)?.defaultValue
     }
 
     /// The words a lower third, callout or counter shows at `local`; nil for graphics without text or with none showing.
@@ -179,6 +181,30 @@ extension Clip {
         case "callout":
             guard !str("label").isEmpty else { return nil }
             return GeneratorText(text: str("label"), y: num("label_y"), size: num("size"), color: color("text_color"), background: color("color"))
+        case "title.lower_third_modern", "title.lower_third_box", "title.lower_third_pill", "title.lower_third_line":
+            let text = [str("title"), str("subtitle")].filter { !$0.isEmpty }.joined(separator: " — ")
+            guard !text.isEmpty else { return nil }
+            let panel: RGBA? = type == "title.lower_third_box" ? color("panel") : type == "title.lower_third_pill" ? color("panel") : nil
+            return GeneratorText(text: text, y: num("y"), size: num("size"), color: color("text_color"), background: panel)
+        case "title.card":
+            let text = [str("kicker"), str("title"), str("subtitle")].filter { !$0.isEmpty }.joined(separator: " — ")
+            guard !text.isEmpty else { return nil }
+            let bg = color("background")
+            return GeneratorText(text: text, y: num("y"), size: num("size"), color: color("text_color"), background: bg.a > 0.05 ? bg : nil)
+        case "title.quote":
+            let text = [str("quote"), str("author")].filter { !$0.isEmpty }.joined(separator: " — ")
+            guard !text.isEmpty else { return nil }
+            let bg = color("background")
+            return GeneratorText(text: text, y: num("y"), size: num("size"), color: color("text_color"), background: bg.a > 0.05 ? bg : nil)
+        case "title.end_card":
+            let text = [str("title"), str("subtitle"), str("button")].filter { !$0.isEmpty }.joined(separator: " — ")
+            guard !text.isEmpty else { return nil }
+            let bg = color("background")
+            return GeneratorText(text: text, y: 0.3, size: num("size"), color: color("text_color"), background: bg.a > 0.05 ? bg : nil)
+        case "title.data_callout":
+            let n = num("value")
+            let text = str("prefix") + String(format: "%.\(Int(num("decimals")))f", n) + str("suffix") + (str("label").isEmpty ? "" : " " + str("label"))
+            return GeneratorText(text: text, y: num("y"), size: num("size"), color: color("text_color"), background: nil)
         case "counter":
             let n = num("from") + (num("to") - num("from")) * min(max(num("progress"), 0), 1)
             return GeneratorText(text: str("prefix") + String(format: "%.\(Int(num("decimals")))f", n) + str("suffix"), y: num("y"), size: num("size"), color: color("color"), background: nil)

@@ -15,7 +15,9 @@ extension Clip {
         ParamSpec("transform.anchor_y", .number, .number(0.5), min: -2, max: 3, "Pivot, 0 top to 1 bottom"),
         ParamSpec("transform.rotate_x", .number, .number(0), min: -360, max: 360, unit: "degrees", "3D tilt around the horizontal axis; positive tips the top away"),
         ParamSpec("transform.rotate_y", .number, .number(0), min: -360, max: 360, unit: "degrees", "3D turn around the vertical axis; positive turns the right side away"),
-        ParamSpec("transform.perspective", .number, .number(2), min: 0.3, max: 50, unit: "frame heights", "Camera distance for 3D; smaller is more dramatic"),
+        ParamSpec("transform.perspective", .number, .number(2), min: 0.3, max: 50, unit: "frame heights", "Camera distance for 2D tilts (layers without transform.3d); smaller is more dramatic"),
+        ParamSpec("transform.3d", .bool, .bool(false), "Place the layer in 3D space, seen through the camera (clip_add generator \"camera\"; a default front camera without one). Uses transform.z, rotate_x, rotate_y and rotation; 3D layers on neighbouring tracks are drawn far to near"),
+        ParamSpec("transform.z", .number, .number(0), min: -100, max: 100, unit: "frame heights", "Depth of a 3D layer; positive moves it away from the camera"),
         ParamSpec("transform.motion_blur", .number, .number(0), min: 0, max: 720, unit: "degrees shutter", "Blur along the clip's own animated motion; 180 is film-like"),
         ParamSpec("transform.crop.left", .number, .number(0), min: 0, max: 0.95, "Fraction of the source removed from the left"),
         ParamSpec("transform.crop.top", .number, .number(0), min: 0, max: 0.95, "Fraction removed from the top"),
@@ -89,7 +91,7 @@ extension Clip {
 
     /// Accepts "opacity" for "transform.opacity" and "scale" for "transform.scale".
     public static func canonical(_ path: String) -> String {
-        let aliases = ["opacity": "transform.opacity", "scale": "transform.scale", "x": "transform.x", "y": "transform.y", "rotation": "transform.rotation", "fit": "transform.fit", "volume": "audio.volume"]
+        let aliases = ["transform.rotate_z": "transform.rotation", "z": "transform.z", "opacity": "transform.opacity", "scale": "transform.scale", "x": "transform.x", "y": "transform.y", "rotation": "transform.rotation", "fit": "transform.fit", "volume": "audio.volume"]
         return aliases[path] ?? path
     }
 
@@ -113,8 +115,9 @@ extension Clip {
         if param == "mix" { return ParamSpec(path, .number, .number(1), min: 0, max: 1, "Blend between original (0) and full effect (1)") }
         if param == "enabled" { return ParamSpec(path, .bool, .bool(true), "Turn the effect on or off") }
         guard let type = EffectCatalog.type(e.type) else { throw EditError("Unknown effect type \(e.type)") }
-        guard var s = type.spec(param) else {
-            throw EditError("\(e.type) has no parameter \(param). Parameters: \((type.params.map(\.name) + ["mix", "enabled"]).joined(separator: ", ")).")
+        guard var s = type.spec(param) ?? GeneratorCatalog.spec(type: e.type, name: param, params: e.params) else {
+            let shapes = e.type == "shape" ? " Shape properties are <shape id>.<property> with ids \(((try? ShapeLayers.parse(e.params["shapes"]?.string ?? "")) ?? []).map(\.id).joined(separator: ", ")) and properties \(ShapeLayers.props.map(\.name).joined(separator: ", "))." : ""
+            throw EditError("\(e.type) has no parameter \(param). Parameters: \((type.params.map(\.name) + ["mix", "enabled"]).joined(separator: ", ")).\(shapes)")
         }
         s.name = path
         return s
@@ -129,7 +132,7 @@ extension Clip {
             switch parts[2] {
             case "mix": return .number(e.mix)
             case "enabled": return .bool(e.enabled)
-            default: return e.params[parts[2]] ?? EffectCatalog.type(e.type)?.spec(parts[2])?.defaultValue
+            default: return e.params[parts[2]] ?? EffectCatalog.type(e.type)?.spec(parts[2])?.defaultValue ?? GeneratorCatalog.spec(type: e.type, name: parts[2], params: e.params)?.defaultValue
             }
         }
         let t = transform
@@ -156,6 +159,8 @@ extension Clip {
         case "transform.rotate_x": return .number(transform.rotateX)
         case "transform.rotate_y": return .number(transform.rotateY)
         case "transform.perspective": return .number(transform.perspective)
+        case "transform.3d": return .bool(transform.threeD)
+        case "transform.z": return .number(transform.z)
         case "transform.motion_blur": return .number(transform.motionBlur)
         case "time.speed": return .number(speed)
         case "time.reverse": return .bool(reverse)
@@ -235,6 +240,8 @@ extension Clip {
         case "transform.rotate_x": transform.rotateX = n
         case "transform.rotate_y": transform.rotateY = n
         case "transform.perspective": transform.perspective = n
+        case "transform.3d": transform.threeD = v.bool ?? false
+        case "transform.z": transform.z = n
         case "transform.motion_blur": transform.motionBlur = n
         case "transform.crop.left": transform.crop.left = n
         case "transform.crop.top": transform.crop.top = n
@@ -347,6 +354,11 @@ extension Clip {
                 if !set && ((p.name.hasPrefix("q_") && !qualified) || (p.name.hasPrefix("node") && !noded)) { continue }
                 out.append((path, e.params[p.name] ?? p.defaultValue, anim[path]?.keys.count ?? 0))
             }
+            if e.type == "shape" {
+                for (name, v) in ShapeLayers.names(shapes: e.params["shapes"]?.string ?? GeneratorCatalog.defaultShapes) where e.params[name] != nil || anim["fx.\(e.id).\(name)"] != nil {
+                    out.append(("fx.\(e.id).\(name)", e.params[name] ?? v, anim["fx.\(e.id).\(name)"]?.keys.count ?? 0))
+                }
+            }
         }
         return out
     }
@@ -444,6 +456,10 @@ extension Effect {
         switch (type, param) {
         case ("color.curves", _):
             _ = try ColorMath.curves(master: s, red: nil, green: nil, blue: nil)
+        case ("shape", "shapes"):
+            _ = try ShapeLayers.parse(s)
+        case ("particles", "image"):
+            guard FileManager.default.fileExists(atPath: s) else { throw EditError("No image file \(s)") }
         case ("color.lut", "file"):
             guard let text = try? String(contentsOfFile: s, encoding: .utf8) else { throw EditError("Cannot read LUT file \(s)") }
             _ = try ColorMath.parseCube(text)

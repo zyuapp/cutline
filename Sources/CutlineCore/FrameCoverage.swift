@@ -19,6 +19,7 @@ extension Project {
             case .fill: let s = max(cw / sw, ch / sh); (w, h) = (sw * s, sh * s)
             case .stretch: break
             }
+        case .generator where c.effects.contains(where: { $0.type == "camera" }): return 0
         case .solid, .sequence, .generator: break
         case .text, .adjustment: return 0
         }

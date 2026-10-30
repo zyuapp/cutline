@@ -12,13 +12,21 @@ public enum GeneratorRenderer {
         return c
     }()
 
-    /// `value` returns each catalog parameter's current value. Nil for unknown types or an empty canvas.
-    public static func render(type: String, value: (String) -> ParamValue, canvas: CGSize) -> CGImage? {
-        guard let spec = GeneratorCatalog.type(type), canvas.width >= 1, canvas.height >= 1 else { return nil }
+    /// `value` returns each catalog parameter's current value. Nil for unknown types, an empty canvas or a camera.
+    /// Particles and title presets also read the clip-local `time` and the clip `duration`; `history` gives a
+    /// parameter's value at another clip-local time, for particles born earlier.
+    public static func render(type: String, value: (String) -> ParamValue, canvas: CGSize, time: Double = 0, duration: Double = 0, history: ((String, Double) -> ParamValue)? = nil) -> CGImage? {
+        guard let spec = GeneratorCatalog.type(type), canvas.width >= 1, canvas.height >= 1, type != "camera" else { return nil }
+        if type == "particles" {
+            if let history { return ParticleRenderer.render(time: time, canvas: canvas, value: history) }
+            return withoutActuallyEscaping(value) { value in ParticleRenderer.render(time: time, canvas: canvas) { name, _ in value(name) } }
+        }
         var map: [String: ParamValue] = [:]
         var key = "\(type)|\(Int(canvas.width.rounded()))x\(Int(canvas.height.rounded()))"
-        for p in spec.params {
-            var v = value(p.name)
+        var names = spec.params.map(\.name)
+        if type == "shape" { names += ShapeLayers.names(shapes: value("shapes").string ?? "").map(\.0) }
+        for name in names {
+            var v = value(name)
             // 1e-4 of the frame is well under a pixel at 4K, so neighbouring frames of a still graphic share an image.
             if let n = v.number {
                 let q = (n * 10000).rounded()
@@ -27,18 +35,20 @@ public enum GeneratorRenderer {
             } else {
                 key += "|\(v)"
             }
-            map[p.name] = v
+            map[name] = v
         }
+        let values = Values(map: map, spec: spec)
+        let clocks = type.hasPrefix("title.") ? TitlePresets.clocks(values, time: time, duration: duration) : nil
+        if let clocks { key += clocks.key }
         if let hit = cache.object(forKey: key as NSString) { return hit }
-        guard let img = draw(type, Values(map: map, spec: spec), canvas: canvas) else { return nil }
+        guard let img = draw(type, values, canvas: canvas, clocks: clocks) else { return nil }
         cache.setObject(img, forKey: key as NSString)
         return img
     }
 
     /// Renders with `params` over the catalog defaults.
-    public static func render(type: String, params: [String: ParamValue], canvas: CGSize) -> CGImage? {
-        let spec = GeneratorCatalog.type(type)
-        return render(type: type, value: { params[$0] ?? spec?.spec($0)?.defaultValue ?? .number(0) }, canvas: canvas)
+    public static func render(type: String, params: [String: ParamValue], canvas: CGSize, time: Double = 0, duration: Double = 0) -> CGImage? {
+        render(type: type, value: { params[$0] ?? GeneratorCatalog.spec(type: type, name: $0, params: params)?.defaultValue ?? .number(0) }, canvas: canvas, time: time, duration: duration)
     }
 
     struct Values {
@@ -55,7 +65,7 @@ public enum GeneratorRenderer {
         }
     }
 
-    static func draw(_ type: String, _ v: Values, canvas: CGSize) -> CGImage? {
+    static func draw(_ type: String, _ v: Values, canvas: CGSize, clocks: TitlePresets.Clocks? = nil) -> CGImage? {
         let w = Int(canvas.width.rounded()), h = Int(canvas.height.rounded())
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
         // Top-left origin, y down, like positions everywhere else in Cutline.
@@ -77,7 +87,12 @@ public enum GeneratorRenderer {
         case "counter": d.counter()
         case "gradient": d.gradient()
         case "grid_overlay": d.grid()
-        default: return nil
+        case "shape":
+            guard let items = try? ShapeLayers.parse(v.text("shapes")) else { return nil }
+            ShapeRenderer.draw(items, ctx: ctx, W: CGFloat(w), H: CGFloat(h)) { v.map[$0] }
+        default:
+            guard let clocks, type.hasPrefix("title.") else { return nil }
+            TitlePresets.draw(type, ctx: ctx, W: CGFloat(w), H: CGFloat(h), v: v, clocks: clocks)
         }
         return ctx.makeImage()
     }
