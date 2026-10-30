@@ -110,11 +110,13 @@ private func sampleTimes(_ url: URL) async throws -> [Seconds] {
     let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
     reader.add(out)
     #expect(reader.startReading())
-    var times: [Seconds] = []
-    while let s = out.copyNextSampleBuffer() {
-        if CMSampleBufferGetNumSamples(s) > 0 { times.append(CMSampleBufferGetPresentationTimeStamp(s).seconds) }
+    return try await runBlocking { _ in
+        var times: [Seconds] = []
+        while let s = out.copyNextSampleBuffer() {
+            if CMSampleBufferGetNumSamples(s) > 0 { times.append(CMSampleBufferGetPresentationTimeStamp(s).seconds) }
+        }
+        return times.sorted()
     }
-    return times.sorted()
 }
 
 /// Luma of an image drawn into a small grid, top-left first.

@@ -70,12 +70,15 @@ func exportWritesTimecodeTrackAtProjectStart(_ preset: ExportPreset) async throw
     let out = AVAssetReaderTrackOutput(track: track, outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMIsFloatKey: true, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsNonInterleaved: false, AVSampleRateKey: 48_000])
     reader.add(out)
     reader.startReading()
-    var samples: [Float] = []
-    while let s = out.copyNextSampleBuffer(), samples.count < 48_000 * 2 * 6 {
-        guard let block = CMSampleBufferGetDataBuffer(s) else { continue }
-        var chunk = [Float](repeating: 0, count: CMBlockBufferGetDataLength(block) / 4)
-        chunk.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
-        samples += chunk
+    let samples = try await runBlocking { _ -> [Float] in
+        var samples: [Float] = []
+        while let s = out.copyNextSampleBuffer(), samples.count < 48_000 * 2 * 6 {
+            guard let block = CMSampleBufferGetDataBuffer(s) else { continue }
+            var chunk = [Float](repeating: 0, count: CMBlockBufferGetDataLength(block) / 4)
+            chunk.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
+            samples += chunk
+        }
+        return samples
     }
     func rms(_ from: Seconds, _ to: Seconds) -> Double {
         let a = Int(from * 48_000) * 2, b = min(samples.count, Int(to * 48_000) * 2)

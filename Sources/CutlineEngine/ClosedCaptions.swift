@@ -478,24 +478,26 @@ public enum CEA608 {
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
         reader.add(output)
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the closed captions") }
-        var runs: [Run] = []
-        while let sample = output.copyNextSampleBuffer() {
-            guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
-            let length = CMBlockBufferGetDataLength(block)
-            var bytes = [UInt8](repeating: 0, count: length)
-            CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: &bytes)
-            let pairs = fieldOnePairs(bytes)
-            guard pairs.contains(where: { $0 & 0x7F7F != 0 }) else { continue }
-            let t = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-            let step = CMSampleBufferGetDuration(sample).seconds / Double(pairs.count)
-            if let last = runs.last, abs(last.time + Double(last.pairs.count) * step - t) < step / 2 {
-                runs[runs.count - 1].pairs += pairs
-            } else {
-                runs.append((t, pairs))
+        return try await runBlocking { _ -> [Run] in
+            var runs: [Run] = []
+            while let sample = output.copyNextSampleBuffer() {
+                guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
+                let length = CMBlockBufferGetDataLength(block)
+                var bytes = [UInt8](repeating: 0, count: length)
+                CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: &bytes)
+                let pairs = fieldOnePairs(bytes)
+                guard pairs.contains(where: { $0 & 0x7F7F != 0 }) else { continue }
+                let t = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+                let step = CMSampleBufferGetDuration(sample).seconds / Double(pairs.count)
+                if let last = runs.last, abs(last.time + Double(last.pairs.count) * step - t) < step / 2 {
+                    runs[runs.count - 1].pairs += pairs
+                } else {
+                    runs.append((t, pairs))
+                }
             }
+            if reader.status == .failed { throw reader.error ?? EditError("Reading the closed captions failed") }
+            return runs
         }
-        if reader.status == .failed { throw reader.error ?? EditError("Reading the closed captions failed") }
-        return runs
     }
 
     static func fieldOnePairs(_ bytes: [UInt8]) -> [UInt16] {

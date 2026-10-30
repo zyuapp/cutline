@@ -81,14 +81,16 @@ private func channelLevels(_ url: URL, layout: AudioLayout, windows: [TimeRange]
     ])
     reader.add(out)
     #expect(reader.startReading())
-    var samples: [[Float]] = Array(repeating: [], count: n)
-    while let s = out.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(s) {
-        let count = CMBlockBufferGetDataLength(block) / 4
-        var data = [Float](repeating: 0, count: count)
-        data.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count * 4, destination: $0.baseAddress!) }
-        for i in 0..<(count / n) { for c in 0..<n { samples[c].append(data[i * n + c]) } }
+    return try await runBlocking { _ in
+        var samples: [[Float]] = Array(repeating: [], count: n)
+        while let s = out.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(s) {
+            let count = CMBlockBufferGetDataLength(block) / 4
+            var data = [Float](repeating: 0, count: count)
+            data.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count * 4, destination: $0.baseAddress!) }
+            for i in 0..<(count / n) { for c in 0..<n { samples[c].append(data[i * n + c]) } }
+        }
+        return windows.map { w in samples.map { rms($0[Int(w.start * 48_000)..<min($0.count, Int(w.end * 48_000))]) } }
     }
-    return windows.map { w in samples.map { rms($0[Int(w.start * 48_000)..<min($0.count, Int(w.end * 48_000))]) } }
 }
 
 private func formatInfo(_ url: URL) async throws -> (channels: Int, tag: AudioChannelLayoutTag?) {

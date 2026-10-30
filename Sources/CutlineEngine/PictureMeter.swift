@@ -45,12 +45,15 @@ public enum PictureMeter {
         reader.add(output)
         reader.timeRange = built.readRange(range)
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline's picture") }
-        var frames: [FrameStats] = []
-        while let sample = output.copyNextSampleBuffer() {
-            guard let pb = CMSampleBufferGetImageBuffer(sample) else { continue }
-            frames.append(stats(pb, time: CMSampleBufferGetPresentationTimeStamp(sample).seconds, background: background))
+        let frames = try await runBlocking { _ -> [FrameStats] in
+            var frames: [FrameStats] = []
+            while let sample = output.copyNextSampleBuffer() {
+                guard let pb = CMSampleBufferGetImageBuffer(sample) else { continue }
+                frames.append(stats(pb, time: CMSampleBufferGetPresentationTimeStamp(sample).seconds, background: background))
+            }
+            if reader.status == .failed { throw reader.error ?? EditError("Reading the picture failed") }
+            return frames
         }
-        if reader.status == .failed { throw reader.error ?? EditError("Reading the picture failed") }
         return analyze(frames)
     }
 

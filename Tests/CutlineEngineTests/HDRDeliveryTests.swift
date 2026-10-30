@@ -78,7 +78,8 @@ private func renderedBars(_ built: BuiltTimeline, frames: Int = 6) async throws 
     defer { reader.cancelReading() }
     var all: [[SIMD3<Float>]] = []
     for _ in 0..<frames {
-        let sample = try #require(out.copyNextSampleBuffer())
+        let next = try await runBlocking { _ in out.copyNextSampleBuffer() }
+        let sample = try #require(next)
         let pb = try #require(CMSampleBufferGetImageBuffer(sample))
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb), row = CVPixelBufferGetBytesPerRow(pb)

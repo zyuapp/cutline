@@ -245,14 +245,16 @@ private func loudness(of url: URL) async throws -> LoudnessReport {
     ])
     reader.add(out)
     #expect(reader.startReading())
-    var acc = LoudnessMeter.Accumulator()
-    while let s = out.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(s) {
-        let n = CMBlockBufferGetDataLength(block) / 8
-        var data = [Float](repeating: 0, count: n * 2)
-        CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: n * 8, destination: &data)
-        data.withUnsafeBufferPointer { acc.feed($0.baseAddress!, n) }
+    return try await runBlocking { _ in
+        var acc = LoudnessMeter.Accumulator()
+        while let s = out.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(s) {
+            let n = CMBlockBufferGetDataLength(block) / 8
+            var data = [Float](repeating: 0, count: n * 2)
+            CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: n * 8, destination: &data)
+            data.withUnsafeBufferPointer { acc.feed($0.baseAddress!, n) }
+        }
+        return acc.report()
     }
-    return acc.report()
 }
 
 @Test(.enabled(if: tools != nil, skip)) func loudnessTargetHoldsAfterMixChanges() async throws {

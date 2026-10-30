@@ -34,38 +34,41 @@ public enum AudioAnalyzer {
             file = try AVAudioFile(forWriting: pcmURL, settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
         }
 
-        let window = Int(sampleRate / levelRate)
-        var levels: [Float] = []
-        levels.reserveCapacity(Int(media.duration * levelRate) + 1)
-        var acc: Float = 0
-        var count = 0
+        let levels = try await runBlocking { _ -> [Float] in
+            let window = Int(sampleRate / levelRate)
+            var levels: [Float] = []
+            levels.reserveCapacity(Int(media.duration * levelRate) + 1)
+            var acc: Float = 0
+            var count = 0
 
-        while let buffer = output.copyNextSampleBuffer() {
-            guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
-            var length = 0
-            var ptr: UnsafeMutablePointer<CChar>?
-            guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
-            let n = length / MemoryLayout<Float>.size
-            ptr.withMemoryRebound(to: Float.self, capacity: n) { samples in
-                for i in 0..<n {
-                    let s = samples[i]
-                    acc += s * s
-                    count += 1
-                    if count == window {
-                        levels.append(db(acc / Float(count)))
-                        acc = 0
-                        count = 0
+            while let buffer = output.copyNextSampleBuffer() {
+                guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+                var length = 0
+                var ptr: UnsafeMutablePointer<CChar>?
+                guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
+                let n = length / MemoryLayout<Float>.size
+                ptr.withMemoryRebound(to: Float.self, capacity: n) { samples in
+                    for i in 0..<n {
+                        let s = samples[i]
+                        acc += s * s
+                        count += 1
+                        if count == window {
+                            levels.append(db(acc / Float(count)))
+                            acc = 0
+                            count = 0
+                        }
+                    }
+                    if let file, let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)) {
+                        pcm.frameLength = AVAudioFrameCount(n)
+                        pcm.floatChannelData![0].update(from: samples, count: n)
+                        try? file.write(from: pcm)
                     }
                 }
-                if let file, let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)) {
-                    pcm.frameLength = AVAudioFrameCount(n)
-                    pcm.floatChannelData![0].update(from: samples, count: n)
-                    try? file.write(from: pcm)
-                }
             }
+            if count > 0 { levels.append(db(acc / Float(count))) }
+            if reader.status == .failed { throw reader.error ?? EditError("Audio decode failed for \(media.id)") }
+            return levels
         }
-        if count > 0 { levels.append(db(acc / Float(count))) }
-        if reader.status == .failed { throw reader.error ?? EditError("Audio decode failed for \(media.id)") }
 
         let threshold = AudioAnalysis.adaptiveThreshold(levels: levels)
         let silences = AudioAnalysis.detectSilences(levels: levels, rate: levelRate, thresholdDb: threshold, minDuration: 0.3)

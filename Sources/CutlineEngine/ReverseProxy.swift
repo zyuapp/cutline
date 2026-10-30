@@ -61,7 +61,7 @@ public enum ReverseProxy {
         var audioInput: AVAssetWriterInput?
         var pcm: [Float] = []
         if media.hasAudio, let track = try await asset.loadTracks(withMediaType: .audio).first {
-            pcm = try readAudio(asset, track: track, range: range)
+            pcm = try await runBlocking { _ in try readAudio(asset, track: track, range: range) }
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false])
             input.expectsMediaDataInRealTime = false
             writer.add(input)

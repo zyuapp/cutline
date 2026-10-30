@@ -261,12 +261,15 @@ public enum TimecodeTrack {
         let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
         reader.add(out)
         guard reader.startReading() else { return nil }
-        var found: (CMBlockBuffer, CMFormatDescription)?
-        // Edit-boundary markers come first and carry no data.
-        while found == nil, let sample = out.copyNextSampleBuffer() {
-            if let block = CMSampleBufferGetDataBuffer(sample), let fd = CMSampleBufferGetFormatDescription(sample) { found = (block, fd) }
+        let found = try await runBlocking { _ -> (CMBlockBuffer, CMFormatDescription)? in
+            var found: (CMBlockBuffer, CMFormatDescription)?
+            // Edit-boundary markers come first and carry no data.
+            while found == nil, let sample = out.copyNextSampleBuffer() {
+                if let block = CMSampleBufferGetDataBuffer(sample), let fd = CMSampleBufferGetFormatDescription(sample) { found = (block, fd) }
+            }
+            reader.cancelReading()
+            return found
         }
-        reader.cancelReading()
         guard let (block, fd) = found else { return nil }
         var raw: Int32 = 0
         CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: 4, destination: &raw)

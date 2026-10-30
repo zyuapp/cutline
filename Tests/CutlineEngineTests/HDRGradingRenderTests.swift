@@ -128,7 +128,8 @@ private func bandNits(_ f: HDRScopes.Frame, _ from: Double, _ to: Double) -> Flo
     let ro = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf])
     reader.add(ro)
     #expect(reader.startReading())
-    let pb = try #require(ro.copyNextSampleBuffer().flatMap(CMSampleBufferGetImageBuffer))
+    let next = try await runBlocking { _ in ro.copyNextSampleBuffer() }
+    let pb = try #require(next.flatMap(CMSampleBufferGetImageBuffer))
     let decoded = try #require(HDRScopes.codeValues(pb))
     reader.cancelReading()
     func band(_ x: Double) -> Float { decoded.rgb[decoded.height / 2 * decoded.width + Int(Double(decoded.width) * x)].x }
