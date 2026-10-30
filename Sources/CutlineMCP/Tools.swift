@@ -128,8 +128,10 @@ final class Toolbox {
         }
         do {
             try checkArguments(name, args, schema: tool.schema)
-            installResolvers(try? session.project())
-            return try await tool.run(Args(args))
+            let project = try? session.project()
+            installResolvers(project)
+            let resolved = try args.map { try Toolbox.resolveMediaAliases($0, media: project?.media ?? []) }
+            return try await tool.run(Args(resolved))
         } catch {
             var r = ToolResult.text("Error: \(error.localizedDescription)")
             r.isError = true
