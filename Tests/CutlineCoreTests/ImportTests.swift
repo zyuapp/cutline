@@ -57,10 +57,7 @@ private func markers(_ p: Project, fps: Double = 30) -> [String] {
 
 @Test func fcpxmlRoundTripKeepsTimingLanesSpeedAndMarkers() throws {
     let p = roundTripProject()
-    // The exporter leaves transitions out; add the dissolve the way Final Cut writes one.
     let doc = try XMLDocument(xmlString: p.fcpxml(), options: [])
-    let spine = try #require(try doc.nodes(forXPath: "//project/sequence/spine").first as? XMLElement)
-    spine.insertChild(try XMLElement(xmlString: #"<transition name="Cross Dissolve" offset="4s" duration="1s"/>"#), at: 1)
 
     let r = try Importer.fcpxml(doc.xmlData, relativeTo: nil)
     let q = r.project
@@ -90,17 +87,7 @@ private func markers(_ p: Project, fps: Double = 30) -> [String] {
 
 @Test func otioRoundTripKeepsIdsTimingSpeedAndMarkers() throws {
     let p = roundTripProject()
-    var root = try #require(try JSONSerialization.jsonObject(with: p.otio()) as? [String: Any])
-    // Insert an OTIO dissolve that starts at the cut, as the exporter has none.
-    var stack = try #require(root["tracks"] as? [String: Any])
-    var tracks = try #require(stack["children"] as? [[String: Any]])
-    var main = try #require(tracks[0]["children"] as? [[String: Any]])
-    func rt(_ v: Double) -> [String: Any] { ["OTIO_SCHEMA": "RationalTime.1", "rate": 30.0, "value": v] }
-    main.insert(["OTIO_SCHEMA": "Transition.1", "name": "Cross Dissolve", "transition_type": "SMPTE_Dissolve",
-                 "in_offset": rt(0), "out_offset": rt(30), "metadata": [String: Any]()], at: 1)
-    tracks[0]["children"] = main
-    stack["children"] = tracks
-    root["tracks"] = stack
+    let root = try #require(try JSONSerialization.jsonObject(with: p.otio()) as? [String: Any])
 
     let r = try Importer.otio(try JSONSerialization.data(withJSONObject: root), relativeTo: nil)
     let q = r.project

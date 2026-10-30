@@ -93,6 +93,10 @@ extension Project {
                 let audible = clip.mediaId.flatMap(mediaAsset).map { $0.hasAudio && !$0.isImage } ?? false
                 if clip.kind == .media && (!embeddedAudio || audible) {
                     children.append(clipItem(clip, frames: e - s))
+                    if !embeddedAudio, let w = transitionWindows.first(where: { $0.transition.from == clip.id && $0.transition.to != nil && $0.transition.hasVideo }) {
+                        children.append(["OTIO_SCHEMA": "Transition.1", "name": w.transition.type, "transition_type": w.transition.type == "dissolve" ? "SMPTE_Dissolve" : "Custom_Transition",
+                                         "in_offset": rt(grid.frames(w.head)), "out_offset": rt(grid.frames(w.tail)), "metadata": ["cutline": ["type": w.transition.type]]])
+                    }
                 } else if embeddedAudio {
                     children.append(gap(e - s))
                 } else {
@@ -246,6 +250,10 @@ extension Project {
             resources.append(XMLElem("asset", attrs, children: [XMLElem("media-rep", [("kind", "original-media"), ("src", m.url.absoluteString)])]))
         }
         let titleRef = "r_title"
+        let dissolveRef = "r_dissolve"
+        if !transitions.isEmpty {
+            resources.append(XMLElem("effect", [("id", dissolveRef), ("name", "Cross Dissolve"), ("uid", "FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265")]))
+        }
         if tracks.contains(where: { $0.kind == .video && $0.clips.contains { $0.kind == .text } }) {
             resources.append(XMLElem("effect", [("id", titleRef), ("name", "Basic Title"),
                                                 ("uid", ".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti")]))
@@ -314,6 +322,7 @@ extension Project {
             var frames: Int
             var anchored: [(offset: Int, lane: Int, elem: XMLElem)] = []
             var markers: [XMLElem] = []
+            var clipId: String?
         }
         func gapItem(_ offset: Int, _ frames: Int, name: String = "Gap") -> SpineItem {
             SpineItem(elem: XMLElem("gap", [("name", name), ("offset", grid.fcp(offset)), ("duration", grid.fcp(frames))]), offset: offset, localStart: 0, frames: frames)
@@ -327,7 +336,7 @@ extension Project {
                 guard e > s else { continue }
                 if s > cursor { spine.append(gapItem(cursor, s - cursor)) }
                 if clip.kind == .media, let asset = clip.mediaId.flatMap(mediaAsset) {
-                    spine.append(SpineItem(elem: mediaElement(clip, asset: asset, track: primary, lane: nil, offset: s, frames: e - s), offset: s, localStart: localStart(clip), frames: e - s))
+                    spine.append(SpineItem(elem: mediaElement(clip, asset: asset, track: primary, lane: nil, offset: s, frames: e - s), offset: s, localStart: localStart(clip), frames: e - s, clipId: clip.id))
                 } else if clip.kind == .text {
                     spine.append(SpineItem(elem: titleElement(clip, track: primary, lane: nil, offset: s, frames: e - s), offset: s, localStart: 0, frames: e - s))
                 } else {
@@ -374,11 +383,18 @@ extension Project {
             spine[p].markers.append(XMLElem("marker", [("start", grid.fcp(spine[p].localStart + f - spine[p].offset)), ("duration", grid.fcp(1)), ("value", m.label)]))
         }
 
-        let spineElems: [XMLElem] = spine.map { item in
+        var spineElems: [XMLElem] = []
+        for item in spine {
             var e = item.elem
             e.children += item.anchored.sorted { ($0.offset, $0.lane) < ($1.offset, $1.lane) }.map(\.elem)
             e.children += item.markers
-            return e
+            spineElems.append(e)
+            // A transition sits between the two spine clips it joins, overlapping both.
+            if let id = item.clipId, let w = transitionWindows.first(where: { $0.transition.from == id && $0.transition.to != nil && $0.transition.hasVideo }) {
+                let name = w.transition.type == "dip" ? "Fade To Color" : "Cross Dissolve"
+                spineElems.append(XMLElem("transition", [("name", name), ("offset", grid.fcp(grid.frames(w.start))), ("duration", grid.fcp(grid.frames(w.end - w.start)))],
+                                          children: [XMLElem("filter-video", [("ref", dissolveRef), ("name", name)])]))
+            }
         }
         let sequence = XMLElem("sequence", [
             ("format", sequenceFormat), ("duration", grid.fcp(end)), ("tcStart", "0s"), ("tcFormat", "NDF"),
