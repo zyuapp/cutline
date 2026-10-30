@@ -23,7 +23,7 @@ extension Toolbox {
             "start": Schema.time("Export from this timeline time"),
             "end": Schema.time("Export until this timeline time"),
             "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (.srt and .vtt) or both", values: ["none", "embed", "sidecar", "both"]),
-            "interlaced": Schema.string("Interlaced master (1080i broadcast): tff (HD) or bff; renders at the field rate and weaves. ProRes, DNxHR and XDCAM presets", values: ["tff", "bff"]),
+            "interlaced": Schema.string("Interlaced master (1080i broadcast): tff (HD) or bff; renders at the field rate and weaves. ProRes, DNxHR and XDCAM presets; ffmpeg's DNxHR is progressive only, so interlaced DNx is written as DNxHD 1080i (1920×1080 at 25 or 29.97 fps, tff only: hq → DNxHD 220/185, hqx → 220x/185x, sq → 145/120; lb has no interlaced tier)", values: ["tff", "bff"]),
             "closed_captions": Schema.bool("Embed CEA-608 closed captions (broadcast, Apple TV, platform ingest) and write an .scc file beside the video, from the transcripts"),
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
             "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video"),
@@ -62,10 +62,15 @@ extension Toolbox {
                 var warnings = platform.check(p0, preset: args.has("preset") ? preset.rawValue : nil)
                 let mix = try await LoudnessMeter.measure(try await session.timeline(for: p0), range: range)
                 loudness = mix
-                if mix.integrated.isFinite, abs(mix.integrated - platform.loudness) > platform.loudnessTolerance {
-                    warnings.append("Loudness is \(fmt1(mix.integrated)) LUFS; \(platform.name) needs \(fmt1(platform.loudness)) ±\(fmt1(platform.loudnessTolerance)). Run recipe loudness_normalize target_lufs:\(Int(platform.loudness)).")
+                if range == nil { session.measuredMix[try session.stems().masterKey(for: p0)] = mix }
+                // With a master loudness target, export conforms the mix, so the target is what gets checked.
+                let delivered = p0.master.loudnessTarget ?? mix.integrated
+                let peak = p0.master.loudnessTarget == nil ? mix.truePeakDb : min(mix.truePeakDb, p0.master.ceiling)
+                if delivered.isFinite, abs(delivered - platform.loudness) > platform.loudnessTolerance {
+                    warnings.append((p0.master.loudnessTarget == nil ? "Loudness is \(fmt1(mix.integrated)) LUFS" : "The master loudness target is \(fmt1(delivered)) LUFS") + "; \(platform.name) needs \(fmt1(platform.loudness)) ±\(fmt1(platform.loudnessTolerance)). Run recipe loudness_normalize target_lufs:\(Int(platform.loudness)).")
                 }
-                if mix.truePeakDb > platform.truePeak + 0.1 { warnings.append("True peak \(fmt1(mix.truePeakDb)) dBTP is above \(fmt1(platform.truePeak)); add a limiter (recipe loudness_normalize ceiling_db:\(fmt1(platform.truePeak - 0.5))).") }
+                if peak > platform.truePeak + 0.1 { warnings.append("True peak \(fmt1(peak)) dBTP is above \(fmt1(platform.truePeak)); add a limiter (recipe loudness_normalize ceiling_db:\(fmt1(platform.truePeak - 0.5))).") }
+                if let d = p0.master.drift(integrated: mix.integrated, truePeak: mix.truePeakDb) { report.append("Master loudness target: " + d) }
                 let text = try await measureText(p0, range: range, platform: platform)
                 warnings += text.filter { $0.contains("outside") || $0.contains("hard to read") }.map { $0.trimmingCharacters(in: .whitespaces) }
                 report.append("\(platform.name) check: " + (warnings.isEmpty ? "ready." : "\(warnings.count) issue(s)"))
@@ -99,7 +104,11 @@ extension Toolbox {
             if preset.isDNxHR, !["mov", "mxf"].contains(url.pathExtension.lowercased()) { url = url.deletingPathExtension().appendingPathExtension(ext); report.append("DNxHR goes in QuickTime or MXF, so the file is \(url.lastPathComponent).") }
             if container == .mov, url.pathExtension.lowercased() != "mov" { throw EditError("container mov needs a path ending .mov") }
             if container == .mxf, url.pathExtension.lowercased() != "mxf" { throw EditError("container mxf needs a path ending .mxf") }
-            if preset.needsFFmpeg, let why = FFmpegDelivery.check(p, preset: preset, container: url.pathExtension.lowercased()) { throw EditError(why) }
+            let fields = try args.enumValue("interlaced", FieldOrder.self)
+            if preset.needsFFmpeg, let why = FFmpegDelivery.check(p, preset: preset, container: url.pathExtension.lowercased(), fields: fields) { throw EditError(why) }
+            if preset.isDNxHR, fields == .tff, let tier = FFmpegDelivery.interlacedDNxHD(preset, fps: p.canvas.fps) {
+                report.append("ffmpeg's DNxHR is progressive only, so this interlaced master is \(tier.name) 1080i (\(preset.title)'s interlaced tier, \(tier.tenBit ? "10" : "8")-bit, top field first).")
+            }
             let base = url.deletingPathExtension()
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let transcripts = b.transcripts(for: p)
@@ -152,7 +161,7 @@ extension Toolbox {
             let started = Date()
             let project = b.url.path
             var options = ExportOptions(preset: preset, bitrateMbps: args.optDouble("bitrate_mbps"), range: range, subtitles: subs == "embed" || subs == "both" ? cues : [], chapters: chapters)
-            options.interlaced = try args.enumValue("interlaced", FieldOrder.self)
+            options.interlaced = fields
             if options.interlaced != nil { report.append("Interlaced \(options.interlaced!.rawValue == "tff" ? "top" : "bottom") field first at \(fmt2(p.canvas.fps * 2)) fields/s") }
             options.closedCaptions = closed
             let tcFormat = p.canvas.timecodeFormat
@@ -176,7 +185,7 @@ extension Toolbox {
                     .init("Duration", tcFormat.string(tcFormat.frameCount(length))),
                     .init("Picture", "\(p.canvas.width)×\(p.canvas.height) \(Describe.fmtFps(p.canvas.fps))p \(preset.title)"),
                     .init("Audio", "\(p.master.layout.title), 48 kHz" + (preset.isProRes ? " 24-bit PCM" : "")),
-                    .init("Loudness", mix.integrated.isFinite ? "\(fmt1(mix.integrated)) LUFS integrated, \(fmt1(mix.truePeakDb)) dBTP true peak" : "silent"),
+                    .init("Loudness", p.master.loudnessTarget.map { "\(fmt1($0)) LUFS integrated, ≤ \(fmt1(p.master.ceiling)) dBTP true peak" } ?? (mix.integrated.isFinite ? "\(fmt1(mix.integrated)) LUFS integrated, \(fmt1(mix.truePeakDb)) dBTP true peak" : "silent")),
                 ] + (platform.map { [.init("Delivery", $0.name)] } ?? [])
                 options.leader = l
                 let start = tcFormat.string((tcFormat.frames(programTC) ?? 0) - l.frames(tcFormat))
@@ -188,9 +197,17 @@ extension Toolbox {
                 options.closedCaptions = []
                 options.chapters = []
             }
-            try await Exporter.export(built, to: url, options: options) { fraction in
-                DistributedNotificationCenter.default().postNotificationName(PreviewControl.notification, object: nil, userInfo: ["action": "export", "state": "progress", "progress": fraction, "project": project], deliverImmediately: true)
+            let conform: LoudnessConform?
+            do {
+                conform = try await Exporter.export(built, to: url, options: options) { fraction in
+                    DistributedNotificationCenter.default().postNotificationName(PreviewControl.notification, object: nil, userInfo: ["action": "export", "state": "progress", "progress": fraction, "project": project], deliverImmediately: true)
+                }
+            } catch {
+                try? session.sendPreview(["action": "export", "state": "failed", "path": url.path])
+                throw EditError("Export failed, nothing was left at \(url.path): \(error.localizedDescription)")
             }
+            if let conform { report.append(conform.summary) }
+            if range == nil, let conform { session.measuredMix[try session.stems().masterKey(for: p)] = conform.before }
             try? session.sendPreview(["action": "export", "state": "finished", "path": url.path])
             if preset.needsFFmpeg {
                 report.insert(try await Toolbox.describeFFmpegExport(url, preset: preset, took: Date().timeIntervalSince(started)), at: 0)
@@ -304,8 +321,8 @@ extension Toolbox {
             let url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem).appendingPathExtension(format.fileExtension)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let layout = try args.enumValue("downmix", AudioLayout.self)
-            try await Delivery.audio(try await session.timeline(for: p), range: range, to: url, format: format, layout: layout)
-            return .text("Wrote \(url.path) (\(format.rawValue), \((layout ?? p.master.layout).title)), took \(fmt1(Date().timeIntervalSince(started)))s")
+            let conform = try await Delivery.audio(try await session.timeline(for: p), range: range, to: url, format: format, layout: layout)
+            return .text("Wrote \(url.path) (\(format.rawValue), \((layout ?? p.master.layout).title)), took \(fmt1(Date().timeIntervalSince(started)))s" + (conform.map { "\n" + $0.summary } ?? ""))
         case "stems":
             let format = try args.enumValue("audio_format", Delivery.AudioFormat.self) ?? .wav24
             let dir = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem + " stems", isDirectory: true)
@@ -317,12 +334,13 @@ extension Toolbox {
                 for i in solo.tracks.indices where roles[solo.tracks[i].id] != role { solo.tracks[i].muted = true }
                 // Stems are pre-master so they sum back to the mix; the master bus effects stay off.
                 solo.master.effects = []
+                solo.master.loudnessTarget = nil
                 let url = dir.appendingPathComponent("\(stem) - \(role)").appendingPathExtension(format.fileExtension)
                 try await Delivery.audio(try await session.timeline(for: solo), range: range, to: url, format: format, layout: try args.enumValue("downmix", AudioLayout.self))
                 let tracks = roles.filter { $0.value == role }.keys.sorted()
                 lines.append("\(role): \(url.lastPathComponent) (\(tracks.joined(separator: ", ")))")
             }
-            return .text("Wrote \(roles.isEmpty ? 0 : Set(roles.values).count) stems to \(dir.path):\n" + lines.joined(separator: "\n") + "\nSet roles with track_update role.")
+            return .text("Wrote \(roles.isEmpty ? 0 : Set(roles.values).count) stems to \(dir.path):\n" + lines.joined(separator: "\n") + "\nSet roles with track_update role." + (p.master.loudnessTarget == nil ? "" : "\nStems are pre-master, so the master loudness target isn't applied to them."))
         case "stills":
             guard let times = args.raw["times"]?.array?.compactMap({ try? Args.parseTime($0, name: "times") }), !times.isEmpty else { throw EditError("Pass times") }
             let format = try args.enumValue("image_format", Delivery.StillFormat.self) ?? .png

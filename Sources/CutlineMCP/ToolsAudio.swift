@@ -64,10 +64,20 @@ extension Toolbox {
                         : "\(parts[0])'s sound now continues \(fmt2(-offset))s over the start of \(parts[1])."
                 }
             case "loudness_normalize":
+                if a.bool("off", default: false) {
+                    return try runEdit("Clear the loudness target", dry: dry) { p in
+                        let had = p.master.targetSummary
+                        p.master.loudnessTarget = nil
+                        p.master.truePeakCeiling = nil
+                        return had.map { "Cleared the master loudness target (\($0)); export delivers the mix as it is." } ?? "There was no loudness target."
+                    }
+                }
                 let target = a.optDouble("target_lufs") ?? -14
                 // −1.5 leaves room for lossy encoders, which overshoot the limiter by a few tenths of a dB.
                 let ceiling = a.optDouble("ceiling_db") ?? -1.5
                 let limit = a.bool("limit", default: true)
+                let persist = a.bool("persist", default: true)
+                guard (-60 ... -5).contains(target), (-20...0).contains(ceiling) else { throw EditError("target_lufs is −60…−5 and ceiling_db −20…0") }
                 let original = try session.project()
                 var p = original
                 let first = try await LoudnessMeter.measure(try await session.timeline(for: p))
@@ -85,6 +95,12 @@ extension Toolbox {
                 }
                 var note = "Mix was \(fmt1(first.integrated)) LUFS with peaks at \(fmt1(first.peakDb)) dBFS. Now \(fmt1(report.integrated)) LUFS, peaks \(fmt1(report.peakDb)) dBFS (master gain \(fmt1(p.master.gainDb)) dB" + (limit ? ", master limiter at \(fmt1(ceiling)) dBFS)." : ").")
                 if !limit && report.peakDb > ceiling { note += " Peaks exceed \(fmt1(ceiling)) dBFS; run again with limit:true or lower the target." }
+                if persist {
+                    p.master.loudnessTarget = target
+                    p.master.truePeakCeiling = ceiling == MasterAudio.defaultCeiling ? nil : ceiling
+                    note += " Kept as the master loudness target: every export and audio mix is measured and conformed to \(fmt1(target)) LUFS, true peak ≤ \(fmt1(ceiling)) dBTP, even after later mix changes (persist:false for a one-off gain, off:true to clear)."
+                }
+                session.measuredMix[try session.stems().masterKey(for: p)] = report
                 let final = p
                 return try runEdit("Normalize loudness to \(fmt1(target)) LUFS", dry: dry) { proj in
                     proj.master = final.master
@@ -99,6 +115,10 @@ extension Toolbox {
     func measureSound(_ p: Project, range: TimeRange?, tracks: Bool) async throws -> [String] {
         let mix = try await LoudnessMeter.measure(try await session.timeline(for: p), range: range)
         var lines = ["Sound mix: " + mix.summary + (p.master.gainDb != 0 ? " (master gain \(fmt1(p.master.gainDb)) dB)" : "")]
+        if range == nil { session.measuredMix[try session.stems().masterKey(for: p)] = mix }
+        if let target = p.master.targetSummary, let drift = p.master.drift(integrated: mix.integrated, truePeak: mix.truePeakDb) {
+            lines.append("  Loudness target \(target): " + drift + (range == nil ? "" : " (measured over the range; export measures what it delivers)"))
+        }
         if tracks {
             for track in p.tracks where track.clips.contains(where: { $0.kind == .media && ($0.mediaId.flatMap { p.mediaAsset($0) }?.hasAudio ?? false) }) && !track.muted {
                 var solo = p

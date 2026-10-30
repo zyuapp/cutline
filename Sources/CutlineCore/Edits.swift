@@ -297,6 +297,7 @@ extension Project {
                 }
             }
             if track.kind == .audio && !media.hasAudio { throw EditError("\(media.id) has no audio for audio track \(track.id)") }
+            if let why = clip.channels?.problem(count: media.sourceChannelCount) { throw EditError("\(clip.id) audio.channels \(clip.channels!.rawValue): \(why)") }
             if (clip.audioLead != 0 || clip.audioLag != 0) && !media.isImage {
                 let heard = clip.audioSourceRange
                 if heard.start < -1e-3 { throw EditError("\(clip.id)'s audio would start \(fmt(-heard.start))s before the beginning of \(media.id); reduce audio.lead") }

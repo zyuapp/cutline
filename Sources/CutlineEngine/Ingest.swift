@@ -215,6 +215,10 @@ public enum MediaIngest {
         m.originalPath = original.path
         m.transcoded = summary
         if m.hasVideo { m.fieldOrder = info.fieldOrder ?? m.fieldOrder }
+        if var chs = m.audioChannels {
+            for (i, name) in sourceChannelNames(info) where i < chs.count && chs[i].name == nil { chs[i].name = name }
+            m.audioChannels = chs
+        }
         if m.timecodeStart == nil, let tc = info.timecode, let fps = info.video?.frameRate, fps > 0 {
             let f = TimecodeFormat(fps: fps)
             m.timecodeStart = f.frames(tc).map(f.seconds)
@@ -230,7 +234,35 @@ public enum MediaIngest {
         m.originalPath = url.path
         m.transcoded = MediaAsset.pendingTranscode + summary(info)
         m.fieldOrder = v == nil ? nil : info.fieldOrder
+        m.audioChannels = mezzanineChannels(info)
         return m
+    }
+
+    /// The mezzanine's source channels: ch1+ch2 paired in track 1 when the original has mono tracks, the rest one per track.
+    static func mezzanineChannels(_ info: ProbeInfo) -> [SourceChannel]? {
+        guard !info.audio.isEmpty else { return nil }
+        let names = sourceChannelNames(info)
+        var out: [SourceChannel] = []
+        let paired = pairsMonos(info)
+        for (s, stream) in info.audio.enumerated() {
+            for c in 0..<max(1, stream.channels) {
+                let track = paired ? max(1, s) : s + 1
+                let channel = paired ? (s < 2 ? s + 1 : 1) : c + 1
+                out.append(SourceChannel(track: track, channel: channel, name: names[out.count]))
+            }
+        }
+        return out
+    }
+
+    /// Titles of mono audio streams, by source channel index from 0.
+    static func sourceChannelNames(_ info: ProbeInfo) -> [Int: String] {
+        var names: [Int: String] = [:]
+        var g = 0
+        for s in info.audio {
+            if s.channels <= 1, let t = s.title { names[g] = t }
+            g += max(1, s.channels)
+        }
+        return names
     }
 }
 

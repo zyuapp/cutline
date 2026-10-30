@@ -13,6 +13,10 @@ final class Session {
     var bundle: ProjectBundle?
     let library = MediaLibrary()
     var built: (project: Project, transcripts: [String: Transcript], timeline: BuiltTimeline)?
+    /// Source channels read for media the project doesn't describe yet, by media id.
+    var probedChannels: [String: [SourceChannel]] = [:]
+    /// The last loudness measured for a mix, by master stem key, so status can show drift without re-measuring.
+    var measuredMix: [String: LoudnessReport] = [:]
     let jobs = JobBoard()
     /// Jobs the last `open` re-queued from an exited server.
     var resumed: [String] = []

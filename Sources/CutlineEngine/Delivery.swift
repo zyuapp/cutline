@@ -83,12 +83,17 @@ public enum Delivery {
         if let size { gen.maximumSize = size }
         let fps = built.scene.project.canvas.fps
         var urls: [URL] = []
-        for t in times {
-            let clamped = min(max(0, t), max(0, built.duration - 1 / fps))
-            let (img, _) = try await gen.image(at: TimelineBuilder.time(clamped))
-            let url = dir.appendingPathComponent(String(format: "%@_%06d.%@", name, Int((clamped * fps).rounded()), format.fileExtension))
-            try write(img, to: url, format: format)
-            urls.append(url)
+        do {
+            for t in times {
+                let clamped = min(max(0, t), max(0, built.duration - 1 / fps))
+                let (img, _) = try await gen.image(at: TimelineBuilder.time(clamped))
+                let url = dir.appendingPathComponent(String(format: "%@_%06d.%@", name, Int((clamped * fps).rounded()), format.fileExtension))
+                urls.append(url)
+                try write(img, to: url, format: format)
+            }
+        } catch {
+            for u in urls { try? FileManager.default.removeItem(at: u) }
+            throw error
         }
         return urls
     }
@@ -121,9 +126,11 @@ public enum Delivery {
             }
             group.wait()
             reader.cancelReading()
-            if let e = failure.error { throw e }
-            if cancelled() { throw CancellationError() }
-            if reader.status == .failed { throw reader.error ?? EditError("Rendering frames failed") }
+            let error: Error? = failure.error ?? (cancelled() ? CancellationError() : reader.status == .failed ? reader.error ?? EditError("Rendering frames failed") : nil)
+            if let error {
+                for i in stride(from: 1, through: n, by: 1) { try? FileManager.default.removeItem(at: dir.appendingPathComponent(String(format: "%@_%06d.%@", name, i, format.fileExtension))) }
+                throw error
+            }
             return n
         }
     }
@@ -132,11 +139,20 @@ public enum Delivery {
 
     /// The timeline's mix over `range` (default the whole timeline) at 48 kHz, padded with silence to the full length.
     /// It is in the timeline's master layout, or folded down (ITU-R BS.775) to `layout` when given.
-    public static func audio(_ built: BuiltTimeline, range: TimeRange? = nil, to url: URL, format: AudioFormat, layout: AudioLayout? = nil) async throws {
+    /// Under a master loudness target the mix is conformed to it first; a failed write leaves no file.
+    @discardableResult
+    public static func audio(_ built: BuiltTimeline, range: TimeRange? = nil, to url: URL, format: AudioFormat, layout: AudioLayout? = nil) async throws -> LoudnessConform? {
         let target = layout ?? built.layout
-        if built.layout != .stereo || target != .stereo {
-            return try await audio(built, range: range, to: url, format: format, target: target)
+        return try await Exporter.removingOnFailure(url) {
+            if built.layout != .stereo || target != .stereo || built.scene.project.master.loudnessTarget != nil {
+                return try await audio(built, range: range, to: url, format: format, target: target)
+            }
+            try await stereoAudio(built, range: range, to: url, format: format)
+            return nil
         }
+    }
+
+    static func stereoAudio(_ built: BuiltTimeline, range: TimeRange?, to url: URL, format: AudioFormat) async throws {
         let span = timeRange(built, range)
         let comp = built.composition
         let tracks = try await comp.loadTracks(withMediaType: .audio)
@@ -203,22 +219,37 @@ public enum Delivery {
         }
     }
 
-    static func audio(_ built: BuiltTimeline, range: TimeRange?, to url: URL, format: AudioFormat, target: AudioLayout) async throws {
+    static func audio(_ built: BuiltTimeline, range: TimeRange?, to url: URL, format: AudioFormat, target: AudioLayout) async throws -> LoudnessConform? {
         guard format.extensions.contains(url.pathExtension.lowercased()) else {
             throw EditError("\(format.rawValue) is written as .\(format.fileExtension); \(url.lastPathComponent) has another extension")
         }
         let span = timeRange(built, range)
         let count = Int64((span.duration.seconds * 48_000).rounded())
-        if built.layout != .stereo {
-            guard let source = built.surround else { throw EditError("The \(built.layout.title) mix isn't rendered yet; render the project's stems first") }
-            let from = Int64((span.start.seconds * 48_000).rounded())
-            try write(source, from: built.layout, frames: from..<(from + count), to: url, layout: target, format: format)
-            return
+        let master = built.scene.project.master
+        let fm = FileManager.default
+        let mix = fm.temporaryDirectory.appendingPathComponent("cutline-mix-\(UUID().uuidString).caf")
+        let conformed = fm.temporaryDirectory.appendingPathComponent("cutline-loudness-\(UUID().uuidString).caf")
+        defer {
+            try? fm.removeItem(at: mix)
+            try? fm.removeItem(at: conformed)
         }
-        let mix = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-mix-\(UUID().uuidString).caf")
-        defer { try? FileManager.default.removeItem(at: mix) }
-        _ = try await AudioIO.mixdown(built, range: TimeRange(span.start.seconds, span.end.seconds), to: mix)
-        try write(mix, from: .stereo, frames: 0..<count, to: url, layout: target, format: format)
+        var source: URL
+        var frames: Range<Int64>
+        if built.layout != .stereo {
+            guard let s = built.surround else { throw EditError("The \(built.layout.title) mix isn't rendered yet; render the project's stems first") }
+            let from = Int64((span.start.seconds * 48_000).rounded())
+            (source, frames) = (s, from..<(from + count))
+        } else {
+            _ = try await AudioIO.mixdown(built, range: TimeRange(span.start.seconds, span.end.seconds), to: mix)
+            (source, frames) = (mix, 0..<count)
+        }
+        var conform: LoudnessConform?
+        if let t = master.loudnessTarget {
+            conform = try await LoudnessConform.run(source, layout: built.layout, frames: frames, target: t, ceiling: master.ceiling, to: conformed)
+            (source, frames) = (conformed, 0..<count)
+        }
+        try write(source, from: built.layout, frames: frames, to: url, layout: target, format: format)
+        return conform
     }
 
     /// Folds a 48 kHz mono, stereo, 5.1 or 7.1 file (channels in SMPTE order) down to `layout` per ITU-R BS.775:
@@ -235,18 +266,24 @@ public enum Delivery {
     static func write(_ source: URL, from: AudioLayout, frames: Range<Int64>, to url: URL, layout: AudioLayout, format: AudioFormat) throws {
         try? FileManager.default.removeItem(at: url)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let tag = try format.channelLayoutTag(layout)
-        let input = try AVAudioFile(forReading: source)
-        let output = try AVAudioFile(forWriting: url, settings: format.settings(layout, tag: tag), commonFormat: .pcmFormatFloat32, interleaved: false)
-        let matrix = from.downmixMatrix(to: layout)
-        try AudioIO.remix(input, matrix: layout.channelOrder(in: tag).map { matrix[$0] }, frames: frames) { try AudioIO.write($0, to: output) }
-        output.close()
+        try Exporter.removingOnFailureSync(url) {
+            let tag = try format.channelLayoutTag(layout)
+            let input = try AVAudioFile(forReading: source)
+            let output = try AVAudioFile(forWriting: url, settings: format.settings(layout, tag: tag), commonFormat: .pcmFormatFloat32, interleaved: false)
+            let matrix = from.downmixMatrix(to: layout)
+            try AudioIO.remix(input, matrix: layout.channelOrder(in: tag).map { matrix[$0] }, frames: frames) { try AudioIO.write($0, to: output) }
+            output.close()
+        }
     }
 
     // MARK: GIF
 
     /// An endlessly looping GIF of `range`, `width` pixels wide, rendered at `fps` straight from the compositor.
     public static func gif(_ built: BuiltTimeline, range: TimeRange, to url: URL, fps: Double = 12, width: Int = 480) async throws {
+        try await Exporter.removingOnFailure(url) { try await writeGIF(built, range: range, to: url, fps: fps, width: width) }
+    }
+
+    static func writeGIF(_ built: BuiltTimeline, range: TimeRange, to url: URL, fps: Double, width: Int) async throws {
         guard fps > 0, width >= 2 else { throw EditError("GIF needs a positive fps and width") }
         let span = timeRange(built, range)
         guard let vc = built.videoComposition.mutableCopy() as? AVMutableVideoComposition else { throw EditError("Cannot configure the GIF render") }

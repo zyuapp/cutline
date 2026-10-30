@@ -172,7 +172,7 @@ public enum SurroundMix {
                 var mono = false
                 if clip.kind == .media {
                     guard let media = clip.mediaId.flatMap({ resolved.mediaAsset($0) }), media.hasAudio, !media.isImage else { continue }
-                    mono = try await channelCount(media, library: library) == 1 || clip.channels?.isMono == true
+                    if let routing = clip.channels, !routing.isAsRecorded, !clip.reverse { mono = routing.isMono } else { mono = try await channelCount(media, library: library) == 1 || clip.channels?.isMono == true }
                 }
                 var t = track
                 t.clips = [clip]

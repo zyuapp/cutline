@@ -97,18 +97,20 @@ public final class AudioStems: @unchecked Sendable {
     /// The internal effect that routes a clip's channels ahead of its audio effects in a clip stem.
     static let channelMapType = "audio.channel_map"
 
-    /// Clips whose sound plays from a rendered clip stem: those with audio effects or channel routing.
+    /// Clips whose sound plays from a rendered clip stem: those with audio effects, and reversed clips with channel
+    /// routing (their reversed copy has the first track only, so the routing runs as an effect on it).
     static func needsClipStem(_ clip: Clip) -> Bool {
-        (clip.channels ?? .stereo) != .stereo || clip.effects.contains { EffectCatalog.isAudio($0.type) && $0.enabled }
+        (clip.reverse && !(clip.channels ?? .stereo).isAsRecorded) || clip.effects.contains { EffectCatalog.isAudio($0.type) && $0.enabled }
     }
 
-    /// A clip alone on a track whose effects are its channel routing and audio effects, for rendering its processed sound.
+    /// A clip alone on a track whose effects are its audio effects, for rendering its processed sound.
+    /// Its routed channels stay on the dry clip, which reads them from the routed source.
     static func solo(_ clip: Clip, in project: Project) -> (Project, Track) {
         var dry = clip
         dry.effects.removeAll { EffectCatalog.isAudio($0.type) }
-        dry.channels = nil
         var fx = clip.effects.filter { EffectCatalog.isAudio($0.type) }
-        if let routing = clip.channels, routing != .stereo {
+        if clip.reverse, let routing = clip.channels, !routing.isAsRecorded {
+            dry.channels = nil
             fx.insert(Effect(id: "channels", type: channelMapType, params: ["channels": .string(routing.rawValue)]), at: 0)
         }
         let track = Track(id: "clip-\(clip.id)", kind: .audio, name: clip.id, effects: fx, clips: [dry])
@@ -125,6 +127,15 @@ public final class AudioStems: @unchecked Sendable {
     public func renderMissing(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary) async throws -> [String] {
         var done: [String] = []
         let resolved = project.resolvingAudioTransitions()
+        var routed = Set<String>()
+        for clip in resolved.tracks.flatMap(\.clips).flatMap({ $0.kind == .sequence ? resolved.expanded($0).map(\.clip) : [$0] }) where clip.kind == .media && !clip.reverse {
+            guard let routing = clip.channels, !routing.isAsRecorded, let media = clip.mediaId.flatMap({ resolved.mediaAsset($0) }), media.hasAudio, !media.isImage, !media.isTranscoding else { continue }
+            let url = SourceChannels.routedURL(media, routing, in: directory)
+            guard !routed.contains(url.path), cachedRoute(media, routing) == nil else { continue }
+            routed.insert(url.path)
+            try await SourceChannels.renderRouted(media, routing, to: url)
+            done.append(clip.id)
+        }
         for track in resolved.tracks {
             for clip in track.clips.flatMap({ $0.kind == .sequence ? resolved.expanded($0).map(\.clip) : [$0] }) where clip.kind == .media && Self.needsClipStem(clip) {
                 let (solo, soloTrack) = Self.solo(clip, in: resolved)
@@ -156,9 +167,11 @@ public final class AudioStems: @unchecked Sendable {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
         let stems = files.filter { $0.pathExtension == "caf" && !$0.lastPathComponent.hasPrefix("dry-") && !$0.lastPathComponent.hasPrefix("stem-") }
-        guard stems.count > keep else { return }
-        let dated = stems.map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
-        for (url, _) in dated.sorted(by: { $0.1 > $1.1 }).dropFirst(keep) { try? fm.removeItem(at: url) }
+        // Routed sources are whole media files and outlive edits, so they're kept apart from stems.
+        for (group, limit) in [(stems.filter { !$0.lastPathComponent.hasPrefix("route-") }, keep), (stems.filter { $0.lastPathComponent.hasPrefix("route-") }, 16)] where group.count > limit {
+            let dated = group.map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
+            for (url, _) in dated.sorted(by: { $0.1 > $1.1 }).dropFirst(limit) { try? fm.removeItem(at: url) }
+        }
     }
 
     func writeAtomically(_ dest: URL, _ body: (URL) async throws -> Void) async throws {
@@ -502,15 +515,15 @@ public enum LoudnessMeter {
         var count = 0
         var peak: Float = 0
         var truePeak = 0.0
-        var history: [[Double]]
-        var head = 0
+        /// The last 11 samples per channel, oldest first, for the oversampling filter.
+        var history: [[Float]]
         var frames = 0
 
         init(layout: AudioLayout = .stereo) {
             channels = layout.channelCount
             weights = layout.loudnessWeights
             filters = (0..<channels).map { _ in LoudnessMeter.kWeighting() }
-            history = [[Double]](repeating: [Double](repeating: 0, count: 12), count: channels)
+            history = [[Float]](repeating: [Float](repeating: 0, count: 11), count: channels)
         }
 
         /// Polyphase interpolation filter for 4× oversampling, 12 taps per phase.
@@ -522,23 +535,24 @@ public enum LoudnessMeter {
         ]
 
         mutating func feed(_ samples: UnsafePointer<Float>, _ n: Int) {
+            guard n > 0 else { return }
             var p: Float = 0
             vDSP_maxmgv(samples, 1, &p, vDSP_Length(n * channels))
             peak = max(peak, p)
-            for i in 0..<n {
-                head = (head + 1) % 12
-                for ch in 0..<channels { history[ch][head] = Double(samples[channels * i + ch]) }
-                for ch in 0..<channels {
-                    for phase in Accumulator.phases {
-                        var y = 0.0
-                        var k = head
-                        for c in phase {
-                            y += c * history[ch][k]
-                            k = k == 0 ? 11 : k - 1
-                        }
-                        truePeak = max(truePeak, abs(y))
-                    }
+            for ch in 0..<channels {
+                var x = [Float](repeating: 0, count: n)
+                for i in 0..<n { x[i] = samples[channels * i + ch] }
+                let ext = history[ch] + x
+                var y = [Float](repeating: 0, count: n)
+                for taps in TruePeakLimiter.taps {
+                    vDSP_conv(ext, 1, taps, 1, &y, 1, vDSP_Length(n), vDSP_Length(taps.count))
+                    var m: Float = 0
+                    vDSP_maxmgv(y, 1, &m, vDSP_Length(n))
+                    truePeak = max(truePeak, Double(m))
                 }
+                history[ch] = Array(ext.suffix(11))
+            }
+            for i in 0..<n {
                 var energy = 0.0
                 for ch in 0..<channels where weights[ch] > 0 {
                     let y = filters[ch][1].run(filters[ch][0].run(Double(samples[channels * i + ch])))

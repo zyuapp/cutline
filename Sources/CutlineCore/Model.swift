@@ -187,6 +187,11 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     public var fieldOrder: FieldOrder?
     /// false shows interlaced frames woven; nil or true deinterlaces them.
     public var deinterlace: Bool?
+    /// Every source channel across the playable file's audio tracks, in order (ch1, ch2…); nil when not read.
+    public var audioChannels: [SourceChannel]?
+    /// The source channel(s) transcription, speakers, beats, sounds and sync listen to; nil picks the first track,
+    /// or for multichannel files every channel with sound.
+    public var analysisChannel: ChannelRouting?
 
     public init(id: String, path: String, name: String, duration: Seconds, width: Int, height: Int, fps: Double, hasVideo: Bool, hasAudio: Bool, isImage: Bool = false) {
         self.id = id
@@ -523,20 +528,31 @@ public struct MasterAudio: Codable, Equatable, Sendable {
     public var effects: [Effect]
     /// Channel layout the timeline is mixed and delivered in.
     public var layout: AudioLayout
+    /// Integrated loudness (LUFS) every export and audio mix delivers: the mix is measured at export, then gained
+    /// and true-peak limited to it. nil delivers the mix as it is.
+    public var loudnessTarget: Double?
+    /// True-peak ceiling (dBTP) that goes with `loudnessTarget`; nil is −1.5.
+    public var truePeakCeiling: Double?
 
-    public init(gainDb: Double = 0, effects: [Effect] = [], layout: AudioLayout = .stereo) {
+    public static let defaultCeiling = -1.5
+
+    public init(gainDb: Double = 0, effects: [Effect] = [], layout: AudioLayout = .stereo, loudnessTarget: Double? = nil, truePeakCeiling: Double? = nil) {
         self.gainDb = gainDb
         self.effects = effects
         self.layout = layout
+        self.loudnessTarget = loudnessTarget
+        self.truePeakCeiling = truePeakCeiling
     }
 
-    enum CodingKeys: String, CodingKey { case gainDb, effects, layout }
+    enum CodingKeys: String, CodingKey { case gainDb, effects, layout, loudnessTarget, truePeakCeiling }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         gainDb = try c.decodeIfPresent(Double.self, forKey: .gainDb) ?? 0
         effects = try c.decodeIfPresent([Effect].self, forKey: .effects) ?? []
         layout = try c.decodeIfPresent(AudioLayout.self, forKey: .layout) ?? .stereo
+        loudnessTarget = try c.decodeIfPresent(Double.self, forKey: .loudnessTarget)
+        truePeakCeiling = try c.decodeIfPresent(Double.self, forKey: .truePeakCeiling)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -544,9 +560,29 @@ public struct MasterAudio: Codable, Equatable, Sendable {
         try c.encode(gainDb, forKey: .gainDb)
         try c.encode(effects, forKey: .effects)
         if layout != .stereo { try c.encode(layout, forKey: .layout) }
+        try c.encodeIfPresent(loudnessTarget, forKey: .loudnessTarget)
+        try c.encodeIfPresent(truePeakCeiling, forKey: .truePeakCeiling)
     }
 
     public var gain: Double { pow(10, gainDb / 20) }
+    /// The true-peak ceiling export limits to under a loudness target.
+    public var ceiling: Double { truePeakCeiling ?? MasterAudio.defaultCeiling }
+
+    /// "−23.0 LUFS, true peak ≤ −1.5 dBTP"; nil without a target.
+    public var targetSummary: String? {
+        loudnessTarget.map { String(format: "%.1f LUFS, true peak ≤ %.1f dBTP", $0, ceiling) }
+    }
+
+    /// How far a measured mix sits from the target and what export does about it; nil without a target.
+    public func drift(integrated: Double, truePeak: Double) -> String? {
+        guard let t = loudnessTarget else { return nil }
+        guard integrated.isFinite else { return "the mix is silent, so export can't reach \(String(format: "%.1f", t)) LUFS" }
+        let off = integrated - t
+        if abs(off) < 0.5 && truePeak <= ceiling + 0.1 { return String(format: "on target (%.1f LUFS, %.1f dBTP)", integrated, truePeak) }
+        var s = String(format: "the mix is %.1f LUFS, %.1f LU %@ the target", integrated, abs(off), off < 0 ? "below" : "above")
+        if truePeak > ceiling + 0.1 { s += String(format: ", true peak %.1f dBTP over the %.1f ceiling", truePeak, ceiling) }
+        return s + String(format: "; export applies %+.1f dB and limits to %.1f dBTP", -off, ceiling)
+    }
 }
 
 struct LegacyKeyframe: Decodable {

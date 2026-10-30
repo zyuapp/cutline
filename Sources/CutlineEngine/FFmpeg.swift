@@ -152,6 +152,8 @@ public struct ProbeInfo: Sendable {
         public var colorSpace: String?
         public var colorRange: String?
         public var isAttachedPicture: Bool
+        /// The stream's title tag, e.g. a track name from the recorder or editor.
+        public var title: String? = nil
     }
 
     public var formatName: String
@@ -179,7 +181,7 @@ public struct ProbeInfo: Sendable {
                 return v
             }
             let bits = Int(num(s["bits_per_raw_sample"]) ?? num(s["bits_per_sample"]) ?? 0)
-            return Stream(index: Int(num(s["index"]) ?? 0), type: s["codec_type"] as? String ?? "", codec: s["codec_name"] as? String ?? "unknown",
+            var stream = Stream(index: Int(num(s["index"]) ?? 0), type: s["codec_type"] as? String ?? "", codec: s["codec_name"] as? String ?? "unknown",
                           codecLongName: s["codec_long_name"] as? String ?? (s["codec_name"] as? String ?? "unknown"), profile: known("profile"),
                           tag: (s["codec_tag_string"] as? String).flatMap { $0.hasPrefix("[0]") ? nil : $0 },
                           width: Int(num(s["width"]) ?? 0), height: Int(num(s["height"]) ?? 0), pixelFormat: known("pix_fmt"),
@@ -188,6 +190,8 @@ public struct ProbeInfo: Sendable {
                           bitRate: num(s["bit_rate"]).map { Int($0) }, timecode: tags["timecode"] as? String,
                           colorPrimaries: known("color_primaries"), colorTransfer: known("color_transfer"), colorSpace: known("color_space"), colorRange: known("color_range"),
                           isAttachedPicture: ((s["disposition"] as? [String: Any])?["attached_pic"] as? NSNumber)?.intValue == 1)
+            stream.title = (tags["title"] as? String).flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+            return stream
         }
     }
 

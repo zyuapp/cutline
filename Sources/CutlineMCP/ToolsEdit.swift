@@ -57,7 +57,10 @@ extension Toolbox {
             "loop": Schema.bool("Sound only (audio-only media, or any media on an audio track): repeat source_in–source_out end to end to fill duration or end, as several clips, instead of retiming"),
             "allow_stretch": Schema.bool("Allow slowing audio-only media below 0.25×, which is refused by default"),
             "name": Schema.string("Label shown in the preview timeline"),
-        ].merging(Toolbox.setProp) { a, _ in a }), label: { a, p in a.optString("media_id").map { id in "Add " + (p.mediaAsset(id)?.name ?? id) } ?? (a.bool("adjustment", default: false) ? "Add adjustment layer" : "Add a color clip") }) { p, args in
+            "channels": Schema.string("Which source channels the clip plays (audio.channels): \(ChannelRouting.help). \"split\" lays every source channel of a multitrack recording on its own audio track as a mono clip (ch1, ch2…), linked with the picture (its own sound off) so they move, trim and delete together"),
+            "audio_tracks": Schema.strings("With channels:\"split\": one existing audio track per source channel; default new tracks"),
+        ].merging(Toolbox.setProp) { a, _ in a }), label: { a, p in a.optString("media_id").map { id in "Add " + (p.mediaAsset(id)?.name ?? id) + (a.optString("channels") == "split" ? " split into channels" : "") } ?? (a.bool("adjustment", default: false) ? "Add adjustment layer" : "Add a color clip") }) { [unowned self] p, args in
+            if let mid = args.optString("media_id") { self.fillChannels(&p, mid) }
             var clip: Clip
             var defaultTrack = "V1"
             var warning: String?
@@ -117,6 +120,25 @@ extension Toolbox {
                 throw EditError("Pass media_id, color, generator, or adjustment: true")
             }
             try Toolbox.applySet(&clip, args)
+            let split = args.optString("channels") == "split"
+            if let raw = args.optString("channels"), !split {
+                guard clip.kind == .media else { throw EditError("channels is for media clips") }
+                guard let r = ChannelRouting(rawValue: raw) else { throw EditError("channels is split or \(ChannelRouting.help)") }
+                clip.channels = r.isAsRecorded ? nil : r
+            }
+            if split {
+                guard clip.kind == .media, let m = p.mediaAsset(clip.mediaId!) else { throw EditError("channels:\"split\" needs media_id") }
+                guard args.optString("track") != "new" || m.hasVideo else { throw EditError("channels:\"split\" makes its own audio tracks; pass audio_tracks to use existing ones") }
+                let mode = try args.enumValue("mode", PlaceMode.self) ?? (start == nil ? .append : .place)
+                clip.start = start ?? 0
+                var picture = args.optString("track") ?? "V1"
+                if picture == "new" { picture = p.addTrack(kind: .video, name: "Overlay", index: p.tracks.lastIndex { $0.kind == .video }.map { $0 + 1 } ?? 0).id }
+                let made = try p.addSplitChannels(clip, pictureTrack: picture, audioTracks: args.strings("audio_tracks"), mode: mode)
+                let first = made.channels.first.flatMap { p.clip($0.clip) }
+                return "Split \(m.id) into \(made.channels.count) mono clip(s)" + (first.map { " at \(fmt($0.start))–\(fmt($0.end))" } ?? "") + ": "
+                    + made.channels.map { "\($0.clip) on \($0.track)" }.joined(separator: ", ")
+                    + (made.picture.map { "; picture \($0) on \(picture) with its own sound off" } ?? "") + ", all linked."
+            }
             var trackId = args.optString("track") ?? defaultTrack
             if trackId == "new" {
                 let kind: TrackKind = clip.kind == .media && !(p.mediaAsset(clip.mediaId!)?.hasVideo ?? true) ? .audio : .video

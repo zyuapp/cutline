@@ -68,23 +68,6 @@ extension Project {
     }
 }
 
-/// Which source channels a clip plays, for picking one microphone out of a two-channel recording.
-public enum ChannelRouting: String, Codable, Sendable, CaseIterable {
-    /// Both channels as recorded.
-    case stereo
-    /// The left channel on both sides.
-    case left
-    /// The right channel on both sides.
-    case right
-    /// Both channels summed at half level on both sides.
-    case monoMix = "mono_mix"
-    /// Left and right exchanged.
-    case swap
-
-    /// Plays a single channel image, so it pans as a point source.
-    public var isMono: Bool { self == .left || self == .right || self == .monoMix }
-}
-
 /// A clip-sized piece of a looped or room-tone sound: where it sits and where it reads.
 public struct SoundPiece: Equatable, Sendable {
     public var start: Seconds

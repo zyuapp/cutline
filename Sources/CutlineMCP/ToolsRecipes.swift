@@ -8,7 +8,7 @@ extension Toolbox {
 
     static let recipeDocs = """
         duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
-        loudness_normalize: {target_lufs: -14, ceiling_db: -1.5, limit: true}. \
+        loudness_normalize: {target_lufs: -14, ceiling_db: -1.5 (true-peak ceiling), limit: true, persist: true, off: false}; sets master gain and a limiter for preview and, with persist, keeps the target on the master so every export measures the mix and conforms it (gain plus true-peak limiter) even after later mix changes; off:true clears the target. \
         split_edit: {edit: "clip_a|clip_b", offset: seconds (+ J cut, − L cut)}. \
         room_tone: {start, end (timeline), media, source_start, source_end (a quiet stretch of that media's sound, in source time; 2 s or more sounds best), track (default a new audio track "Room tone"), crossfade: 0.25}; fills the range with that room tone, looped from varied start points with short crossfades so the repeat isn't heard. \
         fill_gaps: {track: the dialogue track, media, source_start, source_end (a quiet stretch, as room_tone), into (default a new audio track "Room tone"), min_gap: 0.04, crossfade: 0.25 (shortened to half of a shorter gap)}; fills every gap between that track's sounds with room tone so the background never drops out. \
@@ -27,10 +27,10 @@ extension Toolbox {
         match_color: {clips: [ids] and/or track (default every media clip on V1), reference: clip id whose look the others match, reference_at: timeline time of the exact reference frame (picks the clip there when reference is omitted), strength: 0.8 (0…1), allow_large: false}; shot matching like Resolve's: measures each shot's tones and color (inside its crop, ignoring letterbox bars; robust to a few extreme pixels) and adds a match LUT (effect "match") in front of its other color effects; lightness moves at most ±20 L unless allow_large, colorfulness at most ±25%, black and white stay put; warns when a shot isn't comparable with the reference (big lightness or colorfulness gap, different tones or content). \
         qualify: {clip, x, y (frame fractions of a color to key, with radius: 0.02) or face: true (n: 0, largest first), at: timeline time (default the clip's middle), effect: existing effect id to key (default a new one), type: "color.wheels" for a new effect, window: true with face (an ellipse window on the face)}; the eyedropper: samples the picture as that effect receives it and sets its hue/saturation/luma qualifier ranges and matte cleanup to cover the sampled colors. \
         grade_group: {clips: [ids] (or track: "V1" for every media clip on it), id: "group1", effect: {type: "color.wheels", params: {...}}}; adds one shared effect with that id to every clip (adding clips to an existing group copies its current settings). Change the whole group at once with param_set target "group:group1" and fx.group1.<param>; effect_add target "group:group1" works too. \
-        sync_audio: {clips: [video clip ids] (default every clip of that camera media on V1), audio: media id of the separate recorder, track: audio track (default new "Production sound"), keep_camera: false}; lines up dual-system sound by waveform, links it to the picture and mutes the camera mic. \
+        sync_audio: {clips: [video clip ids] (default every clip of that camera media on V1), audio: media id of the separate recorder, track: audio track (default new "Production sound"), keep_camera: false, channel: recorder channel to sync by ("ch3", "mix:1,2"; default its analysis channel or every channel with sound), camera_channel: the same for the camera, play: routing the placed sound plays, e.g. "ch2" (default as recorded)}; lines up dual-system sound by waveform, links it to the picture and mutes the camera mic. \
         follow: {clip: the graphic, title or overlay to move, target: "track:<id>" (media_track) or "face:<media>[:n]", offset_x: 0, offset_y: -0.1 (fractions of the frame; negative is above), smooth: 0.2}; keeps the clip on its subject wherever the media plays. \
         kinetic_text: {start, end (timeline or word anchors), preset: pop, unit: word, size: 0.09, y: 0.5, color, highlight: color, uppercase: false, max_width: 0.8}; spoken words appear as they are said. \
-        multicam_switch: {angles: [media ids], audio: media with the main sound (default first angle), signal: auto|mics|speakers (auto: whose own mic is loudest when each angle records its person, else speaker analysis), speakers: {"S1": media, ...} (default S1→first angle, S2→second…), wide: media for long turns, reaction: true or seconds (cut to the listener in turns longer than that, default 5), start, end (source seconds of audio), min_shot: 1.0, at: timeline time, track: "V1"}; syncs angles by their sound and cuts per speaker turn in the pause before each new speaker, never inside a word. Or {cuts: [{at: timeline time, angle: media}], track: "V1"} to switch angles by hand like a multicam editor: splits there and plays that angle in sync from then on.
+        multicam_switch: {angles: [media ids], audio: media with the main sound (default first angle), signal: auto|mics|speakers (auto: whose own mic is loudest when each angle records its person, else speaker analysis), speakers: {"S1": media, ...} (default S1→first angle, S2→second…), wide: media for long turns, reaction: true or seconds (cut to the listener in turns longer than that, default 5), start, end (source seconds of audio), min_shot: 1.0, at: timeline time, track: "V1", channel: source channel(s) of each angle to sync and compare mics by, e.g. "ch3" (default its analysis channel or every channel with sound), audio_channel: the main sound's channel to sync to}; syncs angles by their sound and cuts per speaker turn in the pause before each new speaker, never inside a word. Or {cuts: [{at: timeline time, angle: media}], track: "V1"} to switch angles by hand like a multicam editor: splits there and plays that angle in sync from then on.
         """
 
     func moreRecipes(_ name: String, _ a: Args, dry: Bool) async throws -> ToolResult {
@@ -263,10 +263,15 @@ extension Toolbox {
             guard let rec = current.mediaAsset(audioId), rec.hasAudio else { throw EditError("\(audioId) has no sound") }
             let ids = a.strings("clips") ?? current.tracks.first { $0.kind == .video }.map { $0.clips.filter { $0.kind == .media }.map(\.id) } ?? []
             var offsets: [String: (Seconds, Double)] = [:]
+            let recHeard = try await heard(rec, a.optString("channel"))
+            let play = try a.optString("play").map { raw -> ChannelRouting in
+                guard let r = ChannelRouting(rawValue: raw) else { throw EditError("play is \(ChannelRouting.help)") }
+                return r
+            }
             for id in ids {
                 guard let c = current.clip(id), let mid = c.mediaId, let cam = current.mediaAsset(mid) else { throw EditError("No clip \(id)") }
                 guard cam.hasAudio else { throw EditError("\(id)'s media has no camera sound to sync against") }
-                if offsets[mid] == nil { offsets[mid] = try await AudioSync.offset(reference: cam.url, other: rec.url, maxOffset: max(60, rec.duration)) }
+                if offsets[mid] == nil { offsets[mid] = try await AudioSync.offset(reference: try await heard(cam, a.optString("camera_channel")), other: recHeard, maxOffset: max(60, rec.duration)) }
             }
             let keep = a.bool("keep_camera", default: false)
             let found = offsets
@@ -285,6 +290,7 @@ extension Toolbox {
                     p.tracks[loc.track].clips[loc.clip] = c
                     var s = Clip(id: Project.newClipId(), kind: .media, name: rec.name, mediaId: audioId, start: c.start, duration: c.duration, sourceIn: c.sourceIn + off, speed: c.speed)
                     s.link = link
+                    if let play, !play.isAsRecorded { s.channels = play }
                     try p.addClip(s, trackId: trackId, mode: .overwrite)
                     lines.append("\(id) ↔ \(s.id) (offset \(String(format: "%+.3f", off))s, confidence \(fmt2(conf)))")
                 }
@@ -376,7 +382,7 @@ extension Toolbox {
         for id in Set(angles + [a.optString("wide")].compactMap { $0 }) where id != audioId {
             guard let m = current.mediaAsset(id) else { throw EditError("No media \(id)") }
             guard m.hasAudio else { throw EditError("\(id) has no sound, so it can't be synced") }
-            let r = try await AudioSync.offset(reference: audio.url, other: m.url)
+            let r = try await AudioSync.offset(reference: try await heard(audio, a.optString("audio_channel")), other: try await heard(m, a.optString("channel")))
             offsets[id] = r.offset
             notes.append("\(id) \(r.offset >= 0 ? "+" : "")\(String(format: "%.3f", r.offset))s (confidence \(fmt2(r.confidence)))")
             if r.confidence < 0.5 { notes.append("warning: \(id) synced with low confidence; check it with timeline_frames") }
@@ -398,7 +404,7 @@ extension Toolbox {
             var levels: [String: [[Double]]] = [:]
             for id in angles {
                 guard let m = current.mediaAsset(id) else { continue }
-                levels[id] = try await MulticamAudio.wordLevels(url: m.url, offset: offsets[id] ?? 0, words: spoken.map { TimeRange($0.element.start, $0.element.end) })
+                levels[id] = try await MulticamAudio.wordLevels(url: try await heard(m, a.optString("channel")), offset: offsets[id] ?? 0, words: spoken.map { TimeRange($0.element.start, $0.element.end) })
             }
             let loud = MulticamPlan.loudestAngles(levels)
             if signal == "mics" || loud.margin >= 3 {

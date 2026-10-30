@@ -162,6 +162,19 @@ public enum TimelineBuilder {
                         trackIDs[clip.id] = videoLanes[lane].track.trackID
                     }
                 }
+                // Routed channels play a stereo copy of the media's chosen source channels, read from every audio track.
+                if stemURL == nil, masterStem == nil, !clip.reverse, let routing = clip.channels, !routing.isAsRecorded, audio != nil {
+                    if let url = stems?.cachedRoute(media, routing) {
+                        let asset = AVURLAsset(url: url)
+                        proxies.append(asset)
+                        if let routed = try await asset.loadTracks(withMediaType: .audio).first {
+                            audio = routed
+                            audioRange = try await routed.load(.timeRange)
+                        }
+                    } else {
+                        missingStems.append(clip.id)
+                    }
+                }
                 guard stemURL == nil, masterStem == nil, let a = audio, let ar = audioRange, clip.volume > 0 || clip.anim["audio.volume"] != nil else { continue }
                 let span = clip.audioRange
                 guard span.duration > 0.01 else { continue }
