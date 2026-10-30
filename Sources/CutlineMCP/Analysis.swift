@@ -3,7 +3,7 @@ import CutlineEngine
 import Foundation
 
 enum Feature: String, CaseIterable {
-    case transcript, scenes, beats, speakers, shots, sounds
+    case transcript, scenes, beats, speakers, shots, sounds, proxy
 }
 
 /// Background analysis, mirrored to the bundle's jobs.json so the preview app can show progress.
@@ -80,7 +80,7 @@ extension Session {
     static func defaultFeatures(_ m: MediaAsset) -> (now: [Feature], later: [Feature]) {
         var now: [Feature] = [], later: [Feature] = []
         if m.hasAudio { now += [.transcript, .beats, .speakers] }
-        if m.hasVideo && !m.isImage { now.append(.scenes); later.append(.shots) }
+        if m.hasVideo && !m.isImage { now.append(.scenes); later += [.proxy, .shots] }
         if m.isImage { later.append(.shots) }
         if m.hasAudio { later.append(.sounds) }
         return (now, later)

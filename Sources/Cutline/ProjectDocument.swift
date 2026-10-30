@@ -37,7 +37,7 @@ final class ProjectDocument {
         var finishedPath: String?
     }
 
-    @ObservationIgnored private let library = MediaLibrary()
+    @ObservationIgnored private let library = MediaLibrary(proxyQuality: .half)
     @ObservationIgnored private var watchers: [DispatchSourceFileSystemObject] = []
     @ObservationIgnored private var pending: DispatchWorkItem?
     @ObservationIgnored private var lastProjectData = Data()

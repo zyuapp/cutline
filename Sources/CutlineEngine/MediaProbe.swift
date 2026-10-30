@@ -87,13 +87,23 @@ public final class MediaLibrary: @unchecked Sendable {
     private var entries: [String: Entry] = [:]
     private var images: [String: CIImage] = [:]
     private let lock = NSLock()
+    /// Preview libraries read cached proxies when there are any; export libraries always read originals.
+    public let proxyQuality: Proxies.Quality?
 
-    public init() {}
+    public init(proxyQuality: Proxies.Quality? = nil) {
+        self.proxyQuality = proxyQuality
+    }
+
+    /// Forgets opened files so newly made proxies are picked up.
+    public func reset() {
+        lock.withLock { entries.removeAll() }
+    }
 
     public func entry(for media: MediaAsset) async throws -> Entry {
-        let key = media.path
+        let proxy = proxyQuality.flatMap { Proxies.cached(media, quality: $0) }
+        let key = proxy?.path ?? media.path
         if let e = lock.withLock({ entries[key] }) { return e }
-        let asset = AVURLAsset(url: media.url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+        let asset = AVURLAsset(url: proxy ?? media.url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let video = try await asset.loadTracks(withMediaType: .video).first
         let audio = try await asset.loadTracks(withMediaType: .audio).first
         var orientation = CGImagePropertyOrientation.up

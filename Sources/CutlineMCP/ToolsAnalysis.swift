@@ -5,6 +5,12 @@ import Foundation
 extension Session {
     func analyzePerception(_ media: MediaAsset, _ want: Set<Feature>, bundle b: ProjectBundle, progress: (@Sendable (Double) -> Void)?) async throws -> [String] {
         var notes: [String] = []
+        if want.contains(.proxy), media.hasVideo, !media.isImage, Proxies.cached(media, quality: .half) == nil,
+           Proxies.shouldProxy(media, format: await Proxies.format(of: media)) {
+            let made = try await Proxies.transcode(media, quality: .half) { p in progress?(0.65 * p) }
+            try? sendPreview(["action": "rebuild"])
+            notes.append("proxy: \(Int(made.size.width))×\(Int(made.size.height)) ProRes Proxy for smooth preview (\(String(format: "%.1f", made.realtimeFactor))× realtime); export uses the original")
+        }
         if want.contains(.shots), media.hasVideo {
             let cuts = b.visualAnalysis(media.id)?.sceneCuts ?? []
             let shots = try await VisionAnalyzer.analyze(url: media.url, mediaId: media.id, sceneCuts: cuts, duration: media.isImage ? 1 : media.duration) { p in progress?(0.65 + 0.25 * p) }

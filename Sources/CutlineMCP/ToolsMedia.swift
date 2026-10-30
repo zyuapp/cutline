@@ -5,13 +5,22 @@ import Foundation
 
 extension Toolbox {
     func registerMediaTools() {
-        add(Tool(name: "media_import", description: "Add media files (video, audio, images) to the project. By default each file is analyzed: word-level transcript (on-device speech recognition), pauses from audio levels, and scene cuts. Media is referenced in place, not copied. Returns media ids to use in edits.", schema: Schema.object([
+        add(Tool(name: "media_import", description: "Add media files (video, audio, images) to the project, or relink missing ones. By default each file is analyzed: word-level transcript (on-device speech recognition), pauses from audio levels, and scene cuts. Media is referenced in place, not copied. Returns media ids to use in edits.", schema: Schema.object([
             "paths": Schema.strings("Files or folders to import; folders import every media file inside"),
             "analyze": Schema.bool("Run analysis, default true"),
             "language": Schema.string("Speech language, default en-US"),
+            "relink": Schema.bool("Instead of importing, find missing media inside paths (folders searched recursively) and point the project at them"),
         ], required: ["paths"])) { [unowned self] args in
             let b = try session.requireBundle()
             guard let paths = args.strings("paths"), !paths.isEmpty else { throw EditError("paths is empty") }
+            if args.bool("relink", default: false) {
+                var found: [(String, String)] = []
+                let p = try session.edit("Relink media") { p in
+                    found = p.relinkAll(searchRoots: paths.map { session.resolve($0) }) { FileManager.default.fileExists(atPath: $0) }
+                }
+                let still = p.missingMedia { FileManager.default.fileExists(atPath: $0) }
+                return .text((found.isEmpty ? "Nothing relinked." : "Relinked " + found.map { "\($0.0) → \($0.1)" }.joined(separator: ", ")) + (still.isEmpty ? "" : "\nStill missing: " + still.map(\.id).joined(separator: ", ")) + "\n" + footer(p))
+            }
             var files: [URL] = []
             for path in paths {
                 let url = session.resolve(path)

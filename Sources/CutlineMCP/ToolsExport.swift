@@ -17,11 +17,19 @@ extension Toolbox {
             "interchange": Schema.strings("Also write otio, fcpxml and/or edl next to the video"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
             "reveal": Schema.bool("Show the file in Finder when done, default false"),
+            "deliver": Schema.string("What to make: video (default); audio (mix only, see audio_format); stems (one audio file per role: dialogue, music, effects); stills (frames at `times`); image_sequence; gif; archive (copy the project and its media, trimmed with trim:true, to path)", values: ["video", "audio", "stems", "stills", "image_sequence", "gif", "archive"]),
+            "audio_format": Schema.string("For audio and stems, default wav24", values: Delivery.AudioFormat.allCases.map(\.rawValue)),
+            "image_format": Schema.string("For stills and image sequences, default png", values: Delivery.StillFormat.allCases.map(\.rawValue)),
+            "times": Schema.numbers("For stills: timeline times"),
+            "trim": Schema.bool("For archive: copy only the used parts of each file plus 1 s handles"),
             "variants": ["type": "array", "description": "Render several versions in one call: [{name, ops: [{tool, args}], and any export argument such as platform, path, start, end}]. Each variant applies its ops (any tools, e.g. recipe reframe, text edits, a different hook), exports, then the project returns to how it was.", "items": ["type": "object"]],
         ])) { [unowned self] args in
             let b = try session.requireBundle()
             if let variants = args.raw["variants"]?.array, !variants.isEmpty {
                 return try await exportVariants(variants, base: args)
+            }
+            if let kind = args.optString("deliver"), kind != "video" {
+                return try await deliver(kind, args)
             }
             let platform = try args.optString("platform").map { id -> Platform in
                 guard let pl = Platform.named(id) else { throw EditError("Unknown platform \(id). Platforms: \(Platform.all.map(\.id).joined(separator: ", "))") }
@@ -145,5 +153,77 @@ extension Toolbox {
             _ = try b.checkout(start)
         }
         return .text(report.joined(separator: "\n") + "\nThe project is back at \(start).")
+    }
+}
+
+extension Toolbox {
+    func deliver(_ kind: String, _ args: Args) async throws -> ToolResult {
+        let b = try session.requireBundle()
+        let p = try session.project()
+        guard p.duration > 0 else { throw EditError("The timeline is empty") }
+        var range: TimeRange?
+        if args.has("start") || args.has("end") { range = TimeRange(try args.optTime("start") ?? 0, try args.optTime("end") ?? p.duration) }
+        let stem = Toolbox.safeName(p.name)
+        let started = Date()
+        switch kind {
+        case "audio":
+            let format = try args.enumValue("audio_format", Delivery.AudioFormat.self) ?? .wav24
+            let url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem).appendingPathExtension(format.fileExtension)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try await Delivery.audio(try await session.timeline(for: p), range: range, to: url, format: format)
+            return .text("Wrote \(url.path) (\(format.rawValue)), took \(fmt1(Date().timeIntervalSince(started)))s")
+        case "stems":
+            let format = try args.enumValue("audio_format", Delivery.AudioFormat.self) ?? .wav24
+            let dir = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem + " stems", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let roles = p.roles(transcripts: b.transcripts(for: p))
+            var lines: [String] = []
+            for role in Set(roles.values).sorted() {
+                var solo = p
+                for i in solo.tracks.indices where roles[solo.tracks[i].id] != role { solo.tracks[i].muted = true }
+                // Stems are pre-master so they sum back to the mix; the master bus effects stay off.
+                solo.master.effects = []
+                let url = dir.appendingPathComponent("\(stem) - \(role)").appendingPathExtension(format.fileExtension)
+                try await Delivery.audio(try await session.timeline(for: solo), range: range, to: url, format: format)
+                let tracks = roles.filter { $0.value == role }.keys.sorted()
+                lines.append("\(role): \(url.lastPathComponent) (\(tracks.joined(separator: ", ")))")
+            }
+            return .text("Wrote \(roles.isEmpty ? 0 : Set(roles.values).count) stems to \(dir.path):\n" + lines.joined(separator: "\n") + "\nSet roles with track_update role.")
+        case "stills":
+            guard let times = args.raw["times"]?.array?.compactMap({ try? Args.parseTime($0, name: "times") }), !times.isEmpty else { throw EditError("Pass times") }
+            let format = try args.enumValue("image_format", Delivery.StillFormat.self) ?? .png
+            let dir = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem + " stills", isDirectory: true)
+            let urls = try await Delivery.stills(try await session.timeline(for: p), times: times, to: dir, format: format, name: stem)
+            return .text("Wrote \(urls.count) stills to \(dir.path): " + urls.map(\.lastPathComponent).joined(separator: ", "))
+        case "image_sequence":
+            let format = try args.enumValue("image_format", Delivery.StillFormat.self) ?? .png
+            let dir = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem + " frames", isDirectory: true)
+            let n = try await Delivery.imageSequence(try await session.timeline(for: p), range: range, to: dir, format: format)
+            return .text("Wrote \(n) frames to \(dir.path), took \(fmt1(Date().timeIntervalSince(started)))s")
+        case "gif":
+            let url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem).appendingPathExtension("gif")
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try await Delivery.gif(try await session.timeline(for: p), range: range ?? TimeRange(0, min(p.duration, 10)), to: url)
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            return .text("Wrote \(url.path) (\(String(format: "%.1f", Double(size) / 1_048_576)) MB)")
+        case "archive":
+            guard let path = args.optString("path") else { throw EditError("Pass path, a folder for the archived project") }
+            let dir = session.resolve(path)
+            let media = dir.appendingPathComponent("Media", isDirectory: true)
+            try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+            let (collected, bytes) = try await Consolidate.collect(p, to: media, trim: args.bool("trim", default: false))
+            let bundleURL = dir.appendingPathComponent(stem).appendingPathExtension("cutline")
+            try? FileManager.default.removeItem(at: bundleURL)
+            try ProjectBundle.create(at: bundleURL, project: collected)
+            for m in p.media where collected.mediaAsset(m.id) != nil {
+                for kind in ["transcript", "audio", "visual", "beats", "speakers", "shots", "sounds", "tracks"] {
+                    let f = b.analysisURL.appendingPathComponent("\(m.id).\(kind).json")
+                    try? FileManager.default.copyItem(at: f, to: bundleURL.appendingPathComponent("analysis/\(m.id).\(kind).json"))
+                }
+            }
+            return .text("Archived to \(bundleURL.path) with \(collected.media.count) media files (\(String(format: "%.1f", Double(bytes) / 1_048_576)) MB)\(args.bool("trim", default: false) ? ", trimmed to the used ranges; trimmed media get new ids, so re-run media_analyze there" : "").")
+        default:
+            throw EditError("deliver is video, audio, stems, stills, image_sequence, gif or archive")
+        }
     }
 }
