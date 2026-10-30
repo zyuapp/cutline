@@ -57,7 +57,7 @@ public enum FFmpegDelivery {
         try? fm.removeItem(at: url)
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let args = arguments(preset, input: tmp, output: url, mxf: mxf, channels: channels, duration: duration, timecode: timecode,
-                             space: p.canvas.colorSpace, size: (p.canvas.width, p.canvas.height), fps: p.canvas.fps)
+                             space: p.canvas.colorSpace, size: (p.canvas.width, p.canvas.height), fps: p.canvas.fps, fields: options.interlaced)
         try await FFmpeg.run(tools.ffmpeg, args, duration: duration) { progress?(0.7 + 0.3 * $0) }
         progress?(1)
     }
@@ -72,7 +72,7 @@ public enum FFmpegDelivery {
         }
     }
 
-    static func arguments(_ preset: ExportPreset, input: URL, output: URL, mxf: Bool, channels: Int, duration: Seconds, timecode: String?, space: WorkingSpace, size: (Int, Int), fps: Double) -> [String] {
+    static func arguments(_ preset: ExportPreset, input: URL, output: URL, mxf: Bool, channels: Int, duration: Seconds, timecode: String?, space: WorkingSpace, size: (Int, Int), fps: Double, fields: FieldOrder? = nil) -> [String] {
         var a = ["-nostdin", "-hide_banner", "-y", "-i", input.path]
         let xdcam = preset == .xdcam_hd422
         // XDCAM always carries eight mono channels; missing ones are silent.
@@ -111,6 +111,9 @@ public enum FFmpegDelivery {
                   "-b:v", "50M", "-minrate", "50M", "-maxrate", "50M", "-bufsize", "17825792", "-rc_init_occupancy", "17825792",
                   "-g", gop, "-bf", "2", "-sc_threshold", "1000000000", "-intra_vlc", "1", "-non_linear_quant", "1", "-dc", "10",
                   "-qmin", "1", "-qmax", "12"]
+        }
+        if let fields, fields != .progressive {
+            a += ["-flags", "+ilme+ildct", "-field_order", fields == .tff ? "tt" : "bb"]
         }
         let tags = colorTags(space)
         a += ["-color_primaries", tags.primaries, "-color_trc", tags.transfer, "-colorspace", tags.matrix, "-color_range", "tv"]
