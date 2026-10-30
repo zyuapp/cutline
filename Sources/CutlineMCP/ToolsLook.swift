@@ -395,6 +395,7 @@ extension Toolbox {
         lines.append("Transitions (transition_set; catalog type=<id> for parameters):")
         for t in TransitionCatalog.all { lines.append("    \(t.id): \(t.summary)") }
         lines += [
+            "Secondaries and grade nodes (blur, color, stylize and distort effects): limit rect/ellipse/qualifier/rect+qualifier/ellipse+qualifier keys an effect to a window and/or an HSL qualifier (q_hue, q_hue_width, q_hue_soft, q_sat_min/max/soft, q_luma_min/max/soft, q_preset skin, cleanup q_clean_black, q_clean_white, q_denoise, q_blur; recipe qualify samples ranges from the picture; timeline_frames view:\"matte\" shows the key). node groups consecutive effects into one grade node; node_mode serial (default), parallel (branches from one input, changes added), layer (composited in order with node_blend and node_opacity inside each node's key) or outside (the inverse of the previous node's key). project_status target=<clip> shows the node graph.",
             "Blend modes (param_set blend): " + BlendMode.allCases.map(\.rawValue).joined(separator: ", "),
             "Eases for animation keys: " + Easing.allCases.map(\.rawValue).joined(separator: ", "),
             "Parameter paths: transform.{scale,x,y,rotation,opacity,fit,crop.left|top|right|bottom}, blend, fade.{in,out}, audio.{volume,fade_in,fade_out,lead,lag,channels}, text.*, color, fx.<id>.<param>. catalog paths=true lists them all.",

@@ -5,10 +5,11 @@ import Foundation
 
 extension Toolbox {
     func registerAudioTools() {
-        add(Tool(name: "timeline_measure", description: "Measure the edit as exported. sound: integrated loudness (LUFS), short-term and momentary maximums, loudness range and sample peak for the mix (and each track with tracks:true); targets −14 LUFS for streaming and social, −16 podcasts, −23 broadcast; peaks at or below −1 dBFS. picture: exposure (luma with 2nd/98th percentiles), clipped whites, crushed blacks, saturation and color cast per shot, shot-to-shot mismatches, black stretches, flash frames and photosensitive flashing; letterbox or pillarbox bars and background around fit pictures are left out of picture and scopes numbers. text: each title's and caption's contrast against the picture behind it (WCAG; aim for 4.5:1) and whether it sits inside the title-safe area.", schema: Schema.object([
+        add(Tool(name: "timeline_measure", description: "Measure the edit as exported. sound: integrated loudness (LUFS), short-term and momentary maximums, loudness range and sample peak for the mix (and each track with tracks:true); targets −14 LUFS for streaming and social, −16 podcasts, −23 broadcast; peaks at or below −1 dBFS. picture: exposure (luma with 2nd/98th percentiles), clipped whites, crushed blacks, saturation and color cast per shot, shot-to-shot mismatches, black stretches, flash frames and photosensitive flashing; letterbox or pillarbox bars and background around fit pictures are left out of picture and scopes numbers. text: each title's and caption's contrast against the picture behind it (WCAG; aim for 4.5:1) and whether it sits inside the title-safe area. compare: shot-to-shot color continuity of the graded picture: each shot's median L/a/b, colorfulness and CIEDE2000 ΔE against a reference shot.", schema: Schema.object([
+            "reference": Schema.time("For compare: the reference shot, as a clip id or a timeline time (default the first shot)"),
             "start": Schema.time("From this timeline time or anchor"),
             "end": Schema.time("Until this timeline time or anchor"),
-            "what": Schema.strings("Any of sound, picture, text, scopes; default sound, picture and text. scopes renders waveform, RGB parade, vectorscope and histogram of the frame at `at`, with their numbers"),
+            "what": Schema.strings("Any of sound, picture, text, scopes, compare; default sound, picture and text. scopes renders waveform, RGB parade, vectorscope and histogram of the frame at `at`, with their numbers"),
             "at": Schema.time("Timeline time for scopes, default the middle"),
             "tracks": Schema.bool("Also measure each track's sound on its own, default false"),
             "platform": Schema.string("Check text against this platform's UI-free area", values: Platform.all.map(\.id)),
@@ -28,13 +29,21 @@ extension Toolbox {
             if what.contains("sound") { lines += try await measureSound(p, range: range, tracks: args.bool("tracks", default: false)) }
             if what.contains("picture") { lines += try await measurePicture(p, range: range) }
             if what.contains("text") { lines += try await measureText(p, range: range, platform: args.optString("platform").flatMap(Platform.named)) }
-            guard !lines.isEmpty else { throw EditError("what is any of sound, picture, text, scopes") }
+            if what.contains("compare") {
+                let ref = args.optString("reference").flatMap { p.clip($0) == nil ? nil : $0 }
+                var at: Seconds?
+                if ref == nil, args.has("reference") {
+                    do { at = try args.optTime("reference") } catch { throw EditError("reference is a clip id or a timeline time; there is no clip \(args.optString("reference") ?? "")") }
+                }
+                lines += try await measureCompare(p, reference: ref, referenceTime: at, range: range)
+            }
+            guard !lines.isEmpty else { throw EditError("what is any of sound, picture, text, scopes, compare") }
             var r = ToolResult.text(lines.joined(separator: "\n"))
             if let sheet { r.addImage(sheet) }
             return r
         })
 
-        add(Tool(name: "recipe", description: "Common multi-step edits, each one undoable step that reports exactly what it changed (dry_run:true previews). Sound: duck, loudness_normalize, split_edit, room_tone, fill_gaps. Time: speed_ramp, freeze_frame. Framing: punch_in, pip, split_screen, reframe. Rhythm: beat_cut, music_fit. Style: look, glitch, whip_pan, kinetic_text. Color: match_color, grade_group. Reuse: template, multicam_switch. catalog recipe=<name> gives each recipe's arguments.", schema: Schema.object([
+        add(Tool(name: "recipe", description: "Common multi-step edits, each one undoable step that reports exactly what it changed (dry_run:true previews). Sound: duck, loudness_normalize, split_edit, room_tone, fill_gaps. Time: speed_ramp, freeze_frame. Framing: punch_in, pip, split_screen, reframe. Rhythm: beat_cut, music_fit. Style: look, glitch, whip_pan, kinetic_text. Color: match_color, grade_group, qualify. Reuse: template, multicam_switch. catalog recipe=<name> gives each recipe's arguments.", schema: Schema.object([
             "name": Schema.string("Recipe", values: Toolbox.recipeNames),
             "args": ["type": "object", "description": "The recipe's arguments; catalog recipe=<name> lists them"],
             "dry_run": Schema.bool("Report what would change without applying it"),

@@ -4,7 +4,7 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "room_tone", "fill_gaps", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "music_fit", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color", "grade_group"]
+    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "room_tone", "fill_gaps", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "music_fit", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color", "grade_group", "qualify"]
 
     static let recipeDocs = """
         duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
@@ -24,7 +24,8 @@ extension Toolbox {
         glitch: {at: [times or anchors], duration: 0.3, amount: 0.8}; adds glitch hits on an adjustment track. \
         whip_pan: {cut: "clip_a|clip_b", direction: left, duration: 0.35}. \
         template: {template: name (omit to list templates), at: time, values: {field: text}}. \
-        match_color: {clips: [ids] (default every media clip on V1), reference: clip id whose look the others match, strength: 0.8}; shot matching like Resolve's: measures each shot's tones and color (inside its crop, ignoring letterbox bars; robust to a few extreme pixels) and adds a match LUT (effect "match") in front of its other color effects; colorfulness changes at most ±25% and black and white stay put. \
+        match_color: {clips: [ids] and/or track (default every media clip on V1), reference: clip id whose look the others match, reference_at: timeline time of the exact reference frame (picks the clip there when reference is omitted), strength: 0.8 (0…1), allow_large: false}; shot matching like Resolve's: measures each shot's tones and color (inside its crop, ignoring letterbox bars; robust to a few extreme pixels) and adds a match LUT (effect "match") in front of its other color effects; lightness moves at most ±20 L unless allow_large, colorfulness at most ±25%, black and white stay put; warns when a shot isn't comparable with the reference (big lightness or colorfulness gap, different tones or content). \
+        qualify: {clip, x, y (frame fractions of a color to key, with radius: 0.02) or face: true (n: 0, largest first), at: timeline time (default the clip's middle), effect: existing effect id to key (default a new one), type: "color.wheels" for a new effect, window: true with face (an ellipse window on the face)}; the eyedropper: samples the picture as that effect receives it and sets its hue/saturation/luma qualifier ranges and matte cleanup to cover the sampled colors. \
         grade_group: {clips: [ids] (or track: "V1" for every media clip on it), id: "group1", effect: {type: "color.wheels", params: {...}}}; adds one shared effect with that id to every clip (adding clips to an existing group copies its current settings). Change the whole group at once with param_set target "group:group1" and fx.group1.<param>; effect_add target "group:group1" works too. \
         sync_audio: {clips: [video clip ids] (default every clip of that camera media on V1), audio: media id of the separate recorder, track: audio track (default new "Production sound"), keep_camera: false}; lines up dual-system sound by waveform, links it to the picture and mutes the camera mic. \
         follow: {clip: the graphic, title or overlay to move, target: "track:<id>" (media_track) or "face:<media>[:n]", offset_x: 0, offset_y: -0.1 (fractions of the frame; negative is above), smooth: 0.2}; keeps the clip on its subject wherever the media plays. \
@@ -213,33 +214,9 @@ extension Toolbox {
                 return "Added \(c.id) on \(t.id): \(words.count) words appear as they're spoken (\(fmt2(c.start))–\(fmt2(c.end))s). Restyle with param_set text.* or text_add-style animator via clip_update."
             }
         case "match_color":
-            let refId = try a.string("reference")
-            guard let ref = current.clip(refId), ref.kind == .media else { throw EditError("reference must be a media clip") }
-            let ids = (a.strings("clips") ?? current.tracks.first { $0.kind == .video }.map { $0.clips.filter { $0.kind == .media }.map(\.id) } ?? []).filter { $0 != refId }
-            let strength = a.optDouble("strength") ?? 0.8
-            let refStats = try await Toolbox.colorStats(ref, current)
-            var files: [String: URL] = [:]
-            let dir = b.cacheURL.appendingPathComponent("looks", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            var report: [String] = []
-            for id in ids {
-                guard let c = current.clip(id), c.kind == .media else { continue }
-                let st = try await Toolbox.colorStats(c, current)
-                let f = ColorMatch.transform(from: st, to: refStats, strength: strength)
-                let url = dir.appendingPathComponent("match-\(id)-\(refId).cube")
-                try Toolbox.writeCube(ColorMath.cubeData(size: 33, f), size: 33, title: "Match \(id) to \(refId)", to: url)
-                files[id] = url
-                report.append(String(format: "%@ (median L %.0f→%.0f, a %.1f→%.1f, b %.1f→%.1f, colorfulness %.1f→%.1f)", id, st.mean.x, refStats.mean.x, st.mean.y, refStats.mean.y, st.mean.z, refStats.mean.z, st.chroma, refStats.chroma))
-            }
-            let made = files
-            return try runEdit("Match \(made.count) shot(s) to \(Toolbox.clipName(refId, current))", dry: dry) { p in
-                for (id, url) in made {
-                    guard let loc = p.locateClip(id) else { continue }
-                    p.tracks[loc.track].clips[loc.clip].effects.removeAll { $0.id == "match" }
-                    p.tracks[loc.track].clips[loc.clip].effects.insert(Effect(id: "match", type: "color.lut", params: ["file": .string(url.path)]), at: 0)
-                }
-                return "Matched to \(refId): " + report.joined(separator: "; ") + ". Tune with param_set fx.match.mix."
-            }
+            return try await matchColorRecipe(a, dry: dry)
+        case "qualify":
+            return try await qualifyRecipe(a, dry: dry)
         case "grade_group":
             let group = a.optString("id") ?? "group1"
             guard group.range(of: #"^[A-Za-z][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else { throw EditError("Group ids are letters, digits and _, starting with a letter") }
@@ -456,31 +433,6 @@ extension Toolbox {
         let members = groupMembers(group, p)
         guard !members.isEmpty else { throw EditError("No clips in group \(group); create it with recipe grade_group {clips, id: \"\(group)\", effect}") }
         return members.map { .clip($0) }
-    }
-
-    /// Lab statistics of a clip's picture from five frames across what it plays, inside its crop and
-    /// without letterbox or pillarbox bars.
-    static func colorStats(_ c: Clip, _ p: Project) async throws -> ColorMatch.Stats {
-        guard let m = c.mediaId.flatMap({ p.mediaAsset($0) }), m.hasVideo else { throw EditError("\(c.id) has no picture") }
-        let times = m.isImage ? [0.0] : [0.1, 0.3, 0.5, 0.7, 0.9].map { min(c.sourceIn, c.sourceOut) + abs(c.sourceOut - c.sourceIn) * $0 }
-        let crop = c.transform.crop
-        var pixels: [SIMD3<Float>] = []
-        for f in try await Frames.media(m, times: times, maxSize: CGSize(width: 240, height: 240)) {
-            let w = f.image.width, h = f.image.height
-            guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let data = ctx.data else { continue }
-            ctx.draw(f.image, in: CGRect(x: 0, y: 0, width: w, height: h))
-            let px = UnsafePointer(data.assumingMemoryBound(to: UInt8.self))
-            let area = PictureArea.active(bytes: px, width: w, height: h, rowBytes: w * 4)
-            let x0 = max(area.x, Int(Double(w) * crop.left)), x1 = min(area.x + area.width, w - Int(Double(w) * crop.right))
-            let y0 = max(area.y, Int(Double(h) * crop.top)), y1 = min(area.y + area.height, h - Int(Double(h) * crop.bottom))
-            for y in y0..<max(y0, y1) {
-                for x in x0..<max(x0, x1) where (x + y) % 2 == 0 {
-                    let i = (y * w + x) * 4
-                    pixels.append(SIMD3(Float(px[i]) / 255, Float(px[i + 1]) / 255, Float(px[i + 2]) / 255))
-                }
-            }
-        }
-        return ColorMatch.stats(pixels)
     }
 
     /// Writes RGBA float cube data (red fastest) as a .cube LUT.

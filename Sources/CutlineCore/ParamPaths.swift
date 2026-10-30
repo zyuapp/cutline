@@ -338,8 +338,13 @@ extension Clip {
         for e in effects {
             out.append(("fx.\(e.id).mix", .number(e.mix), anim["fx.\(e.id).mix"]?.keys.count ?? 0))
             if !e.enabled { out.append(("fx.\(e.id).enabled", .bool(false), 0)) }
+            // Qualifier and node parameters are listed once the effect uses them.
+            let qualified = (e.params["limit"]?.string ?? "").contains("qualifier")
+            let noded = e.params.keys.contains { $0.hasPrefix("node") }
             for p in EffectCatalog.type(e.type)?.params ?? [] {
                 let path = "fx.\(e.id).\(p.name)"
+                let set = e.params[p.name] != nil || anim[path] != nil
+                if !set && ((p.name.hasPrefix("q_") && !qualified) || (p.name.hasPrefix("node") && !noded)) { continue }
                 out.append((path, e.params[p.name] ?? p.defaultValue, anim[path]?.keys.count ?? 0))
             }
         }
