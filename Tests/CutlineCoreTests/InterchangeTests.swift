@@ -329,5 +329,5 @@ private func elements(_ e: XMLElement?) -> [XMLElement] { e?.children?.compactMa
     let xml = p.fcpxml()
     #expect(xml.contains("frameDuration=\"1001/30000s\""))
     #expect(xml.contains("name=\"FFVideoFormat1080p2997\""))
-    #expect(xml.contains("<gap name=\"Solid\" offset=\"8999991/2500s\" duration=\"1001/500s\"/>") && xml.contains("tcStart=\"8999991/2500s\""))
+    #expect(xml.contains("<video ref=\"r_solid\" offset=\"8999991/2500s\" name=\"Solid\" start=\"0s\" duration=\"1001/500s\">") && xml.contains("tcStart=\"8999991/2500s\""))
 }

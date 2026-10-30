@@ -191,7 +191,7 @@ extension Toolbox {
             "leader.bars": "", "leader.black": "", "leader.pop": "", "leader.slate": "", "leader.version": "",
             "timecode_start": "\"hh:mm:ss:ff\" of the program", "subtitles": "Soft subtitles from the transcripts, default none", "subtitle_formats": "srt, vtt, ttml, imsc, ebu-tt-d",
             "subtitle_position": "", "subtitle_speakers": "Color speakers in TTML", "closed_captions": "CEA-608 plus .scc",
-            "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml", "trim": "For archive: used parts only",
+            "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml (+ .notes.txt)", "render_graphics": "Bake generators", "bake_luts": "Grades as .cube", "trim": "For archive: used parts only",
             "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported, then undone",
             "sdr_from_hdr": "true or {method, target_nits}",
         ]),

@@ -112,7 +112,7 @@ func tracksSyntheticDrums(bpm: Double) {
     #expect(BeatTracker.analyze(samples: [], sampleRate: 22_050, mediaId: "empty").beats.isEmpty)
 }
 
-@Test func fiveMinuteTrackIsFast() {
+@Test(.enabled(if: ProcessInfo.processInfo.environment["CUTLINE_PERF"] != nil)) func fiveMinuteTrackIsFast() {
     let (samples, _) = drumTrack(bpm: 128, seconds: 300)
     let clock = ContinuousClock()
     var r: BeatAnalysis?

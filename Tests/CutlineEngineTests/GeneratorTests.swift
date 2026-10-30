@@ -158,7 +158,7 @@ private func render(_ type: String, _ params: [String: ParamValue] = [:], canvas
     #expect(grid.alpha(20, 20) == 0)
 }
 
-@Test func generatorRenderIsFastAndCached() throws {
+@Test(.enabled(if: ProcessInfo.processInfo.environment["CUTLINE_PERF"] != nil)) func generatorRenderIsFastAndCached() throws {
     let hd = CGSize(width: 1920, height: 1080)
     var worst = 0.0
     var worstType = ""

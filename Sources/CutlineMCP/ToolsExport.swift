@@ -38,7 +38,9 @@ extension Toolbox {
             "interlaced": Schema.string("Interlaced master (1080i broadcast): tff (HD) or bff; renders at the field rate and weaves. ProRes, DNxHR and XDCAM presets; ffmpeg's DNxHR is progressive only, so interlaced DNx is written as DNxHD 1080i (1920×1080 at 25 or 29.97 fps, tff only: hq → DNxHD 220/185, hqx → 220x/185x, sq → 145/120; lb has no interlaced tier)", values: ["tff", "bff"]),
             "closed_captions": Schema.bool("Embed CEA-608 closed captions (broadcast, Apple TV, platform ingest) and write an .scc file beside the video, from the transcripts"),
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
-            "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video"),
+            "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video. Each comes with <name>.<format>.notes.txt listing, clip by clip, what the format can't carry (generators, effects, grades beyond a CDL, …); the report prints it"),
+            "render_graphics": Schema.bool("With interchange or a timeline file path: render each generator clip (shapes, particles, lower thirds, title presets) to <name>_graphics/<clip>.mov, ProRes 4444 with alpha, full frame, and reference it as media in the timeline file, as finishing houses take baked graphics. Without it, title presets become titles with their text and other graphics offline placeholders with that file name; Cutline reads either back as the original generator"),
+            "bake_luts": Schema.bool("With interchange or a timeline file path: write each graded clip's whole color stack (CDL, wheels, curves, HSL, looks, LUTs, qualified corrections) as a 33³ .cube in <name>_luts/ and name it in the clip's note or comment (GRADE LUT <path>) for a colorist to load; Cutline reads it back as color.lut"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
             "strict": Schema.bool("With platform: refuse to export when the platform check finds issues, listing them; default false exports anyway and leads the report with them"),
             "reveal": Schema.bool("Show the file in Finder when done, default false"),
@@ -106,13 +108,11 @@ extension Toolbox {
             if let target = args.optString("path").map({ session.resolve($0) }), ["otio", "fcpxml", "edl", "xml"].contains(target.pathExtension.lowercased()) {
                 // A timeline file path writes just that file.
                 let p = try session.project()
-                switch target.pathExtension.lowercased() {
-                case "otio": try p.otio().write(to: target)
-                case "fcpxml": try p.fcpxml().write(to: target, atomically: true, encoding: .utf8)
-                case "edl": try p.edl(title: p.name).write(to: target, atomically: true, encoding: .utf8)
-                default: try p.xmeml().write(to: target, atomically: true, encoding: .utf8)
-                }
-                return .text("Wrote \(target.path) (timeline \(p.currentTimelineName), \(p.tracks.flatMap(\.clips).count) clips, \(fmt2(p.duration))s); no video rendered.")
+                let ext = target.pathExtension.lowercased()
+                let format = InterchangeFormat(rawValue: ext) ?? .xml
+                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let notes = try await writeInterchange(p, format, to: target, base: target.deletingPathExtension(), args: args)
+                return .text("Wrote \(target.path) (timeline \(p.currentTimelineName), \(p.tracks.flatMap(\.clips).count) clips, \(fmt2(p.duration))s); no video rendered.\n" + notes.joined(separator: "\n"))
             }
             var built = try await session.timeline()
             let p = built.scene.project
@@ -173,15 +173,14 @@ extension Toolbox {
                     report.append("Chapters: \(chapters.count) embedded; description list in \(base.lastPathComponent).chapters.txt")
                 }
             }
-            for kind in args.strings("interchange") ?? [] {
-                switch kind {
-                case "otio": try p0.otio().write(to: base.appendingPathExtension("otio"))
-                case "fcpxml": try p0.fcpxml().write(to: base.appendingPathExtension("fcpxml"), atomically: true, encoding: .utf8)
-                case "edl": try p0.edl(title: p0.name).write(to: base.appendingPathExtension("edl"), atomically: true, encoding: .utf8)
-                case "xml": try p0.xmeml().write(to: base.appendingPathExtension("xml"), atomically: true, encoding: .utf8)
-                default: throw EditError("interchange is otio, fcpxml, edl or xml (Final Cut Pro 7 XML for Premiere and Resolve)")
-                }
-                report.append("Interchange: \(base.lastPathComponent).\(kind)")
+            let kinds = try (args.strings("interchange") ?? []).map { kind -> InterchangeFormat in
+                guard let f = InterchangeFormat(rawValue: kind) else { throw EditError("interchange is otio, fcpxml, edl or xml (Final Cut Pro 7 XML for Premiere and Resolve)") }
+                return f
+            }
+            var made: InterchangeOptions?
+            for format in kinds {
+                if made == nil { made = try await interchangeOptions(p0, base: base, args: args, report: &report) }
+                report += try await writeInterchange(p0, format, to: base.appendingPathExtension(format.rawValue), base: base, args: args, options: made)
             }
 
             try? session.sendPreview(["action": "export", "state": "started", "path": url.path])
@@ -281,6 +280,56 @@ extension Toolbox {
 }
 
 extension Toolbox {
+    /// Baked LUTs (bake_luts) and rendered graphics (render_graphics) beside `base`, for the interchange files.
+    func interchangeOptions(_ p: Project, base: URL, args: Args, report: inout [String]) async throws -> InterchangeOptions {
+        let graphics = URL(fileURLWithPath: base.path + "_graphics", isDirectory: true)
+        var o = InterchangeOptions(graphicsFolder: graphics.path)
+        if args.bool("bake_luts", default: false) {
+            let dir = URL(fileURLWithPath: base.path + "_luts", isDirectory: true)
+            let graded = p.gradedClips
+            if !graded.isEmpty { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
+            for c in graded {
+                guard let cube = p.bakedLUT(c) else { continue }
+                let url = dir.appendingPathComponent(Project.safeFileName(c.id)).appendingPathExtension("cube")
+                try cube.write(to: url, atomically: true, encoding: .utf8)
+                o.luts[c.id] = url.path
+            }
+            report.append(graded.isEmpty ? "bake_luts: no graded clips." : "Baked LUTs: \(o.luts.count) clip grade(s) as 33³ .cube in \(dir.lastPathComponent)/")
+        }
+        if args.bool("render_graphics", default: false) {
+            let clips = p.generatorClips
+            if !clips.isEmpty { try FileManager.default.createDirectory(at: graphics, withIntermediateDirectories: true) }
+            for (clip, scope) in clips {
+                guard let alone = scope.isolating(clip.id) else { continue }
+                let url = graphics.appendingPathComponent(Project.safeFileName(clip.id)).appendingPathExtension("mov")
+                try? FileManager.default.removeItem(at: url)
+                do {
+                    _ = try await Exporter.export(try await session.timeline(for: alone), to: url, options: ExportOptions(preset: .prores4444)) { _ in }
+                    o.graphics[clip.id] = url.path
+                } catch {
+                    report.append("Graphic \(clip.id) didn't render (\(error.localizedDescription)); it goes out as an offline placeholder.")
+                }
+            }
+            report.append(clips.isEmpty ? "render_graphics: no generator clips." : "Rendered graphics: \(o.graphics.count) clip(s) as ProRes 4444 with alpha in \(graphics.lastPathComponent)/")
+        }
+        return o
+    }
+
+    /// Writes one interchange file and its notes beside it; returns report lines with the notes.
+    func writeInterchange(_ p: Project, _ format: InterchangeFormat, to url: URL, base: URL, args: Args, options: InterchangeOptions? = nil) async throws -> [String] {
+        var lines: [String] = []
+        let o: InterchangeOptions
+        if let options { o = options } else { o = try await interchangeOptions(p, base: base, args: args, report: &lines) }
+        let made = try p.interchange(format, options: o)
+        try made.data.write(to: url)
+        let notesURL = URL(fileURLWithPath: url.path + ".notes.txt")
+        try made.notesText(project: p.name, format: format).write(to: notesURL, atomically: true, encoding: .utf8)
+        lines.append("Interchange: \(url.lastPathComponent) (\(format.title)); " + (made.notes.isEmpty ? "carries everything." : "\(made.notes.count) thing(s) it can't carry, in \(notesURL.lastPathComponent):"))
+        lines += made.notes.prefix(15).map { "  - " + $0 }
+        if made.notes.count > 15 { lines.append("  … \(made.notes.count - 15) more in \(notesURL.lastPathComponent)") }
+        return lines
+    }
+
     enum Container: String { case mp4, mov, mxf }
 
     /// What ffprobe reads back from a DNxHR or XDCAM export.

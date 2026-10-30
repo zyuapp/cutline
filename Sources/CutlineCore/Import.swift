@@ -130,11 +130,33 @@ public enum Importer {
 
     /// The grade in a note or comment: `ASC_SOP … ASC_SAT …` and `LUT <path>` parts, separated by ";".
     static func noteColor(_ note: String) -> [Effect] {
+        if let whole = gradeLUT(note) { return whole }
         let luts = note.components(separatedBy: ";").compactMap { part -> String? in
             let s = part.trimmingCharacters(in: .whitespacesAndNewlines)
             return s.hasPrefix("LUT ") ? String(s.dropFirst(4)).trimmingCharacters(in: .whitespaces) : nil
         }
         return colorEffects(cdl: CDL(text: note), luts: luts)
+    }
+
+    /// Removes media in `ids` no clip plays (baked graphics read back as their generators).
+    static func dropUnused(_ p: inout Project, _ ids: Set<String>, missing: inout [String]) {
+        guard !ids.isEmpty else { return }
+        let used = Set((p.tracks + p.sequences.flatMap(\.tracks)).flatMap(\.clips).filter { $0.kind == .media }.compactMap(\.mediaId))
+        let gone = p.media.filter { ids.contains($0.id) && !used.contains($0.id) }
+        p.media.removeAll { m in gone.contains { $0.id == m.id } }
+        missing.removeAll { path in gone.contains { $0.path == path || $0.name == path } }
+    }
+
+    /// The grade a note names as a baked .cube of the whole color stack, read back as that LUT.
+    static func gradeLUT(_ note: String) -> [Effect]? {
+        for part in note.components(separatedBy: ";") {
+            let s = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            if s.hasPrefix(Project.gradeLUTTag + " ") || s.hasPrefix(Project.gradeLUTTag + ":") {
+                let path = String(s.dropFirst(Project.gradeLUTTag.count + 1)).trimmingCharacters(in: .whitespaces)
+                return path.isEmpty ? nil : [Effect(id: "lut", type: "color.lut", params: ["file": .string(path)])]
+            }
+        }
+        return nil
     }
 
     /// Holds the clip's first source frame for its whole length, silently.
@@ -440,6 +462,8 @@ final class FCPReader {
     /// Drop frame of each media's timecode, from the `tcFormat` of its first clip.
     var dropFrame: [String: Bool] = [:]
     var usedSequenceIds = Set<String>()
+    /// Media of baked graphics read back as the clips they stand for.
+    var replaced = Set<String>()
     var clipCount = 0, markerCount = 0
     var grid = FrameGrid(fps: 30)
     var canvas = Canvas()
@@ -526,6 +550,7 @@ final class FCPReader {
         p.transitions = main.transitions
         p.markers = main.markers.sorted { $0.time < $1.time }
         p.sequences = sequences
+        Importer.dropUnused(&p, replaced, missing: &missing)
         Importer.finish(&p, &warnings, offline: offline)
         return ImportResult(project: p, warnings: warnings, missingMedia: missing)
     }
@@ -762,6 +787,12 @@ final class FCPReader {
 
     /// The clip an element plays, timed from local `start`, without its timeline position.
     func build(_ e: XMLElement, start: Seconds, duration: Seconds, place: @escaping (Seconds) -> Seconds, lane: Int, disabled: Bool) -> (Clip, TrackKind)? {
+        // The clip Cutline wrote whole: a title, solid, generator or baked graphic.
+        if let json = e.first("metadata")?.elems.first(where: { $0.attr("key") == Project.fcpClipKey })?.attr("value"),
+           let c = Project.restoredClip(json: json, placed: Clip(id: "", kind: .media, start: 0, duration: duration)) {
+            if let ref = e.attr("ref"), let asset = assets[ref] { replaced.insert(asset.id) }
+            return (c, .video)
+        }
         switch e.name ?? "" {
         case "asset-clip", "video", "audio": return mediaClip(e, start: start, duration: duration)
         case "clip", "sync-clip": return containerClip(e, start: start, duration: duration, place: place, lane: lane, disabled: disabled)
@@ -820,6 +851,14 @@ final class FCPReader {
     func mediaClip(_ e: XMLElement, start: Seconds, duration: Seconds) -> (Clip, TrackKind)? {
         guard let ref = e.attr("ref"), let asset = assets[ref], let m = media.first(where: { $0.id == asset.id }) else {
             let res = e.attr("ref").flatMap { resources[$0] }
+            if res?.name == "effect", (res?.attr("uid") ?? "").contains("Solids.localized") || res?.attr("name") == "Custom" {
+                let v = (e.elems.first { $0.name == "param" && $0.attr("name") == "Color" }?.attr("value") ?? "").split(whereSeparator: \.isWhitespace).compactMap { Double($0) }
+                var clip = Clip(id: "", kind: .solid, name: e.attr("name"), start: 0, duration: duration,
+                                color: v.count >= 3 ? RGBA(r: v[0], g: v[1], b: v[2], a: v.count > 3 ? v[3] : 1) : .black)
+                if clip.name == "Solid" { clip.name = nil }
+                adjust(e, &clip)
+                return (clip, .video)
+            }
             if res?.name == "effect" {
                 warnings.append("Generator \(res?.attr("name") ?? label(e)) left as a gap")
             } else {
@@ -987,6 +1026,7 @@ final class FCPReader {
             clip.audioLag = snap(a0 + ad - start - d)
         }
         if let note = e.first("note")?.stringValue { clip.effects += Importer.noteColor(note) }
+        if let role = e.attr("audioRole"), !role.isEmpty { clip.role = role }
         var channels: [Bool] = []
         for k in e.elems {
             switch k.name ?? "" {
@@ -1201,12 +1241,16 @@ final class OTIOReader {
             var read = readTrack(child, kind: kind, top: top)
             // Cutline writes the sound of audio clips over their audio range.
             if kind == .audio {
+                // The picture lands on the frame its item's sound started a split before.
+                let grid = FrameGrid(fps: canvas.fps)
+                func snap(_ t: Seconds) -> Seconds { Double(grid.frames(t) * grid.num) / Double(grid.den) }
                 for i in read.clips.indices {
-                    let lead = read.clips[i].audioLead, lag = read.clips[i].audioLag
-                    guard lead != 0 || lag != 0, read.clips[i].duration - lead - lag > 0 else { continue }
-                    read.clips[i].start += lead
-                    read.clips[i].duration -= lead + lag
-                    read.clips[i].sourceIn += lead * read.clips[i].speed
+                    let c = read.clips[i], lead = c.audioLead, lag = c.audioLag
+                    guard lead != 0 || lag != 0, c.duration - lead - lag > 0 else { continue }
+                    let start = snap(c.start + lead), end = snap(c.end - lag)
+                    read.clips[i].start = start
+                    read.clips[i].duration = end - start
+                    read.clips[i].sourceIn += (start - c.start) * c.speed
                 }
             }
             track.clips = read.clips
@@ -1393,6 +1437,16 @@ final class OTIOReader {
         for (tr, index) in pending {
             let from = index > 0 ? items[index - 1].id : nil
             let to = index < items.count ? items[index].id : nil
+            // Cutline's overlapping sounds: each item's sound runs on under the crossfade.
+            if Self.cutline(tr)["overlap"] as? Bool == true, kind == .audio,
+               let a = clips.firstIndex(where: { $0.id == from }), let b = clips.firstIndex(where: { $0.id == to }) {
+                let before = Self.time(tr["in_offset"]) ?? 0, after = Self.time(tr["out_offset"]) ?? 0
+                clips[a].duration += after
+                clips[b].start -= before
+                clips[b].duration += before
+                clips[b].sourceIn -= before * clips[b].speed
+                continue
+            }
             if let made = transition(tr, from: from, to: to) { transitions.append(made) }
         }
         return (clips, disabled, transitions)
@@ -1432,7 +1486,10 @@ final class OTIOReader {
         var previous: String?
         var pending: [String: Any]?
         for item in Self.items(track) {
-            if Self.schema(item) == "Transition" { pending = item; continue }
+            if Self.schema(item) == "Transition" {
+                pending = Self.cutline(item)["overlap"] as? Bool == true ? nil : item
+                continue
+            }
             let id = Self.schema(item) == "Clip" ? Self.cutline(item)["clipId"] as? String : nil
             if let tr = pending, let from = previous, let to = id, var made = transition(tr, from: from, to: to) {
                 made.part = .audio
@@ -1447,6 +1504,7 @@ final class OTIOReader {
     func clip(_ item: [String: Any], kind: TrackKind, start: Seconds, duration: Seconds, range: (start: Seconds, duration: Seconds)?) -> Clip? {
         let name = item["name"] as? String ?? ""
         let md = Self.cutline(item)
+        if let c = restored(md, start: start, duration: duration), c.kind != .media { return c }
         let ref = activeReference(item)
         if let ref, Self.schema(ref) == "GeneratorReference" {
             let generator = ref["generator_kind"] as? String ?? ""
@@ -1504,6 +1562,7 @@ final class OTIOReader {
         if let f = Self.number(md["audioFadeOut"]) { c.audioFadeOut = f }
         if let v = Self.number(md["audioLead"]) { c.audioLead = v }
         if let v = Self.number(md["audioLag"]) { c.audioLag = v }
+        if md["reverse"] as? Bool == true { c.reverse = true }
         if let t = Self.decode(Transform.self, md["transform"]) { c.transform = t }
         if let e = Self.decode([Effect].self, md["effects"]) { c.effects = e }
         if let a = Self.decode([String: Curve].self, md["anim"]) { c.anim.merge(a) { _, b in b } }
@@ -1560,8 +1619,18 @@ final class OTIOReader {
     }
 
     /// Cutline writes titles, solids and adjustment clips as gaps with their kind in the metadata.
+    /// The clip Cutline wrote whole into the metadata (titles, solids, generators, baked graphics), at the item's place.
+    func restored(_ md: [String: Any], start: Seconds, duration: Seconds) -> Clip? {
+        guard var c = Self.decode(Clip.self, md["clip"]) else { return nil }
+        c.id = clipId(md["clipId"] ?? c.id)
+        c.start = start
+        c.duration = duration
+        return c
+    }
+
     func gapClip(_ item: [String: Any], kind: TrackKind, start: Seconds, duration: Seconds) -> Clip? {
         let md = Self.cutline(item)
+        if kind == .video, let c = restored(md, start: start, duration: duration) { return c }
         guard kind == .video, let k = (md["kind"] as? String).flatMap({ ClipKind(rawValue: $0) }) else { return nil }
         let name = item["name"] as? String
         let id = clipId(md["clipId"])
@@ -1682,6 +1751,8 @@ extension Importer {
             var sop: String?
             var sat: String?
             var luts: [String] = []
+            var gradeLUT: String?
+            var hint: SoundHint?
         }
         let grid = FrameGrid(fps: fps)
         let rate = grid.rate
@@ -1733,6 +1804,10 @@ extension Importer {
                     lines[i].sat = value("ASC_SAT")
                 } else if uc.hasPrefix("LUT:"), let i = current.last {
                     lines[i].luts.append(value("LUT:"))
+                } else if uc.hasPrefix(Project.gradeLUTTag + ":"), let i = current.last {
+                    lines[i].gradeLUT = value(Project.gradeLUTTag + ":")
+                } else if comment.hasPrefix(SoundHint.prefix), let i = current.last {
+                    lines[i].hint = SoundHint(text: comment)
                 } else if uc.contains("FREEZE FRAME"), let i = current.last {
                     lines[i].freeze = true
                 } else if let r = comment.range(of: "|M:"), let last = lines.last {
@@ -1883,6 +1958,8 @@ extension Importer {
         var sounding = Set<String>()
         let half = 0.5 / rate
         func isBlack(_ reel: String) -> Bool { ["BL", "BLK", "BLACK"].contains(reel.uppercased()) }
+        /// Audio clips with Cutline's sound comment, and the record frame their event's sound starts at.
+        var hinted: [String: (hint: SoundHint, soundStart: Int)] = [:]
         func makeClip(_ l: Line, _ ch: (main: Channel, audio: Bool)) -> Clip? {
             guard !isBlack(l.reel), l.rec.1 > l.rec.0 else { return nil }
             let id = resolve(l, video: ch.main.kind == .video, audio: ch.audio)
@@ -1909,9 +1986,10 @@ extension Importer {
                 if c.reverse { c.sourceIn -= duration * c.speed }
             }
             extent[id] = max(extent[id] ?? 0, c.sourceOut, c.sourceIn + 1 / rate)
-            c.effects += colorEffects(cdl: l.sop.flatMap { CDL(sop: $0, sat: l.sat) }, luts: l.luts)
+            c.effects += l.gradeLUT.flatMap { gradeLUT(Project.gradeLUTTag + " " + $0) } ?? colorEffects(cdl: l.sop.flatMap { CDL(sop: $0, sat: l.sat) }, luts: l.luts)
             if ch.main.kind == .video && ch.audio { sounding.insert(c.id) }
             if known.contains(id), c.name == media.first(where: { $0.id == id })?.name { c.name = nil }
+            if ch.main.kind == .audio, let h = l.hint, !c.reverse { hinted[c.id] = (h, l.rec.0 - origin) }
             return c
         }
 
@@ -1969,6 +2047,15 @@ extension Importer {
             // A dissolve between sounds is a crossfade.
             transitions.append(Transition(id: "tr\(transitions.count + 1)", from: from?.id, to: incoming.id, type: type, duration: d, align: .start,
                                           part: ch.main.kind == .audio && from != nil ? .audio : .both))
+        }
+        // Cutline's sound comments: dissolves standing for overlapping sound go, and each clip takes its picture and split back.
+        let overlapped = Set(hinted.filter(\.value.hint.overlap).map(\.key))
+        transitions.removeAll { tr in tr.part == .audio && tr.to.map(overlapped.contains) == true && tr.from.map { hinted[$0] != nil } == true }
+        for key in clips.keys where key.kind == .audio {
+            for k in clips[key]!.indices {
+                guard let h = hinted[clips[key]![k].id] else { continue }
+                h.hint.apply(&clips[key]![k], soundStart: h.soundStart, grid: grid)
+            }
         }
         if !mismatched.isEmpty {
             let list = mismatched.count > 6 ? mismatched.prefix(6).joined(separator: ", ") + ", …" : mismatched.joined(separator: ", ")
@@ -2174,9 +2261,11 @@ extension Project {
     /// start, then a zero-length line of it and a D line of the incoming event. They start at the edit, so a
     /// centered one moves the edit to its start (crossfades sit on the sound cut); transitions from or to nothing
     /// go through black. Only media clips are listed.
-    public func edl(title: String) -> String { flattenedSequences().flatEDL(title: title) }
+    public func edl(title: String) -> String { edl(title: title, InterchangeContext()) }
 
-    private func flatEDL(title: String) -> String {
+    func edl(title: String, _ ctx: InterchangeContext) -> String { flattenedSequences().flatEDL(title: title, ctx) }
+
+    private func flatEDL(title: String, _ ctx: InterchangeContext) -> String {
         let grid = FrameGrid(fps: canvas.fps)
         let format = canvas.timecodeFormat
         let nominal = format.nominal, drop = format.dropFrame
@@ -2224,6 +2313,7 @@ extension Project {
             var t0: Seconds
             var into: (tr: Transition, length: Int, from: Clip?)?
             var out: (tr: Transition, length: Int)?
+            var hint: SoundHint?
             var end: Int { r1 + (out?.length ?? 0) }
         }
         /// Writes an event on channel `ch` (with an AUD line for channels 3 and 4); `picture` adds the grade.
@@ -2249,12 +2339,14 @@ extension Project {
                 out.append("* FROM CLIP NAME: \(clipName(c))")
             }
             describe(c, s0: s0)
+            if let h = e.hint { out.append("* " + h.text) }
             if picture {
                 if let cdl = c.cdl {
                     out.append("*ASC_SOP \(cdl.sop)")
                     out.append("*ASC_SAT \(cdl.sat)")
                 }
                 out += c.lutFiles.map { "*LUT: \($0)" }
+                if let whole = ctx.luts[c.id] ?? c.id.components(separatedBy: "/").last.flatMap({ ctx.luts[$0] }) { out.append("* \(Project.gradeLUTTag): \(whole)") }
             }
             if picture, ch.contains("V") { flushMarkers(before: e.r1) }
             if let (tr, d) = e.out {
@@ -2272,14 +2364,39 @@ extension Project {
             sound && !c.reverse ? c.audioSourceRange.start + (seconds(r) - c.audioRange.start) * c.speed : c.sourceTime(atTimeline: seconds(r))
         }
         /// Events of `clips` over their pictures, or with `sound` their sounds, joined by the transitions `joins` allows.
-        func events(_ clips: [Clip], sound: Bool, joins: (Transition) -> Bool) -> [Event] {
+        /// With `hints`, sound overlapping the next clip's with no transition between them dissolves into it over the
+        /// overlap, and each clip names its picture and split in a Cutline comment.
+        func events(_ clips: [Clip], sound: Bool, hints: Bool = false, joins: (Transition) -> Bool) -> [Event] {
             let ids = Set(clips.map(\.id))
             let mine = transitions.filter { tr in joins(tr) && [tr.from, tr.to].compactMap { $0 }.allSatisfy(ids.contains) }
             func at(_ tr: Transition) -> (start: Int, cut: Int, length: Int)? { transitionFrames(tr, grid: grid, sound: sound) }
+            var overlapInto: [String: (from: Clip, start: Int, length: Int)] = [:], overlapOut: [String: Int] = [:]
+            if hints {
+                let heard = clips.filter { !$0.reverse }
+                for (a, b) in zip(heard, heard.dropFirst()) where !mine.contains(where: { $0.from == a.id || $0.to == b.id }) {
+                    let s = grid.frames(b.audioRange.start), e = grid.frames(a.audioRange.end)
+                    guard e > s, s > grid.frames(a.audioRange.start), e < grid.frames(b.audioRange.end) else { continue }
+                    overlapInto[b.id] = (a, s, e - s)
+                    overlapOut[a.id] = s
+                }
+            }
+            let programEnd = grid.frames(duration)
             var list: [Event] = []
             for c in clips {
                 let span = sound && !c.reverse ? c.audioRange : TimeRange(c.start, c.end)
                 var e = Event(clip: c, r0: grid.frames(span.start), r1: grid.frames(span.end), t0: 0)
+                if hints, !c.reverse, !mine.contains(where: { $0.from == c.id || $0.to == c.id }) {
+                    var h = SoundHint(c, grid: grid)
+                    h.overlap = overlapInto[c.id] != nil
+                    if h.overlap || overlapOut[c.id] != nil || h.lead != 0 || h.lag != 0 || e.r1 > programEnd || e.r0 < 0 { e.hint = h }
+                    // No sound plays past the program.
+                    if overlapOut[c.id] == nil { e.r1 = min(e.r1, programEnd) }
+                }
+                if let o = overlapInto[c.id] {
+                    e.r0 = o.start
+                    e.into = (Transition(id: "", from: o.from.id, to: c.id, type: "dissolve", duration: seconds(o.length), align: .start, part: .audio), o.length, o.from)
+                }
+                if let s = overlapOut[c.id] { e.r1 = s }
                 if let tr = mine.first(where: { $0.to == c.id }), let w = at(tr) {
                     if let f = tr.from, let from = clips.first(where: { $0.id == f }) {
                         e.r0 = w.start
@@ -2357,7 +2474,7 @@ extension Project {
         if !separate.isEmpty { sources.append((events(separate, sound: true, joins: { $0.hasAudio }), aa)) }
         for (k, t) in audioTracks.enumerated() {
             let lane = hasProduction ? (k == 0 ? ch3 : ch4) : (k == 0 ? a1 : a2)
-            sources.append((events(listed(t), sound: true, joins: { $0.hasAudio }), lane))
+            sources.append((events(listed(t), sound: true, hints: true, joins: { $0.hasAudio }), lane))
         }
         // Each chain of events joined by transitions takes one lane: its own when free, else the first free one.
         func free(_ lane: Lane, _ chain: [Event]) -> Bool {
@@ -2453,6 +2570,8 @@ final class XMEMLReader {
     var markers: [Marker] = []
     var dropped: [(name: String, clips: [String])] = []
     var nestedMarkers = 0
+    /// Media of baked graphics read back as the clips they stand for.
+    var replaced = Set<String>()
     /// Clip ids to their clipitem ids, and the clipitems each is linked with.
     var xmlIds: [String: String] = [:]
     var links: [String: Set<String>] = [:]
@@ -2522,6 +2641,7 @@ final class XMEMLReader {
         p.sequences = sequences
         if nestedMarkers > 0 { warnings.append("\(nestedMarkers) marker(s) inside nested sequences not kept") }
         for d in dropped { warnings.append(Importer.summarize(d.name, clips: d.clips)) }
+        Importer.dropUnused(&p, replaced, missing: &missing)
         Importer.finish(&p, &warnings, offline: offline)
         return ImportResult(project: p, warnings: warnings, missingMedia: missing)
     }
@@ -2567,6 +2687,9 @@ final class XMEMLReader {
             if split {
                 v.audioLead = v.start - a.start
                 v.audioLag = a.end - v.end
+            } else if a.audioLead != 0 || a.audioLag != 0 {
+                v.audioLead = a.audioLead
+                v.audioLag = a.audioLag
             }
         }
         for t in tracks.indices where tracks[t].kind == .audio {
@@ -2697,14 +2820,24 @@ final class XMEMLReader {
             }
             edges[i] = Edge(start: s, end: en, cut: cut, align: align)
         }
+        // Cutline's sound hints, and the constant-gain crossfades between hinted clips that stand for overlapping sound.
+        let grid = FrameGrid(fps: fps)
+        let hints: [Int: SoundHint] = kind == .audio ? Dictionary(uniqueKeysWithValues: entries.enumerated().compactMap { i, e in
+            text(e.first("comments"), "mastercomment4").flatMap(SoundHint.init(text:)).map { (i, $0) }
+        }) : [:]
+        let overlaps = Set(edges.keys.filter { i in
+            let id = text(entries[i].first("effect"), "effectid") ?? ""
+            return id == "KGAudioTransCrossFade0dB" && !edges[i]!.align.hasSuffix("black") && hints[i - 1] != nil && hints[i + 1] != nil
+        })
+        var hinted: [String: SoundHint] = [:]
         var clips: [Clip] = [], disabled: [Clip] = []
         var ids: [Int: String] = [:]
         var cursor = 0.0
         for (i, e) in entries.enumerated() where e.name != "transitionitem" {
             var s = number(e, "start") ?? -1, en = number(e, "end") ?? -1
             var mediaStart = s, mediaEnd = en
-            if s < 0, let t = i > 0 ? edges[i - 1] : nil { s = t.cut; mediaStart = t.start }
-            if en < 0, let t = edges[i + 1] { en = t.cut; mediaEnd = t.end }
+            if s < 0, let t = i > 0 ? edges[i - 1] : nil { s = overlaps.contains(i - 1) ? t.start : t.cut; mediaStart = t.start }
+            if en < 0, let t = edges[i + 1] { en = overlaps.contains(i + 1) ? t.end : t.cut; mediaEnd = t.end }
             let length = (number(e, "out") ?? 0) - (number(e, "in") ?? 0)
             if s < 0 { s = en >= 0 ? en - length : cursor; mediaStart = s }
             if en < 0 { en = s + length; mediaEnd = en }
@@ -2717,6 +2850,10 @@ final class XMEMLReader {
             c.id = "c\(clipCount)"
             c.start = s / fps
             c.duration = (en - s) / fps
+            if let h = hints[i], c.kind == .media, !c.reverse {
+                h.apply(&c, soundStart: Int(s.rounded()), grid: grid)
+                hinted[c.id] = h
+            }
             if text(e, "enabled")?.uppercased() == "FALSE" {
                 disabled.append(c)
                 continue
@@ -2740,7 +2877,7 @@ final class XMEMLReader {
         }
 
         var transitions: [Transition] = []
-        for (i, edge) in edges.sorted(by: { $0.key < $1.key }) {
+        for (i, edge) in edges.sorted(by: { $0.key < $1.key }) where !overlaps.contains(i) {
             let e = entries[i]
             let from = ids[i - 1], to = ids[i + 1]
             guard from != nil || to != nil else { continue }
@@ -2782,6 +2919,11 @@ final class XMEMLReader {
             if pair, align == .center, before > 0, before < edge.end - edge.start, abs(before - (edge.end - edge.start) / 2) > (number(e, "cutPointTicks") != nil ? 0.25 : 0.6) { made.cutOffset = before / fps }
             transitions.append(made)
         }
+        for k in clips.indices {
+            guard let h = hinted[clips[k].id] else { continue }
+            clips[k].audioFadeIn = Double(h.fadeIn * grid.num) / Double(grid.den)
+            clips[k].audioFadeOut = Double(h.fadeOut * grid.num) / Double(grid.den)
+        }
         return (clips, disabled, transitions)
     }
 
@@ -2790,6 +2932,15 @@ final class XMEMLReader {
     func item(_ e: XMLElement, kind: TrackKind, fps: Double, start: Double, end: Double, mediaStart: Double, mediaEnd: Double, top: Bool) -> Clip? {
         let name = text(e, "name").flatMap { $0.isEmpty ? nil : $0 } ?? (e.name == "generatoritem" ? "Generator" : "Clip")
         let duration = (end - start) / fps
+        // The clip Cutline wrote whole: a title, solid, generator or baked graphic.
+        if kind == .video, let json = text(e.first("comments"), "mastercomment3"), json.hasPrefix(Project.clipTag),
+           let c = Project.restoredClip(json: json, placed: Clip(id: "", kind: .media, start: 0, duration: duration)) {
+            if let f = e.first("file") {
+                let file = f.attr("id").flatMap { fileDefs[$0] } ?? f
+                replaced.insert(mediaId(file, key: f.attr("id"), clipName: name, kind: kind))
+            }
+            return c
+        }
         if e.name == "generatoritem" { return generator(e, effect: e.first("effect"), name: name, kind: kind, duration: duration) }
 
         let cr = rate(e) ?? fps
@@ -2973,6 +3124,23 @@ final class XMEMLReader {
             if let words = text(param("str"), "value"), !words.isEmpty {
                 var spec = TextSpec(text: words.replacingOccurrences(of: "\r", with: "\n"))
                 if let font = text(param("fontname"), "value"), !font.isEmpty { spec.font = font }
+                if let px = number(param("fontsize"), "value"), px > 0 { spec.size = px / Double(min(canvas.width, canvas.height)) }
+                if let style = number(param("fontstyle"), "value") { spec.weight = style == 2 || style == 4 ? 700 : 400 }
+                if let a = number(param("fontalign"), "value") { spec.align = a == 1 ? .left : a == 3 ? .right : .center }
+                func color(_ key: String) -> RGBA? {
+                    guard let v = param(key)?.first("value"), number(v, "red") != nil else { return nil }
+                    func channel(_ n: String) -> Double { min(max((number(v, n) ?? 255) / 255, 0), 1) }
+                    return RGBA(r: channel("red"), g: channel("green"), b: channel("blue"), a: channel("alpha"))
+                }
+                if let c = color("fontcolor") { spec.color = c }
+                if let v = param("origin")?.first("value") {
+                    spec.x = 0.5 + (number(v, "horiz") ?? 0)
+                    spec.y = 0.5 + (number(v, "vert") ?? 0)
+                }
+                if let c = color("linecolor"), let w = number(param("linewidth"), "value"), w > 0 {
+                    spec.stroke = c
+                    spec.strokeWidth = w / max(spec.size * Double(min(canvas.width, canvas.height)), 1)
+                }
                 return Clip(id: "", kind: .text, name: name == words ? nil : name, start: 0, duration: duration, text: spec)
             }
             warnings.append("Text generator \(name) has no text; left as a gap")
@@ -3065,11 +3233,16 @@ extension Project {
     /// and rotation Basic Motion, and crop Crop; the CDL and LUT files are a clip comment (`ASC_SOP …; LUT <path>`).
     /// Sound clipitems are linked to their picture and span the audio range, so split edits keep
     /// their own in and out; levels are Audio Levels (keyframed when animated, track faders and master gain
-    /// folded in) and fades 0 dB cross fades from or to black. Text clips become Text generators, solids
-    /// Color mattes, nested sequences nested sequences; adjustment and generator clips are left out. The
+    /// folded in) and fades 0 dB cross fades from or to black. Sound overlapping the next clip's on its track is a
+    /// 0 dB crossfade over the overlap, and no sound plays past the program; where the clipitem can't say where a
+    /// clip's sound sits, `mastercomment4` holds a `SoundHint`. Text clips become Text (or Outline Text) generators
+    /// with string, font, size, color, alignment and origin, solids Color mattes, each with the whole Cutline clip
+    /// in `mastercomment3`; nested sequences are nested sequences; adjustment and generator clips are left out. The
     /// sequence's timecode is the canvas's start timecode; each file declares its own audio sample rate and its
     /// source timecode (at its own rate and drop frame) with its reel. Clip in and out points stay zero-based.
-    public func xmeml() -> String {
+    public func xmeml() -> String { xmeml(InterchangeContext()) }
+
+    func xmeml(_ ctx: InterchangeContext) -> String {
         let grid = FrameGrid(fps: canvas.fps)
         let timebase = max(1, Int(grid.rate.rounded()))
         let ntsc = grid.num == 1001
@@ -3165,6 +3338,14 @@ extension Project {
                     effect("Cross Fade (0dB)", id: "KGAudioTransCrossFade0dB", category: "audiotransition", type: "transition", mediaType: "audio", []),
                 ])
             }
+            /// Sound overlapping its neighbour's on one track: a constant-gain crossfade over `at`, cut where the clipitems meet.
+            func overlapItem(_ at: (start: Int, cut: Int, length: Int)) -> XMLElem {
+                XMLElem("transitionitem", children: [
+                    leaf("start", "\(at.start)"), leaf("end", "\(at.start + at.length)"), leaf("alignment", "center"),
+                    leaf("cutPointTicks", "\((at.cut - at.start) * 254_016_000_000 * grid.num / grid.den)"), rate(),
+                    effect("Cross Fade (0dB)", id: "KGAudioTransCrossFade0dB", category: "audiotransition", type: "transition", mediaType: "audio", []),
+                ])
+            }
             func emits(_ c: Clip, _ kind: TrackKind) -> Bool {
                 switch c.kind {
                 case .media: return c.mediaId.flatMap { scope.mediaAsset($0) } != nil
@@ -3217,19 +3398,45 @@ extension Project {
                     (audio ? tr.hasAudio : tr.hasVideo) && [tr.from, tr.to].compactMap { $0 }.allSatisfy(ids.contains)
                 }
                 func at(_ tr: Transition) -> (start: Int, cut: Int, length: Int)? { scope.transitionFrames(tr, grid: grid, sound: audio) }
+                /// A transition, or with none sound overlapping its neighbour's: a constant-gain crossfade over the overlap.
+                typealias Join = (tr: Transition?, at: (start: Int, cut: Int, length: Int))
+                var joinsIn: [String: Join] = [:], joinsOut: [String: Join] = [:]
+                for tr in mine {
+                    guard let a = tr.from, let b = tr.to, let w = at(tr) else { continue }
+                    if joinsIn[b] == nil { joinsIn[b] = (tr, w) }
+                    if joinsOut[a] == nil { joinsOut[a] = (tr, w) }
+                }
+                var overlapped = Set<String>()
+                if audio {
+                    let heardClips = clips.filter { $0.kind == .media && !$0.reverse && emits($0, kind) }
+                    for (a, b) in zip(heardClips, heardClips.dropFirst()) where joinsOut[a.id] == nil && joinsIn[b.id] == nil
+                        && !mine.contains(where: { $0.from == a.id && $0.to == nil || $0.to == b.id && $0.from == nil }) {
+                        let s = f(b.audioRange.start), e = f(a.audioRange.end)
+                        guard e > s, s > (joinsIn[a.id]?.at.cut ?? f(a.audioRange.start)), e < f(b.audioRange.end) else { continue }
+                        let picture = f(b.start)
+                        let cut = picture >= s && picture <= e ? picture : (s + e) / 2
+                        joinsOut[a.id] = (nil, (s, cut, e - s))
+                        joinsIn[b.id] = (nil, (s, cut, e - s))
+                        overlapped.formUnion([a.id, b.id])
+                    }
+                }
+                let programEnd = f(scope.duration)
                 var items: [XMLElem] = []
                 for c in clips {
-                    let into = mine.first { $0.to == c.id && $0.from != nil }.flatMap { tr in at(tr).map { (tr, $0) } }
-                    let outOf = mine.first { $0.from == c.id && $0.to != nil }.flatMap { tr in at(tr).map { (tr, $0) } }
+                    let into = joinsIn[c.id], outOf = joinsOut[c.id]
                     let black = (into: mine.first { $0.to == c.id && $0.from == nil }, out: mine.first { $0.from == c.id && $0.to == nil })
-                    if let tr = into?.0 ?? black.into, let w = at(tr) { items.append(transitionItem(tr, w, kind: kind)) }
-                    // Sound plays over the audio range, so split edits keep their own in and out.
+                    if let j = into {
+                        items.append(j.tr.map { transitionItem($0, j.at, kind: kind) } ?? overlapItem(j.at))
+                    } else if let tr = black.into, let w = at(tr) {
+                        items.append(transitionItem(tr, w, kind: kind))
+                    }
+                    // Sound plays over the audio range, so split edits keep their own in and out; none plays outside the program.
                     let heard = audio && c.kind == .media && !c.reverse
                     let span = heard ? c.audioRange : TimeRange(c.start, c.end)
                     let s = f(span.start), e = f(span.end)
-                    let r0 = into?.1.cut ?? s, r1 = outOf?.1.cut ?? e
+                    let r0 = into?.at.cut ?? (audio ? max(s, 0) : s), r1 = outOf?.at.cut ?? (audio && black.out == nil ? min(e, programEnd) : e)
                     guard e > s, r1 > r0 else { continue }
-                    let head = into.map { r0 - $0.1.start } ?? 0, tail = outOf.map { $0.1.start + $0.1.length - r1 } ?? 0
+                    let head = into.map { r0 - $0.at.start } ?? 0, tail = outOf.map { $0.at.start + $0.at.length - r1 } ?? 0
                     let length = r1 - r0 + head + tail
                     var kids = [leaf("name", c.name ?? c.mediaId.flatMap { scope.mediaAsset($0)?.name } ?? c.kind.rawValue),
                                 leaf("enabled", "TRUE"), leaf("duration", "\(length)"), rate(),
@@ -3273,9 +3480,28 @@ extension Project {
                             kids.append(sequenceElem(scope.inside(seq), id: ref, name: seq.name, markers: []))
                         }
                     case .text where kind == .video:
-                        kids += [leaf("in", "0"), leaf("out", "\(length)"), effect("Text", id: "Text", category: "Text", type: "generator", mediaType: "video", [
-                            parameter("str", "Text", c.text?.text ?? c.name ?? ""), parameter("fontname", "Font", c.text?.font ?? "system"),
-                        ])]
+                        let spec = c.text ?? TextSpec(text: c.name ?? "")
+                        func rgba(_ id: String, _ name: String, _ v: RGBA) -> XMLElem {
+                            XMLElem("parameter", children: [leaf("parameterid", id), leaf("name", name), XMLElem("value", children: [
+                                leaf("alpha", byte(v.a)), leaf("red", byte(v.r)), leaf("green", byte(v.g)), leaf("blue", byte(v.b)),
+                            ])])
+                        }
+                        // Final Cut's Text and Outline Text generators: the string, font, size in pixels, color, alignment, and
+                        // origin as an offset from the center in fractions of the frame, as Basic Motion's center.
+                        let outline = spec.stroke != nil && spec.strokeWidth > 0
+                        var params = [
+                            parameter("str", "Text", spec.text), parameter("fontname", "Font", Self.fcpFont(spec.font)),
+                            parameter("fontsize", "Size", number((spec.size * Double(min(canvas.width, canvas.height))).rounded()), min: "0", max: "1000"),
+                            parameter("fontstyle", "Style", spec.weight >= 600 ? "2" : "1", min: "1", max: "4"),
+                            parameter("fontalign", "Alignment", spec.align == .left ? "1" : spec.align == .right ? "3" : "2", min: "1", max: "3"),
+                            rgba("fontcolor", "Font Color", spec.color),
+                            XMLElem("parameter", children: [leaf("parameterid", "origin"), leaf("name", "Origin"),
+                                                            XMLElem("value", children: [leaf("horiz", number(spec.x - 0.5)), leaf("vert", number(spec.y - 0.5))])]),
+                        ]
+                        if outline, let stroke = spec.stroke {
+                            params += [rgba("linecolor", "Line Color", stroke), parameter("linewidth", "Line Width", number(spec.strokeWidth * spec.size * Double(min(canvas.width, canvas.height))))]
+                        }
+                        kids += [leaf("in", "0"), leaf("out", "\(length)"), effect(outline ? "Outline Text" : "Text", id: outline ? "Outline Text" : "Text", category: "Text", type: "generator", mediaType: "video", params)]
                     case .solid where kind == .video:
                         let color = c.color ?? .black
                         kids += [leaf("in", "0"), leaf("out", "\(length)"), effect("Color", id: "Color", category: "Matte", type: "generator", mediaType: "video", [
@@ -3323,16 +3549,23 @@ extension Project {
                             ])]))
                         }
                         // The grade as a note: Premiere has no place for a CDL or LUT.
-                        let grade = c.kind == .media ? (c.cdl.map { [$0.text] } ?? []) + c.lutFiles.map { "LUT \($0)" } : []
-                        if !grade.isEmpty {
-                            kids.append(XMLElem("comments", children: [leaf("mastercomment1", grade.joined(separator: "; "))]))
-                        }
+                        let grade = c.kind == .media ? (c.cdl.map { [$0.text] } ?? []) + c.lutFiles.map { "LUT \($0)" } + (ctx.luts[c.id].map { ["\(Project.gradeLUTTag) \($0)"] } ?? []) : []
+                        var comments: [XMLElem] = []
+                        if !grade.isEmpty { comments.append(leaf("mastercomment1", grade.joined(separator: "; "))) }
+                        // The whole Cutline clip, for what the generator items can't say.
+                        if let e = ctx.embedded(c) { comments.append(leaf("mastercomment3", Project.clipTag + Project.clipJSON(e))) }
+                        if !comments.isEmpty { kids.append(XMLElem("comments", children: comments)) }
+                    }
+                    // What the clipitem can't say about the clip's sound, for Cutline to read back.
+                    let hint = SoundHint(c, grid: grid)
+                    if heard, overlapped.contains(c.id) || (into == nil && r0 != s) || (outOf == nil && r1 != e) || (track.kind == .audio && (hint.lead != 0 || hint.lag != 0)) {
+                        kids.append(XMLElem("comments", children: [leaf("mastercomment4", hint.text)]))
                     }
                     if c.kind == .media || c.kind == .sequence { kids += links(c) }
-                    if heard, into == nil, black.into == nil, c.audioFadeIn > 0 { items.append(fadeItem(s, min(e, s + max(1, f(c.audioFadeIn))), into: true)) }
+                    if heard, into == nil, black.into == nil, c.audioFadeIn > 0 { items.append(fadeItem(r0, min(r1, r0 + max(1, f(c.audioFadeIn))), into: true)) }
                     items.append(XMLElem(c.kind == .text || c.kind == .solid ? "generatoritem" : "clipitem", [("id", itemId(c, sound: sound))], children: kids))
                     if let tr = black.out, let w = at(tr) { items.append(transitionItem(tr, w, kind: kind)) } else if heard, outOf == nil, c.audioFadeOut > 0 {
-                        items.append(fadeItem(max(s, e - max(1, f(c.audioFadeOut))), e, into: false))
+                        items.append(fadeItem(max(r0, r1 - max(1, f(c.audioFadeOut))), r1, into: false))
                     }
                 }
                 return XMLElem("track", children: items + [leaf("enabled", (kind == .video ? track.hidden : track.muted) ? "FALSE" : "TRUE"), leaf("locked", "FALSE")])
