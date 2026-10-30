@@ -294,3 +294,38 @@ extension AudioStems {
         return FileManager.default.fileExists(atPath: u.path) ? u : nil
     }
 }
+
+extension SourceChannels {
+    /// Peak level of every source channel in windows of 1/`rate` s, for telling which channels carry what.
+    public static func levels(_ media: MediaAsset, rate windows: Double = 10) async throws -> ChannelLevels {
+        let size = max(1, Int(rate / windows))
+        var out: [[Float]] = []
+        var peak: [Float] = []
+        var filled = 0
+        func db(_ x: Float) -> Float { x > 0 ? max(-80, 20 * log10(x)) : -80 }
+        try await read(media.url) { chunk in
+            if out.isEmpty {
+                out = [[Float]](repeating: [], count: chunk.count)
+                peak = [Float](repeating: 0, count: chunk.count)
+            }
+            let n = chunk.first?.count ?? 0
+            var i = 0
+            while i < n {
+                let take = min(size - filled, n - i)
+                for c in chunk.indices where c < peak.count {
+                    var m = peak[c]
+                    for k in i..<(i + take) { m = max(m, abs(chunk[c][k])) }
+                    peak[c] = m
+                }
+                filled += take
+                i += take
+                if filled == size {
+                    for c in peak.indices { out[c].append(db(peak[c])); peak[c] = 0 }
+                    filled = 0
+                }
+            }
+        }
+        if filled > 0 { for c in peak.indices { out[c].append(db(peak[c])) } }
+        return ChannelLevels(mediaId: media.id, rate: windows, levels: out)
+    }
+}

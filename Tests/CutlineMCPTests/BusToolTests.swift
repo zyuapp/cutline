@@ -35,7 +35,7 @@ private func writeTone(_ url: URL, freq: Double, seconds: Double = 2) throws {
     }
 
     let dme = await box.call("recipe", ["name": "dme_buses"])
-    #expect(!dme.isError && dme.plainText.contains("A1 \"Dialogue\" (dialogue) → DIA"), "\(dme.plainText)")
+    #expect(!dme.isError && dme.plainText.contains("A1 \"Dialogue\" → DIA: role dialogue set on the track"), "\(dme.plainText)")
     let p = try box.session.project()
     #expect(p.tracks.filter { $0.kind == .audio }.map { $0.output ?? "master" } == ["DIA", "MUS", "FX"])
     #expect(p.master.effects.map(\.type) == ["audio.limiter"])

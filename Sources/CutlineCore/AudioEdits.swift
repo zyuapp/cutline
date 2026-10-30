@@ -151,7 +151,7 @@ extension Project {
     }
 
     /// Fills a timeline range with room tone on `trackId`: clips of `mediaId` from the quiet `source` span, crossfaded
-    /// into each other and into whatever sound meets the range's edges. The crossfade shrinks to fit short ranges
+    /// into each other and into whatever sound meets the range's edges, with role dialogue.room tone. The crossfade shrinks to fit short ranges
     /// (see `roomToneCrossfade`), and no fade runs longer than its clip. Returns the new clip ids.
     @discardableResult
     public mutating func fillRoomTone(_ range: TimeRange, mediaId: String, source: TimeRange, trackId: String, crossfade: Seconds = 0.25) throws -> [String] {
@@ -164,6 +164,7 @@ extension Project {
         var ids: [String] = []
         for piece in try roomTonePieces(range: range, source: source, crossfade: x) {
             var c = Clip(id: Project.newClipId(), kind: .media, name: "Room tone", mediaId: mediaId, start: piece.start, duration: piece.duration, sourceIn: piece.sourceIn)
+            c.role = Project.roomToneRole
             c.audioLead = min(x / 2, piece.start)
             c.audioLag = x / 2
             c.audioFadeIn = c.audioLead + x / 2

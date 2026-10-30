@@ -53,11 +53,16 @@ extension Toolbox {
                 return done + (p.retimedSpeechWarning(id, transcripts: b.transcripts(for: p)).map { "\n" + $0 } ?? "")
             }
         case "freeze_frame":
-            let at = try a.time("at")
+            let clip = try a.optString("clip").map { id -> (clip: Clip, track: String) in
+                guard let loc = current.locateClip(id) else { throw EditError("No clip \(id)") }
+                return (current.tracks[loc.track].clips[loc.clip], current.tracks[loc.track].id)
+            }
+            let at = try a.optTime("at") ?? clip.map { $0.clip.start + $0.clip.duration / 2 } ?? a.time("at")
+            if let c = clip?.clip, at < c.start || at >= c.end { throw EditError("at \(fmt2(at))s is outside \(c.id) (\(fmt2(c.start))–\(fmt2(c.end))s)") }
             let transcripts = b.transcripts(for: current)
             let speech = Set(current.timelineWords(transcripts: transcripts).compactMap { w in current.locateClip(w.clipId).map { current.tracks[$0.track].id } })
             return try runEdit("Freeze frame at \(fmt2(at))s", dry: dry) { p in
-                try p.freezeFrame(at: at, trackId: a.optString("track"), duration: a.optDouble("duration") ?? 1.5, zoom: a.optDouble("zoom") ?? 1, pauseTracks: speech) + (speech.isEmpty ? "" : " Speech on \(speech.sorted().joined(separator: ", ")) pauses with it; music plays on.")
+                try p.freezeFrame(at: at, trackId: a.optString("track") ?? clip?.track, duration: a.optDouble("duration") ?? 1.5, zoom: a.optDouble("zoom") ?? 1, pauseTracks: speech) + (speech.isEmpty ? "" : " Speech on \(speech.sorted().joined(separator: ", ")) pauses with it; music plays on.")
             }
         case "punch_in":
             let shots = Toolbox.shotIndex(b, current)

@@ -79,9 +79,9 @@ struct RecipeSpec {
 
 extension Toolbox {
     static let recipes: [RecipeSpec] = [
-        RecipeSpec(name: "duck", group: "Sound", summary: "Dips music under speech.", args: [
-            .init("music", .ids, "Clip or track ids to duck; default audio tracks without speech"),
-            .init("under", .ids, "Track ids with the speech; default every other track"),
+        RecipeSpec(name: "duck", group: "Sound", summary: "Dips music under speech. Roles come from evidence (transcript words on the channels each clip plays, speech and music sounds, beats, silence) and are printed; clips that carry speech are never ducked.", args: [
+            .init("music", .ids, "Clip or track ids to duck; default tracks whose role is music"),
+            .init("under", .ids, "Track ids with the speech; default the speech of dialogue clips on every other track"),
             .init("amount_db", .number, "Dip depth, default 12"),
             .init("attack", .number, "Seconds to dip, default 0.3"),
             .init("release", .number, "Seconds to recover, default 0.8"),
@@ -93,7 +93,7 @@ extension Toolbox {
             .init("persist", .bool, "Keep the target on the master for every export, default true; false is a one-off gain"),
             .init("off", .bool, "Clear the master loudness target"),
         ]),
-        RecipeSpec(name: "dme_buses", group: "Sound", summary: "DME mix structure: adds DIA, MUS and FX buses and routes each track by its role, else its name (VO, Score, SFX, Room tone…), else detected speech; a light compressor on DIA and a −1 dBFS master limiter. Running it again only routes new tracks.", args: [
+        RecipeSpec(name: "dme_buses", group: "Sound", summary: "DME mix structure: adds DIA, MUS and FX buses and routes each track by its role, else the role most of its clips' sound shows (speech in the channels it plays, music, effects; room tone is dialogue), else its name (VO, Score, SFX…); silent tracks stay put. Prints each inference to confirm or override. A light compressor on DIA and a −1 dBFS master limiter. Running it again only routes new tracks.", args: [
             .init("compressor", .bool, "Light compressor on DIA, default true"),
             .init("limiter", .bool, "Master limiter at −1 dBFS, default true"),
         ]),
@@ -101,7 +101,7 @@ extension Toolbox {
             .init("edit", .string, "\"clip_a|clip_b\""),
             .init("offset", .number, "Seconds: + J cut (b's sound starts early), − L cut (a's sound runs on)"),
         ]),
-        RecipeSpec(name: "room_tone", group: "Sound", summary: "Fills a range with room tone, looped from varied start points with short crossfades so the repeat isn't heard.", args: [
+        RecipeSpec(name: "room_tone", group: "Sound", summary: "Fills a range with room tone, looped from varied start points with short crossfades so the repeat isn't heard. Its clips get role dialogue.room tone (dialogue stem and bus).", args: [
             .init("start", .time, "Range start"),
             .init("end", .time, "Range end"),
             .init("media", .string, "Media with the room tone"),
@@ -136,9 +136,10 @@ extension Toolbox {
             .init("hold", .number, "Seconds held at speed, default 0.8"),
         ]),
         RecipeSpec(name: "freeze_frame", group: "Time", summary: "Holds a frame; speech pauses with it, music plays on.", args: [
-            .init("at", .time, "Frame to hold"),
+            .init("at", .time, "Frame to hold; default the clip's middle when clip is given"),
+            .init("clip", .string, "Clip to freeze (its track); at must fall inside it"),
             .init("duration", .number, "Seconds, default 1.5"),
-            .init("track", .string, "Default the top video at that time"),
+            .init("track", .string, "Default the clip's track, else the top video at that time"),
             .init("zoom", .number, "Scale reached over the hold, default 1 (e.g. 1.08 pushes in)"),
         ]),
         RecipeSpec(name: "punch_in", group: "Framing", summary: "Scales up alternate shots to hide jump cuts; centers on faces when shots are analyzed.", args: [
@@ -339,6 +340,7 @@ extension Toolbox {
                 + "\ncatalog recipe=<name> describes each argument."
         }
         guard let spec = recipe(name) else { throw EditError("No recipe \(name). Recipes: \(recipeNames.joined(separator: ", "))") }
-        return spec.manual + "\nPreview with recipe {\"name\": \"\(name)\", \"args\": {…}, \"dry_run\": true}."
+        let aliases = aliasSummary(name, declared: Set(spec.args.map(\.name))).map { "\nAlso accepts: " + $0 } ?? ""
+        return spec.manual + aliases + "\nPreview with recipe {\"name\": \"\(name)\", \"args\": {…}, \"dry_run\": true}."
     }
 }

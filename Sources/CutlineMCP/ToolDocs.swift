@@ -102,7 +102,7 @@ extension Toolbox {
             "allow_stretch": "Allow audio below 0.25×",
         ]),
         "clip_split": ToolBrief(text: "Split one clip, or every clip under a time, at a timeline time.", args: [
-            "time": "", "clip_id": "", "track_ids": "",
+            "at": "", "clip_id": "", "track_ids": "",
         ]),
         "clip_delete": ToolBrief(text: "Delete clips; ripple closes the gap on their own tracks only (range_delete keeps sync).", args: ["clip_ids": "", "ripple": ""]),
         "range_delete": ToolBrief(text: "Cut a timeline range out of every track (or track_ids); ripple (default) keeps sync.", args: [
@@ -120,7 +120,7 @@ extension Toolbox {
         ]),
         "track_add": ToolBrief(text: "Add a track; later video tracks draw on top.", args: ["kind": "", "name": "", "position": "Index from the bottom"]),
         "track_update": ToolBrief(text: "Rename, mute, hide, set volume, role, bus output or sends of, or remove a track.", args: [
-            "track_id": "", "name": "", "muted": "", "hidden": "", "remove": "", "volume": "0–2", "role": "dialogue, music, effects or custom (stems, captions)",
+            "track": "", "name": "", "muted": "", "hidden": "", "remove": "", "volume": "0–2", "role": "dialogue, music, effects or custom (stems, captions)",
             "output": "Bus id, or master", "sends": "[{bus, level_db, pre_fader, remove}]; [] clears",
             "sends[].bus": "", "sends[].level_db": "", "sends[].pre_fader": "", "sends[].remove": "",
         ]),
@@ -207,7 +207,7 @@ extension Toolbox {
             "status": "Default open", "frames": "Attach frames, default true",
         ]),
         "comment_reply": ToolBrief(text: "Reply to a comment and resolve it.", args: ["comment_id": "", "text": "", "resolve": "Default true"]),
-        "comment_add": ToolBrief(text: "Leave the human a note at a timeline time.", args: ["text": "", "time": ""]),
+        "comment_add": ToolBrief(text: "Leave the human a note at a timeline time.", args: ["text": "", "at": ""]),
         "captions_list": ToolBrief(text: "Caption cues with times, text and source words (\"<media>.wN\" for caption_edit), captioned tracks and overlapping speech.", args: [
             "start": "", "end": "",
         ]),
@@ -277,6 +277,7 @@ extension Toolbox {
             }
         }
         walk(t.schema, "  ")
+        if let aliases = Toolbox.aliasSummary(name, declared: Set(t.schema["properties"]?.object?.keys.map { $0 } ?? [])) { lines.append("Also accepts: " + aliases) }
         return lines.joined(separator: "\n")
     }
 }

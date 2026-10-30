@@ -3,7 +3,7 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let busDocs = "Mixing: audio_bus adds submix buses (e.g. DIA, MUS, FX, a reverb bus) with effects (any audio.* or Audio Unit), a fader with automation (volume_keys), mute, solo and an output (master or another bus). track_update output routes a track to a bus; sends copy it into more buses at level_db, pre_fader or after the fader. param_set a clip's audio.role (e.g. \"ambience\" for room tone on the dialogue track) to split stems by subrole. recipe dme_buses sets up DIA/MUS/FX buses, a light DIA compressor and a master limiter. export deliver:\"stems\" stems:\"buses\" writes one file per bus plus M&E; project_status shows the routing tree."
+    static let busDocs = "Mixing: audio_bus adds submix buses (e.g. DIA, MUS, FX, a reverb bus) with effects (any audio.* or Audio Unit), a fader with automation (volume_keys), mute, solo and an output (master or another bus). track_update output routes a track to a bus; sends copy it into more buses at level_db, pre_fader or after the fader. param_set a clip's audio.role (\"dialogue.room tone\" stays in the dialogue stem, \"ambience\" gets its own) to split stems by subrole. recipe dme_buses routes tracks by role inferred from speech, music and silence (printed so you can override it) to DIA/MUS/FX buses, a light DIA compressor and a master limiter. export deliver:\"stems\" stems:\"buses\" writes one file per bus plus M&E; project_status shows the routing tree."
 
     func registerBusTools() {
         addEdit(EditTool(name: "audio_bus", description: "Add, change or remove a submix bus. Tracks feed a bus with track_update output (and sends); its effects, fader and automation process their sum, then it feeds the master or another bus (no loops). While buses are used the mix renders offline through them (preview plays the plain mix until it is ready). Bus effects take the same type/params as effect_add, including Audio Units.", schema: Schema.object([
@@ -131,14 +131,16 @@ extension Toolbox {
         ])],
     ]
 
-    func dmeBuses(_ a: Args, dry: Bool) throws -> ToolResult {
-        let b = try session.requireBundle()
+    func dmeBuses(_ a: Args, dry: Bool) async throws -> ToolResult {
         let current = try session.project()
-        let roles = current.roles(transcripts: b.transcripts(for: current))
+        let inference = await roleInference(current)
+        let reasons = inference.tracks.mapValues(\.why)
+        let roles = Toolbox.describeRoles(inference, current) { Project.dmeBus($0) }
         return try runEdit("Route tracks to DIA/MUS/FX buses", dry: dry) { p in
-            let lines = p.applyDMEBuses(roles: roles, compressor: a.bool("compressor", default: true), limiter: a.bool("limiter", default: true))
-            if lines.isEmpty { return "Already routed to DIA/MUS/FX; nothing changed." }
-            return "DME buses: " + lines.joined(separator: "; ") + ". Change a track's bus with track_update output, the buses with audio_bus. Deliver one file per bus plus M&E with export deliver:\"stems\" stems:\"buses\"."
+            let lines = p.applyDMEBuses(roles: inference.trackRoles, reasons: reasons, compressor: a.bool("compressor", default: true), limiter: a.bool("limiter", default: true))
+            if lines.isEmpty { return "Already routed to DIA/MUS/FX; nothing changed.\n" + roles }
+            let setup = lines.filter { l in !current.tracks.contains { l.hasPrefix("\($0.id) \"") } }
+            return (setup.isEmpty ? "" : "DME buses: " + setup.joined(separator: "; ") + ".\n") + roles + "\nTracks with no role stay where they are. Change a track's bus with track_update output, the buses with audio_bus. Deliver one file per bus plus M&E with export deliver:\"stems\" stems:\"buses\"."
         }
     }
 
@@ -154,7 +156,7 @@ extension Toolbox {
         var base = p
         base.master.effects = []
         base.master.loudnessTarget = nil
-        let roles = p.roles(transcripts: b.transcripts(for: p))
+        let roles = await roleInference(p).stemRoles
         let used = base.audioRoles(roles)
         var jobs: [(label: String, project: Project, detail: String)] = []
         if mode == "roles" {

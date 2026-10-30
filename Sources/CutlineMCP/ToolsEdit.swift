@@ -299,11 +299,11 @@ extension Toolbox {
         })
 
         addEdit(EditTool(name: "clip_split", description: "Split at a timeline time: one clip (clip_id) or every clip under that time on the given tracks (default all).", schema: Schema.object([
-            "time": Schema.time("Timeline time"),
+            "at": Schema.time("Timeline time"),
             "clip_id": Schema.string("Only split this clip"),
             "track_ids": Schema.strings("Only these tracks when clip_id is omitted"),
-        ], required: ["time"]), label: { a, _ in "Split at \(Toolbox.timeLabel(a.raw["time"]))" }) { p, args in
-            let t = try args.time("time")
+        ], required: ["at"]), label: { a, _ in "Split at \(Toolbox.timeLabel(a.raw["at"]))" }) { p, args in
+            let t = try args.time("at")
             if let id = args.optString("clip_id") {
                 let (a, b) = try p.splitClip(id, at: t)
                 return "Split into \(a) and \(b)"
@@ -414,15 +414,15 @@ extension Toolbox {
         })
 
         addEdit(EditTool(name: "track_update", description: "Rename, mute, hide, set volume of, route (output, sends) or remove a track.", schema: Schema.object([
-            "track_id": Schema.string("Track id"),
+            "track": Schema.string("Track id"),
             "name": Schema.string("Name"),
             "muted": Schema.bool("Mute audio"),
             "hidden": Schema.bool("Hide picture"),
             "volume": Schema.number("0–2, multiplies clip volumes (e.g. 0.25 to duck music under speech)"),
             "remove": Schema.bool("Delete the track and its clips"),
             "role": Schema.string("Audio role for stem export: dialogue, music, effects, or a custom name"),
-        ].merging(Toolbox.trackRoutingSchema) { a, _ in a }, required: ["track_id"]), label: { a, p in Toolbox.describeTrackUpdate(a, p) }) { p, args in
-            let id = try args.string("track_id")
+        ].merging(Toolbox.trackRoutingSchema) { a, _ in a }, required: ["track"]), label: { a, p in Toolbox.describeTrackUpdate(a, p) }) { p, args in
+            let id = try args.string("track")
             guard let i = p.trackIndex(id) else { throw EditError("No track \(id)") }
             if args.bool("remove", default: false) {
                 try p.removeTrack(id)
@@ -671,7 +671,7 @@ extension Toolbox {
     }
 
     static func describeTrackUpdate(_ a: Args, _ p: Project) -> String {
-        let id = a.optString("track_id") ?? ""
+        let id = a.optString("track") ?? ""
         let name = p.tracks.first { $0.id == id }?.name ?? id
         if a.bool("remove", default: false) { return "Remove \(name) track" }
         if let m = a.optBool("muted") { return m ? "Mute \(name)" : "Unmute \(name)" }

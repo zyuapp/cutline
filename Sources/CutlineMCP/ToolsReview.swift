@@ -61,11 +61,11 @@ extension Toolbox {
         })
 
         add(Tool(name: "comment_add", description: "Leave a note for the human at a timeline time, e.g. a question about a cut or a choice you want them to review.", schema: Schema.object([
-            "time": Schema.time("Timeline time"),
+            "at": Schema.time("Timeline time"),
             "text": Schema.string("Note"),
-        ], required: ["time", "text"])) { [unowned self] args in
+        ], required: ["at", "text"])) { [unowned self] args in
             let b = try session.requireBundle()
-            let c = Comment(time: try args.time("time"), text: try args.string("text"), author: .agent, historyId: b.loadHistory().current?.id)
+            let c = Comment(time: try args.time("at"), text: try args.string("text"), author: .agent, historyId: b.loadHistory().current?.id)
             try b.updateComments { $0.comments.append(c) }
             return .text("Added \(c.id)")
         })

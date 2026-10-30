@@ -51,7 +51,9 @@ extension Toolbox {
             let a = recipeArgs(args)
             let dry = args.bool("dry_run", default: false)
             switch try args.string("name") {
-            case "duck": return try runEdit("Duck music under speech", dry: dry) { p in try self.duck(&p, a) }
+            case "duck":
+                let roles = await roleInference(try session.project())
+                return try runEdit("Duck music under speech", dry: dry) { p in try self.duck(&p, a, roles: roles) }
             case "split_edit":
                 let edit = try a.string("edit")
                 let parts = edit.split(separator: "|").map(String.init)
@@ -109,7 +111,7 @@ extension Toolbox {
             case "remove_object":
                 return try await removeObject(a, dry: dry)
             case "dme_buses":
-                return try dmeBuses(a, dry: dry)
+                return try await dmeBuses(a, dry: dry)
             default:
                 return try await moreRecipes(try args.string("name"), a, dry: dry)
             }
@@ -270,31 +272,41 @@ extension Toolbox {
         return .text(summary + Toolbox.changesText(p, before) + newIssues(p, before) + "\n" + footer(p))
     }
 
-    func duck(_ p: inout Project, _ a: Args) throws -> String {
-        let b = try session.requireBundle()
-        let transcripts = b.transcripts(for: p)
+    /// Dips music clips under speech. Clips that carry speech are never ducked, even when named.
+    func duck(_ p: inout Project, _ a: Args, roles: RoleInference) throws -> String {
         var musicClips: [String] = []
         var musicTracks: Set<String> = []
-        let speechTracks = Set(p.timelineWords(transcripts: transcripts).compactMap { w in p.locateClip(w.clipId).map { p.tracks[$0.track].id } })
-        let requested = a.strings("music") ?? p.tracks.filter { $0.kind == .audio && !speechTracks.contains($0.id) && !$0.clips.isEmpty }.map(\.id)
-        guard !requested.isEmpty else { throw EditError("No music to duck: pass music with clip or track ids") }
+        var spared: [String] = []
+        let requested = a.strings("music") ?? p.tracks.filter { roles.tracks[$0.id]?.mainRole == "music" && !$0.clips.isEmpty }.map(\.id)
+        guard !requested.isEmpty else {
+            throw EditError("No music to duck: no track reads as music.\n" + Toolbox.describeRoles(roles, p) + "\nPass music with clip or track ids, or set track_update role music")
+        }
+        func consider(_ c: Clip, _ track: String) {
+            guard c.kind == .media || c.kind == .sequence else { return }
+            if roles.isSpeech(c.id, track: track) {
+                spared.append("\(c.id) on \(track): \(roles.clips[c.id]?.why ?? roles.tracks[track]?.why ?? "dialogue")")
+            } else {
+                musicTracks.insert(track)
+                musicClips.append(c.id)
+            }
+        }
         for id in requested {
             if let i = p.trackIndex(id) {
-                musicTracks.insert(id)
-                musicClips += p.tracks[i].clips.filter { $0.kind == .media }.map(\.id)
+                for c in p.tracks[i].clips { consider(c, id) }
             } else if let loc = p.locateClip(id) {
-                musicTracks.insert(p.tracks[loc.track].id)
-                musicClips.append(id)
+                consider(p.tracks[loc.track].clips[loc.clip], p.tracks[loc.track].id)
             } else {
                 throw EditError("No clip or track \(id)")
             }
         }
-        let under = a.strings("under") ?? p.tracks.map(\.id).filter { !musicTracks.contains($0) }
-        let speech = p.speechRanges(transcripts: transcripts, trackIds: under)
-        guard !speech.isEmpty else { throw EditError("No transcribed speech on \(under.joined(separator: ", ")); run media_analyze on the voice media") }
+        let note = spared.isEmpty ? "" : "\nNot ducked, they carry speech: " + spared.joined(separator: "; ") + ". Duck never lowers dialogue; set track_update role (or param_set audio.role) if that's wrong."
+        guard !musicClips.isEmpty else { throw EditError("Nothing to duck." + note) }
+        let under = a.strings("under")
+        let speech = under.map { roles.speechRanges(p, trackIds: $0, anyRole: true) } ?? roles.speechRanges(p, trackIds: p.tracks.map(\.id).filter { !musicTracks.contains($0) })
+        guard !speech.isEmpty else { throw EditError("No speech found on \(under?.joined(separator: ", ") ?? "the other tracks"); run media_analyze on the voice media.\n" + Toolbox.describeRoles(roles, p)) }
         let amount = a.optDouble("amount_db") ?? 12
         let dips = try p.duck(clipIds: musicClips, under: speech, amountDb: amount, attack: a.optDouble("attack") ?? 0.3, release: a.optDouble("release") ?? 0.8)
         let spoken = speech.map(\.duration).reduce(0, +)
-        return "Ducked \(musicClips.count) music clip(s) by \(fmt1(amount)) dB under \(speech.count) stretches of speech (\(fmt1(spoken))s), \(dips) dips. Check with timeline_measure tracks:true or adjust with param_set audio.volume."
+        return "Ducked \(musicClips.count) music clip(s) on \(musicTracks.sorted().joined(separator: ", ")) by \(fmt1(amount)) dB under \(speech.count) stretches of speech (\(fmt1(spoken))s), \(dips) dips." + note + "\n" + Toolbox.describeRoles(roles, p) + "\nCheck with timeline_measure tracks:true or adjust with param_set audio.volume."
     }
 }

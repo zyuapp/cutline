@@ -128,6 +128,7 @@ final class Toolbox {
             return r
         }
         do {
+            let args = try resolvingAliases(name, args, schema: tool.schema)
             try checkArguments(name, args, schema: tool.schema)
             let project = try? session.project()
             installResolvers(project)

@@ -108,7 +108,7 @@ private func project() -> Project {
     p.tracks.append(Track(id: "A4", kind: .audio, name: "Narration VO", clips: [Clip(id: "n", kind: .media, mediaId: "talk", start: 0, duration: 1)]))
     let lines = p.applyDMEBuses(roles: p.roles(transcripts: [:]))
     #expect(p.buses.map(\.id) == ["DIA", "MUS", "FX"])
-    #expect(p.tracks.map { $0.output ?? "master" } == ["DIA", "MUS", "FX", "FX", "DIA"])
+    #expect(p.tracks.map { $0.output ?? "master" } == ["DIA", "MUS", "FX", "DIA", "DIA"], "room tone is dialogue")
     #expect(p.bus("DIA")!.effects.map(\.type) == ["audio.compressor"])
     #expect(p.master.effects.map(\.type) == ["audio.limiter"])
     #expect(!lines.isEmpty)

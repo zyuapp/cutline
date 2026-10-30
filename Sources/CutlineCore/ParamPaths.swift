@@ -44,7 +44,7 @@ extension Clip {
         ParamSpec("audio.lead", .number, .number(0), min: -30, max: 30, unit: "seconds", animatable: false, "J cut: sound starts this long before the picture (negative: later)"),
         ParamSpec("audio.lag", .number, .number(0), min: -30, max: 30, unit: "seconds", animatable: false, "L cut: sound continues this long after the picture (negative: ends earlier)"),
         ParamSpec("audio.channels", .text, .string("stereo"), animatable: false, "Which recorded channels play: stereo is the first track as recorded; left or right alone on both sides (pick the lav or the boom of a two-mic file), mono_mix sums them, swap exchanges them; \"ch3\" plays any source channel on both sides, \"ch3+ch4\" a pair as left and right, \"mix:1,3\" sums channels at 1/n. Channels count across all of the file's audio tracks (media_list shows them)"),
-        ParamSpec("audio.role", .text, .string(""), animatable: false, "Audio role (subrole) of this clip for stems, overriding its track's: e.g. \"ambience\" for room tone on the dialogue track; empty follows the track"),
+        ParamSpec("audio.role", .text, .string(""), animatable: false, "Audio role of this clip for stems, overriding its track's: \"role.subrole\" (e.g. \"dialogue.room tone\", what room_tone sets) stays in its main role's stem, a plain name (e.g. \"ambience\") gets its own; empty follows the track"),
     ] + Clip.surroundSpecs
 
     /// Used when the master layout is 5.1 or 7.1.

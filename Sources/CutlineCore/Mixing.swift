@@ -103,6 +103,12 @@ extension Project {
     /// A clip's audio role: its own, else its track's.
     public static func role(of clip: Clip, trackRole: String?) -> String? { clip.role ?? trackRole }
 
+    /// The stem a role plays in: the main role of "role.subrole" ("dialogue.room tone" is dialogue), else the role.
+    public static func stemRole(_ r: String) -> String {
+        guard let dot = r.firstIndex(of: "."), dot != r.startIndex else { return r }
+        return normalizedRole(String(r[..<dot]))
+    }
+
     /// Every bus id `id` feeds, nearest first.
     public func busChain(from id: String) -> [String] {
         var out: [String] = []
@@ -201,7 +207,7 @@ extension Project {
             for c in p.tracks[t].clips.indices {
                 let clip = p.tracks[t].clips[c]
                 guard clip.kind == .media || clip.kind == .sequence else { continue }
-                if keep(Project.role(of: clip, trackRole: trackRole) ?? "effects") {
+                if keep(Project.stemRole(Project.role(of: clip, trackRole: trackRole) ?? "effects")) {
                     any = true
                 } else {
                     p.tracks[t].clips[c].volume = 0
@@ -220,7 +226,7 @@ extension Project {
             guard let trackRole = roles[t.id] else { continue }
             var used = Set<String>()
             for c in t.clips where c.kind == .sequence || (c.kind == .media && (c.mediaId.flatMap { mediaAsset($0) }?.hasAudio ?? false)) {
-                used.insert(c.role ?? trackRole)
+                used.insert(Project.stemRole(c.role ?? trackRole))
             }
             for r in used.sorted() { out[r, default: []].append(t.id) }
         }
@@ -247,9 +253,10 @@ extension Project {
         tracks.contains { t in t.output == nil && !t.muted && t.clips.contains { $0.kind == .media || $0.kind == .sequence } }
     }
 
-    /// Creates DIA, MUS and FX buses (or reuses them), routes each track by its role, else its name, else its
-    /// detected role, adds a light compressor to DIA and a limiter to the master. `roles` are detected track roles.
-    public mutating func applyDMEBuses(roles: [String: String], compressor: Bool = true, limiter: Bool = true) -> [String] {
+    /// Creates DIA, MUS and FX buses (or reuses them), routes each track by its own role, else `roles` (inferred, see
+    /// `inferRoles`), adds a light compressor to DIA and a limiter to the master. Tracks with no role stay where they
+    /// are. `reasons` explain inferred roles in the returned lines.
+    public mutating func applyDMEBuses(roles: [String: String], reasons: [String: String] = [:], compressor: Bool = true, limiter: Bool = true) -> [String] {
         let plan = [("DIA", "Dialogue"), ("MUS", "Music"), ("FX", "Effects")]
         var lines: [String] = []
         for (id, name) in plan where bus(id) == nil {
@@ -266,26 +273,34 @@ extension Project {
         }
         for i in tracks.indices where tracks[i].clips.contains(where: { $0.kind == .media || $0.kind == .sequence }) {
             let t = tracks[i]
-            let role = t.role.map(Project.normalizedRole) ?? Project.roleFromName(t.name) ?? roles[t.id].map(Project.normalizedRole) ?? (t.kind == .audio ? "music" : "dialogue")
-            let target = role == "dialogue" ? "DIA" : role == "music" ? "MUS" : "FX"
+            guard let role = t.role.map(Project.normalizedRole) ?? roles[t.id].map(Project.normalizedRole) else { continue }
+            let target = Project.dmeBus(role)
             guard t.output != target else { continue }
             tracks[i].output = target
-            lines.append("\(t.id) \"\(t.name)\" (\(role)) → \(target)")
+            let why = t.role != nil ? "role \(t.role!) set on the track" : reasons[t.id] ?? role
+            lines.append("\(t.id) \"\(t.name)\" → \(target): \(why)")
         }
         return lines
     }
 
-    static func normalizedRole(_ r: String) -> String {
-        roleFromName(r) ?? r.lowercased()
+    /// DIA, MUS or FX for a main role.
+    public static func dmeBus(_ role: String) -> String {
+        role == "dialogue" ? "DIA" : role == "music" ? "MUS" : "FX"
     }
 
-    /// dialogue, music or effects from words like "VO", "Score", "SFX", "Room tone".
+    /// dialogue, music or effects for a role or "role.subrole"; other roles lowercased.
+    static func normalizedRole(_ r: String) -> String {
+        let main = r.split(separator: ".", maxSplits: 1).first.map(String.init) ?? r
+        return roleFromName(main) ?? main.lowercased()
+    }
+
+    /// dialogue, music or effects from words like "VO", "Score", "SFX"; room tone is dialogue.
     static func roleFromName(_ name: String) -> String? {
         let words = Set(name.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
         let n = name.lowercased()
-        if !words.isDisjoint(with: ["dialogue", "dialog", "dia", "dx", "vo", "voice", "voiceover", "narration", "interview", "speech", "adr", "boom", "lav"]) { return "dialogue" }
+        if !words.isDisjoint(with: ["dialogue", "dialog", "dia", "dx", "vo", "voice", "voiceover", "narration", "interview", "speech", "adr", "boom", "lav"]) || n.contains("room tone") || n.contains("roomtone") { return "dialogue" }
         if !words.isDisjoint(with: ["music", "mus", "mx", "score", "song", "songs"]) { return "music" }
-        if !words.isDisjoint(with: ["effects", "fx", "sfx", "foley", "ambience", "ambiance", "amb", "bg", "bgs", "atmos", "hits", "whooshes"]) || n.contains("room tone") || n.contains("roomtone") { return "effects" }
+        if !words.isDisjoint(with: ["effects", "fx", "sfx", "foley", "ambience", "ambiance", "amb", "bg", "bgs", "atmos", "hits", "whooshes"]) { return "effects" }
         return nil
     }
 }
