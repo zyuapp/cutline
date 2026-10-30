@@ -10,7 +10,8 @@ extension Toolbox {
             "to": Schema.string("Incoming clip, alone for a transition in"),
             "id": Schema.string("Existing transition id to change or remove"),
             "type": Schema.string("Transition type, default dissolve", values: TransitionCatalog.all.map(\.id)),
-            "duration": Schema.number("Seconds, default 0.5"),
+            "duration": Schema.number("Seconds, default 0.5; snaps to whole frames"),
+            "subframe": Schema.bool("Keep duration off the frame grid, default false"),
             "align": Schema.string("Where it sits on the cut, default center", values: TransitionAlign.allCases.map(\.rawValue)),
             "part": Schema.string("Picture, sound or both, default both", values: TransitionPart.allCases.map(\.rawValue)),
             "ease": Schema.string("Progress easing, default easeInOut", values: Easing.allCases.map(\.rawValue)),
@@ -54,7 +55,11 @@ extension Toolbox {
                     tr.type = t
                 }
                 guard let spec = TransitionCatalog.type(tr.type) else { throw EditError("Unknown transition \(tr.type). Types: \(TransitionCatalog.all.map(\.id).joined(separator: ", "))") }
-                if let d = args.optDouble("duration") { tr.duration = d }
+                if let d = args.optDouble("duration") {
+                    tr.duration = args.bool("subframe", default: false) ? d : max(p.canvas.frameDuration, p.canvas.snap(d))
+                    let note = "Duration \(fmt(d))s snapped to \(Int((tr.duration * p.canvas.fps).rounded())) frames (\(fmt(tr.duration))s); subframe:true keeps it as given."
+                    if abs(tr.duration - d) > 1e-6, !lines.contains(note) { lines.append(note) }
+                }
                 if let s = args.optString("align") {
                     guard let v = TransitionAlign(rawValue: s) else { throw EditError("align is center, start or end") }
                     tr.align = v

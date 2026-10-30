@@ -319,8 +319,7 @@ public enum Delivery {
     // MARK: Helpers
 
     static func timeRange(_ built: BuiltTimeline, _ range: TimeRange?) -> CMTimeRange {
-        guard let range else { return CMTimeRange(start: .zero, duration: TimelineBuilder.time(built.duration)) }
-        return CMTimeRange(start: TimelineBuilder.time(max(0, range.start)), end: TimelineBuilder.time(min(range.end, built.duration)))
+        built.readRange(range)
     }
 
     static func videoReader(_ built: BuiltTimeline, range: CMTimeRange, videoComposition: AVVideoComposition) async throws -> (AVAssetReader, AVAssetReaderVideoCompositionOutput) {

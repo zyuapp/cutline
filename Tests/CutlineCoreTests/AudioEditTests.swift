@@ -98,7 +98,9 @@ private func dialogue() -> Project {
     #expect(ids.count == p.tracks[p.trackIndex(track.id)!].clips.count)
     let clips = ids.compactMap { p.clip($0) }
     #expect(clips.first?.audioLead == 0, "no sound before the timeline starts")
-    #expect(clips.dropFirst().allSatisfy { $0.audioLead == 0.125 && $0.audioLag == 0.125 && $0.audioFadeIn == 0.25 && $0.audioFadeOut == 0.25 })
+    // A 0.25 s crossfade at 30 fps overlaps each piece by 4 frames on either side.
+    let half = 4.0 / 30
+    #expect(clips.dropFirst().allSatisfy { abs($0.audioLead - half) < 1e-9 && abs($0.audioLag - half) < 1e-9 && abs($0.audioFadeIn - 2 * half) < 1e-9 && abs($0.audioFadeOut - 2 * half) < 1e-9 })
     try p.validate()
     #expect(throws: EditError.self) { try p.fillRoomTone(TimeRange(0, 1), mediaId: "still", source: source, trackId: track.id) }
 }

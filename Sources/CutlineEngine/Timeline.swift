@@ -19,6 +19,14 @@ public struct BuiltTimeline: @unchecked Sendable {
     /// Clips with temporal effects whose processed picture isn't rendered yet; they play unprocessed.
     public var missingPictures: [String] = []
 
+    /// The span every reader of the timeline reads: `range` (all of it when nil) clamped to the program.
+    /// Split-edit sound can run past the last picture, so the composition may be longer than the video composition's
+    /// instruction; an AVAssetReader left at the composition's own length fails with AVErrorInvalidVideoComposition.
+    public func readRange(_ range: TimeRange? = nil) -> CMTimeRange {
+        let lo = max(0, range?.start ?? 0), hi = min(range?.end ?? duration, duration)
+        return CMTimeRange(start: TimelineBuilder.time(lo), end: TimelineBuilder.time(max(lo, hi)))
+    }
+
     public func playerItem() -> AVPlayerItem {
         let item = AVPlayerItem(asset: composition)
         item.videoComposition = videoComposition

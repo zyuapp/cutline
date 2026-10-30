@@ -12,7 +12,7 @@ public enum PreviewControl {
 final class Session {
     var bundle: ProjectBundle?
     let library = MediaLibrary()
-    var built: (project: Project, transcripts: [String: Transcript], timeline: BuiltTimeline)?
+    var built: (project: Project, transcripts: [String: Transcript], scale: Double, timeline: BuiltTimeline)?
     /// Source channels read for media the project doesn't describe yet, by media id.
     var probedChannels: [String: [SourceChannel]] = [:]
     /// The last loudness measured for a mix, by master stem key, so status can show drift without re-measuring.
@@ -97,16 +97,21 @@ final class Session {
         return try await timeline(for: p)
     }
 
-    func timeline(for p: Project) async throws -> BuiltTimeline {
+    /// The one builder every read path uses (frames, measure, scopes, compare, matte view, loudness, export), so
+    /// what they see is what export renders: motion analyzed, processed pictures and stems rendered first.
+    /// `renderScale` only shrinks the render size. `shared: false` returns a build of its own, for callers that
+    /// change its scene.
+    func timeline(for p: Project, renderScale: Double = 1, shared: Bool = true) async throws -> BuiltTimeline {
         let b = try requireBundle()
         let transcripts = b.transcripts(for: p)
-        if let built, built.project == p, built.transcripts == transcripts, built.timeline.missingStems.isEmpty, built.timeline.missingPictures.isEmpty { return built.timeline }
+        if shared, let built, built.project == p, built.transcripts == transcripts, built.scale == renderScale,
+           built.timeline.missingStems.isEmpty, built.timeline.missingPictures.isEmpty { return built.timeline }
         try await analyzeMotion(p)
         try await ProcessedPicture.renderMissing(p)
         let stems = try stems()
         try await stems.renderMissing(p, transcripts: transcripts, library: library)
-        let t = try await TimelineBuilder.build(p, transcripts: transcripts, library: library, stems: stems)
-        built = (p, transcripts, t)
+        let t = try await TimelineBuilder.build(p, transcripts: transcripts, library: library, renderScale: renderScale, stems: stems)
+        if shared { built = (p, transcripts, renderScale, t) }
         return t
     }
 

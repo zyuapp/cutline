@@ -99,7 +99,8 @@ extension Toolbox {
         ]),
         RecipeSpec(name: "split_edit", group: "Sound", summary: "J or L cut at a cut between two clips.", args: [
             .init("edit", .string, "\"clip_a|clip_b\""),
-            .init("offset", .number, "Seconds: + J cut (b's sound starts early), − L cut (a's sound runs on)"),
+            .init("offset", .number, "Seconds: + J cut (b's sound starts early), − L cut (a's sound runs on); snaps to whole frames"),
+            .init("subframe", .bool, "Keep the offset sample-accurate instead of on the frame grid, default false"),
         ]),
         RecipeSpec(name: "room_tone", group: "Sound", summary: "Fills a range with room tone, looped from varied start points with short crossfades so the repeat isn't heard.", args: [
             .init("start", .time, "Range start"),

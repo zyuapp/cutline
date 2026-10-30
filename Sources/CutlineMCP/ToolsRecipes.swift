@@ -40,8 +40,8 @@ extension Toolbox {
                 for r in fill {
                     let ids = try p.fillRoomTone(r, mediaId: mid, source: source, trackId: trackId, crossfade: crossfade)
                     if ids.isEmpty { skipped += 1; continue }
-                    let x = Project.roomToneCrossfade(crossfade, range: r)
-                    lines.append("\(fmt2(r.start))–\(fmt2(r.end))s: \(ids.count) clip(s)" + (x < crossfade - 1e-9 ? ", crossfade \(fmt2(x))s to fit" : ""))
+                    let x = Project.roomToneCrossfade(crossfade, range: r, fps: p.canvas.fps)
+                    lines.append("\(fmt2(r.start))–\(fmt2(r.end))s: \(ids.count) clip(s)" + (x < crossfade - 1e-9 ? ", crossfade \(fmt(x))s to fit" : abs(x - crossfade) > 1e-9 ? ", crossfade \(fmt(x))s on the frame grid" : ""))
                 }
                 if skipped > 0 { lines.append("\(skipped) gap(s) shorter than a frame left as they are") }
                 return "Room tone from \(mid) \(fmt2(source.start))–\(fmt2(source.end))s on \(trackId), crossfaded \(fmt2(crossfade))s: " + lines.joined(separator: "; ") + ". Set its level with param_set target \(trackId)/* audio.volume or track_update volume."

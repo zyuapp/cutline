@@ -56,12 +56,13 @@ extension Toolbox {
                 let edit = try a.string("edit")
                 let parts = edit.split(separator: "|").map(String.init)
                 guard parts.count == 2 else { throw EditError("edit is \"clip_a|clip_b\"") }
-                let offset = try a.double("offset")
-                return try runEdit(offset >= 0 ? "J cut into \(Toolbox.clipName(parts[1], try session.project()))" : "L cut out of \(Toolbox.clipName(parts[0], try session.project()))", dry: dry) { p in
-                    try p.splitEdit(left: parts[0], right: parts[1], offset: offset)
+                let requested = try a.double("offset")
+                return try runEdit(requested >= 0 ? "J cut into \(Toolbox.clipName(parts[1], try session.project()))" : "L cut out of \(Toolbox.clipName(parts[0], try session.project()))", dry: dry) { p in
+                    let offset = try p.splitEdit(left: parts[0], right: parts[1], offset: requested, subframe: a.bool("subframe", default: false))
+                    let note = p.snapNote(requested, offset)
                     return offset >= 0
-                        ? "\(parts[1])'s sound now starts \(fmt2(offset))s before its picture, under the end of \(parts[0])."
-                        : "\(parts[0])'s sound now continues \(fmt2(-offset))s over the start of \(parts[1])."
+                        ? "\(parts[1])'s sound now starts \(fmt(offset))s before its picture, under the end of \(parts[0])\(note)."
+                        : "\(parts[0])'s sound now continues \(fmt(-offset))s over the start of \(parts[1])\(note)."
                 }
             case "loudness_normalize":
                 if a.bool("off", default: false) {
@@ -162,9 +163,8 @@ extension Toolbox {
     }
 
     func measurePicture(_ p: Project, range: TimeRange?) async throws -> [String] {
-        let b = try session.requireBundle()
         let scale = min(1, 320 / Double(max(p.canvas.width, p.canvas.height)))
-        let built = try await TimelineBuilder.build(p, transcripts: b.transcripts(for: p), library: session.library, renderScale: scale)
+        let built = try await session.timeline(for: p, renderScale: scale)
         let r = try await PictureMeter.measure(built, range: range)
         guard !r.frames.isEmpty else { return ["Picture: no frames in range"] }
         func summary(_ fs: ArraySlice<FrameStats>) -> String {
@@ -235,7 +235,7 @@ extension Toolbox {
         var bare = p
         for i in bare.tracks.indices { bare.tracks[i].clips.removeAll { $0.kind == .text || $0.generatorText(at: min($0.duration * 0.5, max(0.5, $0.duration * 0.3))) != nil } }
         bare.captions.enabled = false
-        let built = try await TimelineBuilder.build(bare, transcripts: transcripts, library: session.library, renderScale: min(1, 640 / Double(max(p.canvas.width, p.canvas.height))))
+        let built = try await session.timeline(for: bare, renderScale: min(1, 640 / Double(max(p.canvas.width, p.canvas.height))))
         let captions = p.captions.enabled ? p.captionSegments(transcripts: transcripts) : []
         let safe = platform?.safe ?? CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9)
         let safeName = platform.map { "\($0.name)'s UI-free area" } ?? "title-safe"

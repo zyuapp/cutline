@@ -94,8 +94,12 @@ extension Toolbox {
                 failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
+        var canvasNotes: [String] = []
         if !imported.isEmpty {
-            try session.edit("Import \(imported.map(\.name).joined(separator: ", "))") { $0.media += imported }
+            try session.edit("Import \(imported.map(\.name).joined(separator: ", "))") { p in
+                p.media += imported
+                canvasNotes = imported.compactMap { p.fitCanvas(toImported: $0) }
+            }
         }
         let analyze = args.bool("analyze", default: true)
         let language = args.optString("language") ?? "en-US"
@@ -123,6 +127,7 @@ extension Toolbox {
         var out: [String] = []
         if !lines.isEmpty { out.append("Media ids (made from file names: lowercase, other characters become \"-\"); use the id after → in every edit:") }
         out += lines.map { "  " + $0 }
+        out += canvasNotes
         if !failures.isEmpty {
             out.append("Not imported (\(failures.count)):")
             out += failures.map { "  " + $0 }

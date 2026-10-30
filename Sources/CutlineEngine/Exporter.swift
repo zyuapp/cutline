@@ -158,8 +158,7 @@ public enum Exporter {
     static func write(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)?) async throws -> LoudnessConform? {
         let comp = built.composition
         let reader = try AVAssetReader(asset: comp)
-        let range = options.range.map { CMTimeRange(start: TimelineBuilder.time($0.start), end: TimelineBuilder.time(min($0.end, built.duration))) }
-            ?? CMTimeRange(start: .zero, duration: TimelineBuilder.time(built.duration))
+        let range = built.readRange(options.range)
         reader.timeRange = range
 
         let size = built.videoComposition.renderSize

@@ -274,7 +274,7 @@ extension Toolbox {
         }
         guard let fx = clip.effects.first(where: { $0.id == effectId }) else { throw EditError("\(clipId) has no effect \(effectId). Effects: \(list)") }
         if fx.type == "mask.matte" { throw EditError("\(effectId) is a track matte; look at its matte track with timeline_frames instead") }
-        let built = try await TimelineBuilder.build(p, transcripts: b.transcripts(for: p), library: session.library)
+        let built = try await session.timeline(for: p, shared: false)
         built.scene.matteView = RenderScene.MatteView(clip: clipId, effect: effectId)
         let frame = 1 / p.canvas.fps
         let times = try Toolbox.sampleTimes(args, start: clip.start, end: max(clip.start + frame, clip.end - frame), defaultCount: 4)

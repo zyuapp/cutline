@@ -28,6 +28,9 @@ public struct Project: Codable, Equatable, Sendable {
     public var timelines: [StoredTimeline]
     /// Submix buses tracks route to with their `output` and `sends`.
     public var buses: [AudioBus] = []
+    /// True once the canvas was chosen deliberately (project_create with canvas arguments, canvas_set, an imported
+    /// timeline); until then the first video import adopts its footage's size and rate.
+    public var canvasSet: Bool?
 
     public init(name: String, canvas: Canvas = Canvas()) {
         formatVersion = Project.currentFormat
@@ -47,7 +50,7 @@ public struct Project: Codable, Equatable, Sendable {
         timelines = []
     }
 
-    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions, sequences, syncGroups, timelineName, timelines, buses }
+    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions, sequences, syncGroups, timelineName, timelines, buses, canvasSet }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -65,6 +68,7 @@ public struct Project: Codable, Equatable, Sendable {
         timelineName = try c.decodeIfPresent(String.self, forKey: .timelineName)
         timelines = try c.decodeIfPresent([StoredTimeline].self, forKey: .timelines) ?? []
         buses = try c.decodeIfPresent([AudioBus].self, forKey: .buses) ?? []
+        canvasSet = try c.decodeIfPresent(Bool.self, forKey: .canvasSet)
     }
 
     public var duration: Seconds {

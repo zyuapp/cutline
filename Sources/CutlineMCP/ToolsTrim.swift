@@ -11,6 +11,7 @@ extension Toolbox {
             "by": Schema.number("Seconds to move: positive is later"),
             "all_tracks": Schema.bool("Ripple every track, default false"),
             "part": Schema.string("video (default, the whole clip) or audio (only its sound)", values: ["video", "audio"]),
+            "subframe": Schema.bool("With part audio: place the sound edge sample-accurately instead of on the frame grid, default false"),
         ], required: ["clip_id"]), label: { a, _ in
             "\((a.optString("mode") ?? "plain").capitalized) trim \(a.optString("clip_id") ?? "")"
         }) { p, args in
@@ -34,7 +35,7 @@ extension Toolbox {
             } else {
                 throw EditError("Pass to or by")
             }
-            if audio { return try p.trimAudio(id, edge: edge, delta: delta) + "." }
+            if audio { return try p.trimAudio(id, edge: edge, delta: delta, subframe: args.bool("subframe", default: false)) + "." }
             return try p.trim(id, mode: mode, edge: edge, delta: delta, allTracks: args.bool("all_tracks", default: false)) + "."
         })
     }

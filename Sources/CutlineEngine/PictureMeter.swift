@@ -43,9 +43,7 @@ public enum PictureMeter {
         output.videoComposition = built.videoComposition
         output.alwaysCopiesSampleData = false
         reader.add(output)
-        if let range {
-            reader.timeRange = CMTimeRange(start: TimelineBuilder.time(range.start), end: TimelineBuilder.time(min(range.end, built.duration)))
-        }
+        reader.timeRange = built.readRange(range)
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline's picture") }
         var frames: [FrameStats] = []
         while let sample = output.copyNextSampleBuffer() {
