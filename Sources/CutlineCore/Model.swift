@@ -165,6 +165,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var effects: [Effect]
     /// Sorted by start, never overlapping.
     public var clips: [Clip]
+    /// Audio role for stem delivery: dialogue, music, effects, or any custom name.
+    public var role: String?
 
     public init(id: String, kind: TrackKind, name: String, muted: Bool = false, hidden: Bool = false, volume: Double = 1, effects: [Effect] = [], clips: [Clip] = []) {
         self.id = id
@@ -177,7 +179,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.clips = clips
     }
 
-    enum CodingKeys: String, CodingKey { case id, kind, name, muted, hidden, volume, effects, clips }
+    enum CodingKeys: String, CodingKey { case id, kind, name, muted, hidden, volume, effects, clips, role }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -189,6 +191,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 1
         effects = try c.decodeIfPresent([Effect].self, forKey: .effects) ?? []
         clips = try c.decodeIfPresent([Clip].self, forKey: .clips) ?? []
+        role = try c.decodeIfPresent(String.self, forKey: .role)
     }
 
     public var end: Seconds { clips.last?.end ?? 0 }

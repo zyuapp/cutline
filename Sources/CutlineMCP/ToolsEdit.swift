@@ -291,6 +291,7 @@ extension Toolbox {
             "hidden": Schema.bool("Hide picture"),
             "volume": Schema.number("0–2, multiplies clip volumes (e.g. 0.25 to duck music under speech)"),
             "remove": Schema.bool("Delete the track and its clips"),
+            "role": Schema.string("Audio role for stem export: dialogue, music, effects, or a custom name"),
         ], required: ["track_id"]), label: { a, p in Toolbox.describeTrackUpdate(a, p) }) { p, args in
             let id = try args.string("track_id")
             guard let i = p.trackIndex(id) else { throw EditError("No track \(id)") }
@@ -302,6 +303,7 @@ extension Toolbox {
             if let v = args.optBool("muted") { p.tracks[i].muted = v }
             if let v = args.optBool("hidden") { p.tracks[i].hidden = v }
             if let v = args.optDouble("volume") { p.tracks[i].volume = v }
+            if let v = args.optString("role") { p.tracks[i].role = v.isEmpty ? nil : v }
             return "Updated track \(id)"
         })
 

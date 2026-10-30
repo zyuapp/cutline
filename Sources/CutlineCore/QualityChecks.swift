@@ -58,3 +58,16 @@ extension Project {
         return out
     }
 }
+
+extension Project {
+    /// Each track's audio role: its own, else dialogue when it carries transcribed speech, music for
+    /// audio tracks without speech, and effects for the rest.
+    public func roles(transcripts: [String: Transcript]) -> [String: String] {
+        let speech = Set(timelineWords(transcripts: transcripts).compactMap { w in locateClip(w.clipId).map { tracks[$0.track].id } })
+        var out: [String: String] = [:]
+        for t in tracks where t.clips.contains(where: { $0.kind == .media || $0.kind == .sequence }) {
+            out[t.id] = t.role ?? (speech.contains(t.id) ? "dialogue" : t.kind == .audio ? "music" : "effects")
+        }
+        return out
+    }
+}
