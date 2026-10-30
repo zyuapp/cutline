@@ -19,9 +19,25 @@ enum EffectRenderer {
         var source: MaskCache.Key? = nil
         /// Encoding color LUTs work in; HDR canvases grade in their own curve so highlights above SDR white survive.
         var gradeSpace: CGColorSpace = ColorCubes.space
+        /// The clip's crop of its source frame, for effects that place source-frame boxes in the picture.
+        var crop = Crop()
     }
 
     static let masks = MaskCache()
+
+    nonisolated(unsafe) static var parsedBoxes: [String: [TrackSample]] = [:]
+    static let boxLock = NSLock()
+
+    /// Decoded `boxes` text, memoized since it is read every frame.
+    static func boxes(_ text: String) -> [TrackSample] {
+        if let hit = boxLock.withLock({ parsedBoxes[text] }) { return hit }
+        let s = ObjectTrack.decodeBoxes(text)
+        boxLock.withLock {
+            if parsedBoxes.count > 32 { parsedBoxes.removeAll() }
+            parsedBoxes[text] = s
+        }
+        return s
+    }
 
     /// Applies a stack through its nodes (see `EffectNodes`); a stack without node parameters runs in order.
     /// `param` returns the (possibly animated) value of fx.<id>.<name>.
@@ -246,6 +262,19 @@ enum EffectRenderer {
             let mask = ctx.source.flatMap { masks.mask(kind: kind, key: $0, image: img, smoothing: Double(n("smoothing"))) } ?? Segmentation.mask(kind, img)
             guard let mask else { return img }
             return Segmentation.apply(mask: mask, to: img, feather: n("feather") * ctx.unit, invert: v("invert").bool ?? false, expand: (n("expand") - n("choke")) * ctx.unit, threshold: n("threshold")).cropped(to: e)
+        case "mask.object":
+            let invert = v("invert").bool ?? false
+            let text = v("boxes").string ?? ""
+            guard let src = ctx.source, let raw = ObjectTrack.box(boxes(text), at: Double(src.tick) / 120) else {
+                return Segmentation.apply(mask: CIImage(color: .black).cropped(to: e), to: img, invert: invert)
+            }
+            let c = ctx.crop
+            let cw = max(0.0001, 1 - c.left - c.right), ch = max(0.0001, 1 - c.top - c.bottom)
+            let box = NormRect(x: (raw.x - c.left) / cw, y: (raw.y - c.top) / ch, width: raw.width / cw, height: raw.height / ch)
+            let kind = Segmentation.Kind.object(box, padding: Double(n("padding") * ctx.unit / max(e.height, 1)), fallback: v("fallback").string != "none", id: "\(v("track").string ?? "")|\(text.hashValue)")
+            let mask = masks.mask(kind: kind, key: src, image: img, smoothing: Double(n("smoothing"))) ?? Segmentation.mask(kind, img)
+            guard let mask else { return img }
+            return Segmentation.apply(mask: mask, to: img, feather: n("feather") * ctx.unit, invert: invert, expand: (n("expand") - n("choke")) * ctx.unit, threshold: n("threshold")).cropped(to: e)
         case "key.chroma":
             let color = v("color").string.flatMap { $0 == "auto" ? nil : RGBA(hex: $0) }
             return ChromaKey.key(img, color: color, tolerance: Double(n("tolerance")), softness: Double(n("softness")), spill: Double(n("spill")), edgeFeather: n("feather") * ctx.unit).cropped(to: e)

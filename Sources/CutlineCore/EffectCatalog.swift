@@ -56,6 +56,7 @@ public enum EffectCatalog {
         ("stylize", "Glow, grain, vignette, shadows and other looks"),
         ("distort", "Warps and lens effects"),
         ("mask", "Limit the clip to a shape; feather, invert, animate"),
+        ("video", "Finishing that reads neighbouring frames: temporal noise reduction and object removal, rendered in the background as a processed copy of the clip's picture"),
         ("audio", "Sound processing on clips, tracks and the master bus: EQ, dynamics, repair (noise, hum, sibilance, clicks), voice cleanup, stereo, space, character"),
     ]
 
@@ -83,6 +84,15 @@ public enum EffectCatalog {
         ParamSpec("feather", .number, .number(0), min: 0, max: 0.3, unit: "of frame height", "Soft edge width"),
         ParamSpec("invert", .bool, .bool(false), "Keep the outside instead of the inside"),
     ]
+
+    /// A tracked object's box over source time, for effects that follow one object.
+    static let trackedBoxSpecs: [ParamSpec] = [
+        ParamSpec("track", .text, .string(""), animatable: false, "media_track id (trk1 or track:trk1); effect_add copies its boxes into boxes"),
+        ParamSpec("boxes", .text, .string(""), animatable: false, "The object's box over source time: \"t x y w h\" groups separated by \";\" (source seconds; frame fractions from the top left), as filled from track"),
+    ]
+
+    /// Effects that read neighbouring frames, rendered ahead of playback as a processed copy of the clip's picture.
+    public static func isTemporal(_ type: String) -> Bool { type.hasPrefix("video.") }
 
     /// Hardening for segmentation mattes, whose raw values are often partly transparent inside the subject.
     static let matteSpecs: [ParamSpec] = [
@@ -274,12 +284,32 @@ public enum EffectCatalog {
             ParamSpec("smoothing", .number, .number(0.4), min: 0, max: 0.95, animatable: false, "Temporal smoothing against flicker"),
             ParamSpec("invert", .bool, .bool(false), "Keep the background instead"),
         ]),
+        EffectType(id: "mask.object", category: "mask", summary: "Automatic roto of one tracked object (a car, a product, a person): keeps the shape Apple foreground segmentation finds inside the media_track box each frame, so effects, keys and grades can isolate it; invert to keep everything else. effect_add {type: \"mask.object\", params: {track: \"trk1\"}} fills boxes from the track", params: trackedBoxSpecs + [
+            ParamSpec("padding", .number, .number(0.02), min: 0, max: 0.2, unit: "of frame height", animatable: false, "Room around the tracked box the object's shape may reach into"),
+            ParamSpec("fallback", .choice(["box", "none"]), .string("box"), "What to keep when no segmented object overlaps the box: the box itself or nothing"),
+        ] + matteSpecs + [
+            ParamSpec("feather", .number, .number(0.003), min: 0, max: 0.05, unit: "of frame height", "Soft edge"),
+            ParamSpec("expand", .number, .number(0), min: -0.05, max: 0.05, unit: "of frame height", "Grow or shrink the mask"),
+            ParamSpec("smoothing", .number, .number(0.3), min: 0, max: 0.95, animatable: false, "Temporal smoothing against flicker"),
+            ParamSpec("invert", .bool, .bool(false), "Keep everything except the object"),
+        ]),
         EffectType(id: "key.chroma", category: "mask", summary: "Green or blue screen key with spill suppression; put a background on the track below", params: [
             ParamSpec("color", .text, .string("auto"), "Screen color as hex, or auto to detect it"),
             ParamSpec("tolerance", .number, .number(0.35), min: 0, max: 1, "How far from the screen color still counts as screen"),
             ParamSpec("softness", .number, .number(0.25), min: 0, max: 1, "Width of the partly transparent edge"),
             ParamSpec("spill", .number, .number(0.8), min: 0, max: 1, "Removes screen-colored light on the subject"),
             ParamSpec("feather", .number, .number(0.001), min: 0, max: 0.02, unit: "of frame height", "Edge softening"),
+        ]),
+        EffectType(id: "video.denoise", category: "video", summary: "Temporal noise reduction like Resolve's Temporal NR: removes grain and sensor noise by aligning neighbouring frames with optical flow and averaging them, leaving out pixels that moved; optional spatial pass. Rendered in the background (the preview shows the unprocessed picture until it's ready; export waits)", params: [
+            ParamSpec("temporal_frames", .number, .number(2), min: 1, max: 5, animatable: false, "Neighbouring frames each side averaged into each frame; more removes more noise and takes longer"),
+            ParamSpec("strength", .number, .number(0.85), min: 0, max: 1, animatable: false, "How much of the averaged picture replaces the original"),
+            ParamSpec("motion_threshold", .number, .number(0.04), min: 0.005, max: 0.5, animatable: false, "How far an aligned neighbour pixel may differ from this frame, beyond the measured noise, before it counts as motion and is left out (fraction of full scale); higher removes more noise but can smear moving edges"),
+            ParamSpec("spatial", .number, .number(0), min: 0, max: 1, animatable: false, "Edge-preserving spatial noise reduction after the temporal pass, for noise left on moving areas"),
+        ]),
+        EffectType(id: "video.remove_object", category: "video", summary: "Object removal like Resolve's Object Removal or a basic Content-Aware Fill: paints a tracked object out with the background from other frames where it shows (aligned to this frame, temporal median), and fills what no frame shows by diffusion. Use recipe remove_object; rendered in the background", params: trackedBoxSpecs + [
+            ParamSpec("padding", .number, .number(0.02), min: 0, max: 0.2, unit: "of frame height", animatable: false, "Room around the tracked box that is replaced too, covering shadows, motion blur and tracking slop"),
+            ParamSpec("window", .number, .number(1.5), min: 0.2, max: 4, unit: "seconds", animatable: false, "How far before and after each frame to look for the background"),
+            ParamSpec("feather", .number, .number(0.004), min: 0, max: 0.05, unit: "of frame height", animatable: false, "Soft edge between the fill and the picture"),
         ]),
         EffectType(id: "audio.eq", category: "audio", summary: "Equalizer: low cut, low shelf, mid bell, high shelf, high cut", params: [
             num("highpass_hz", 0, 0, 2000, "Hz", "Remove rumble below this frequency; 0 off. 80 is typical for voice"),
@@ -333,7 +363,7 @@ public enum EffectCatalog {
 
     /// The base for effect ids: "blur.gaussian" → "blur", "stylize.drop_shadow" → "shadow".
     public static func shortName(_ type: String) -> String {
-        let overrides = ["blur.gaussian": "blur", "color.adjust": "grade", "color.monochrome": "mono", "color.grade": "wheels"]
+        let overrides = ["blur.gaussian": "blur", "color.adjust": "grade", "color.monochrome": "mono", "color.grade": "wheels", "video.remove_object": "removal"]
         if let o = overrides[type] { return o }
         if ProAudioCatalog.isPlugin(type) {
             let parts = type.split(separator: ".")
@@ -350,6 +380,7 @@ public enum EffectCatalog {
             "color.adjust": "color correction", "color.grade": "color wheels", "color.wheels": "primary grade", "color.curves": "curves", "color.hsl": "HSL", "color.look": "look", "color.lut": "LUT", "color.cdl": "CDL", "color.monochrome": "black and white", "color.invert": "invert",
             "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask", "mask.person": "person mask", "mask.subject": "subject mask", "key.chroma": "chroma key",
             "distort.bulge": "bulge", "distort.twirl": "twirl",
+            "mask.object": "object mask", "video.denoise": "noise reduction", "video.remove_object": "object removal",
         ]
         return titles[type] ?? shortName(type)
     }

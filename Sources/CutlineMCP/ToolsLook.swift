@@ -67,7 +67,7 @@ extension Toolbox {
             return lines.joined(separator: "\n")
         })
 
-        addEdit(EditTool(name: "effect_add", description: "Add, update, reorder or remove an effect on clips or tracks. Effects stack in order on each clip: blur, sharpen, color correction, black and white, glow, vignette, film grain, pixelate, posterize, drop shadow, border, distortions, and rect/ellipse masks (feathered, inverted, animatable). Effects on an adjustment layer (clip_add adjustment:true) apply to everything below it. Audio effects (audio.eq, compressor, gate, limiter, voice_isolation, reverb, delay, character, pitch, and repair: denoise, deess, dehum, declick, plus pan and width) go on a clip (its sound only), a track (every clip's sound on it) or the master; they are rendered offline, so preview and export match. Passing an existing id updates that effect. Animate parameters afterwards with param_set path fx.<id>.<param>. Call catalog for each type's parameters.", schema: Schema.object([
+        addEdit(EditTool(name: "effect_add", description: "Add, update, reorder or remove an effect on clips or tracks. Effects stack in order on each clip: blur, sharpen, color correction, black and white, glow, vignette, film grain, pixelate, posterize, drop shadow, border, distortions, and rect/ellipse masks (feathered, inverted, animatable). Effects on an adjustment layer (clip_add adjustment:true) apply to everything below it. Audio effects (audio.eq, compressor, gate, limiter, voice_isolation, reverb, delay, character, pitch, and repair: denoise, deess, dehum, declick, plus pan and width) go on a clip (its sound only), a track (every clip's sound on it) or the master; they are rendered offline, so preview and export match. Finishing: video.denoise (temporal noise reduction, rendered in the background) and mask.object (roto of a media_track object: params {track: \"trk1\"}). Passing an existing id updates that effect. Animate parameters afterwards with param_set path fx.<id>.<param>. Call catalog for each type's parameters.", schema: Schema.object([
             "target": targetSchema,
             "type": Schema.string("Effect type", values: EffectCatalog.listed.map(\.id)),
             "params": ["type": "object", "description": "Parameter values; unset ones use catalog defaults"],
@@ -76,7 +76,7 @@ extension Toolbox {
             "mix": Schema.number("0 original … 1 full effect"),
             "enabled": Schema.bool("Turn on or off"),
             "remove": Schema.bool("Remove the effect with this id (or every effect of this type)"),
-        ], required: ["target"]), label: { a, p in Toolbox.describeEffectEdit(a, p) }) { p, args in
+        ], required: ["target"]), label: { a, p in Toolbox.describeEffectEdit(a, p) }) { [unowned self] p, args in
             let targets = try Toolbox.resolveTargets(args.raw["target"], p)
             var lines: [String] = []
             for target in targets {
@@ -97,6 +97,7 @@ extension Toolbox {
                         for key in c.anim.keys where key.hasPrefix("fx.\(gone).") { c.anim[key] = nil }
                     }
                     for (path, v) in plan.values { try c.set(path, v) }
+                    if args.raw["params"]?.object?["track"] != nil { try self.fillTrackedBoxes(&c, effectId: plan.effectId, project: p) }
                     p.tracks[loc.track].clips[loc.clip] = c
                     lines.append(Toolbox.describePlan(plan, effects: c.effects, owner: id))
                 case .track(let i):

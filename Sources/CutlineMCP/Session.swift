@@ -18,6 +18,8 @@ final class Session {
     /// The last loudness measured for a mix, by master stem key, so status can show drift without re-measuring.
     var measuredMix: [String: LoudnessReport] = [:]
     let jobs = JobBoard()
+    /// Processed-picture renders queued on `jobs`, by request key.
+    let pictureJobs = KeySet()
     /// Jobs the last `open` re-queued from an exited server.
     var resumed: [String] = []
 
@@ -97,8 +99,9 @@ final class Session {
     func timeline(for p: Project) async throws -> BuiltTimeline {
         let b = try requireBundle()
         let transcripts = b.transcripts(for: p)
-        if let built, built.project == p, built.transcripts == transcripts, built.timeline.missingStems.isEmpty { return built.timeline }
+        if let built, built.project == p, built.transcripts == transcripts, built.timeline.missingStems.isEmpty, built.timeline.missingPictures.isEmpty { return built.timeline }
         try await analyzeMotion(p)
+        try await ProcessedPicture.renderMissing(p)
         let stems = try stems()
         try await stems.renderMissing(p, transcripts: transcripts, library: library)
         let t = try await TimelineBuilder.build(p, transcripts: transcripts, library: library, stems: stems)

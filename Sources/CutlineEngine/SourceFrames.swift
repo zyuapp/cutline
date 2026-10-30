@@ -105,6 +105,13 @@ final class SourceFrames {
         return p < 0.5 ? a : b
     }
 
+    /// The next decoded frame of a forward cursor in presentation order, for callers that read every frame instead of
+    /// querying times; nil at the end. Don't mix with `bracket` on the same cursor.
+    func next() throws -> Frame? {
+        guard forward else { return nil }
+        return try pull()
+    }
+
     /// A buffer from this cursor's pool with `image` rendered into it.
     func render(_ image: CIImage) throws -> CVPixelBuffer {
         var pb: CVPixelBuffer?

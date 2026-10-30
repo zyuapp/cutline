@@ -217,7 +217,10 @@ public final class RenderScene: @unchecked Sendable {
         guard var layer else { return nil }
         // Effects run before the clip is scaled, so lengths are divided by the scale to stay in final frame units.
         var ctx = EffectRenderer.Context(unit: unit / max(CGFloat(xf.scale), 0.01), time: t, opaque: opaque, gradeSpace: gradeSpace)
-        if clip.kind == .media, let mid = clip.mediaId { ctx.source = MaskCache.Key(mediaId: mid, time: images[mid] != nil ? 0 : clip.sourceTime(atTimeline: t)) }
+        if clip.kind == .media, let mid = clip.mediaId {
+            ctx.source = MaskCache.Key(mediaId: mid, time: images[mid] != nil ? 0 : clip.sourceTime(atTimeline: t))
+            ctx.crop = xf.crop
+        }
         if let view = matteView, view.clip == clip.id {
             guard let m = EffectRenderer.matte(clip.effects, id: view.effect, to: layer, context: ctx, param: param) else { return nil }
             layer = m

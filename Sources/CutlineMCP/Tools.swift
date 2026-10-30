@@ -88,7 +88,8 @@ final class Toolbox {
             let p = try session.edit(e.label(args, before)) { summary = try e.apply(&$0, args) }
             let analyzed = try await self.session.analyzeMotion(p)
             if !analyzed.isEmpty { try? self.session.sendPreview(["action": "rebuild"]) }
-            return .text(summary + Toolbox.changesText(p, before) + self.newIssues(p, before) + (analyzed.isEmpty ? "" : "\nAnalyzed camera motion of " + analyzed.joined(separator: ", ")) + "\n" + self.footer(p))
+            let queued = self.session.queuePictures(p).map { "\n" + $0 }.joined()
+            return .text(summary + Toolbox.changesText(p, before) + self.newIssues(p, before) + (analyzed.isEmpty ? "" : "\nAnalyzed camera motion of " + analyzed.joined(separator: ", ")) + queued + "\n" + self.footer(p))
         })
     }
 

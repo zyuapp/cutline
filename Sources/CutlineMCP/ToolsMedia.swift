@@ -174,7 +174,7 @@ extension Toolbox {
             "start": Schema.time("Range start for count"),
             "end": Schema.time("Range end for count"),
             "size": Schema.string("small (default) or large for detail checks such as text legibility", values: ["small", "large"]),
-            "view": Schema.string("picture (default), or matte: white where one clip effect acts and black where it doesn't (its limit window and/or qualifier, mask, chroma key or person/subject mask), to check a key or secondary; needs clip, and effect unless the clip has one masked effect", values: ["picture", "matte"]),
+            "view": Schema.string("picture (default), or matte: white where one clip effect acts and black where it doesn't (its limit window and/or qualifier, mask, chroma key or person/subject/object mask), to check a key or secondary; needs clip, and effect unless the clip has one masked effect", values: ["picture", "matte"]),
             "clip": Schema.string("For view matte: the clip whose effect to show"),
             "effect": Schema.string("For view matte: the effect id on that clip"),
         ])) { [unowned self] args in

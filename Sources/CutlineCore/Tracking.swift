@@ -98,3 +98,42 @@ public struct ObjectTrack: Codable, Equatable, Sendable {
         }
     }
 }
+
+extension ObjectTrack {
+    /// Samples as "t x y w h" groups separated by ";", the form mask.object and video.remove_object keep them in.
+    /// Samples that linear interpolation between the kept ones reproduces within `tolerance` are dropped.
+    public static func encodeBoxes(_ samples: [TrackSample], tolerance: Double = 0.002) -> String {
+        let s = samples.sorted { $0.t < $1.t }
+        guard s.count > 2 else { return s.map(format).joined(separator: ";") }
+        var kept = [0]
+        var anchor = 0
+        for end in 2..<s.count {
+            let fits = (anchor + 1..<end).allSatisfy { k in
+                guard let b = box(in: [s[anchor], s[end]], at: s[k].t) else { return false }
+                return max(abs(b.x - s[k].box.x), abs(b.y - s[k].box.y), abs(b.width - s[k].box.width), abs(b.height - s[k].box.height)) <= tolerance
+            }
+            if !fits {
+                anchor = end - 1
+                kept.append(anchor)
+            }
+        }
+        kept.append(s.count - 1)
+        return kept.map { format(s[$0]) }.joined(separator: ";")
+    }
+
+    static func format(_ s: TrackSample) -> String {
+        String(format: "%.3f %.4f %.4f %.4f %.4f", s.t, s.box.x, s.box.y, s.box.width, s.box.height)
+    }
+
+    /// Parses `encodeBoxes` text; malformed groups are skipped.
+    public static func decodeBoxes(_ text: String) -> [TrackSample] {
+        text.split(separator: ";").compactMap { group -> TrackSample? in
+            let v = group.split(separator: " ").compactMap { Double($0) }
+            guard v.count == 5, v[3] > 0, v[4] > 0 else { return nil }
+            return TrackSample(t: v[0], box: NormRect(x: v[1], y: v[2], width: v[3], height: v[4]), confidence: 1)
+        }.sorted { $0.t < $1.t }
+    }
+
+    /// The box at source time `t` between decoded samples; nil outside them.
+    public static func box(_ samples: [TrackSample], at t: Seconds) -> NormRect? { box(in: samples, at: t) }
+}
