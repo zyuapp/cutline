@@ -215,6 +215,7 @@ extension Toolbox {
             result = try Importer.edl(text, fps: edlFps) { ref in
                 let candidates = [ref, base.appendingPathComponent(ref).path]
                 guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else { return nil }
+                if let known = media[path] { return known }
                 let id = Toolbox.mediaId(for: URL(fileURLWithPath: path), existing: Set(media.values))
                 media[path] = id
                 return id

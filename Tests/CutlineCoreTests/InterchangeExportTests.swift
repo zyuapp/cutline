@@ -288,7 +288,7 @@ private func expectSameV1(_ p: Project, _ q: Project, levels: Bool = true, trans
         let edl = source.edl(title: name)
         if edl.contains("001  ") {
             let viaEDL = try Importer.edl(edl, fps: source.canvas.fps) { _ in nil }.project
-            #expect(timing(viaEDL).first == timing(source).first, "\(name) via EDL")
+            #expect(timing(viaEDL).first == timing(source.flattenedSequences()).first, "\(name) via EDL")
         }
     }
 }
