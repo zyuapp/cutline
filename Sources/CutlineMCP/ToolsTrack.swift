@@ -31,13 +31,14 @@ extension Toolbox {
                     let shotEnd = b.analysis(ShotAnalysis.self, id, "shots")?.shot(at: at)?.end ?? b.visualAnalysis(id).flatMap { v in ([m.duration] + v.sceneCuts).filter { $0 > at }.min() }
                     end = min(m.duration, shotEnd ?? at + 10)
                 }
-                let samples = try await PlanarTracker.track(media: m.url, from: at, to: end!, corners: pts.map { SIMD2($0[0], $0[1]) }, fps: min(30, m.fps))
+                let run = try await PlanarTracker.run(media: m.url, from: at, to: end!, corners: pts.map { SIMD2($0[0], $0[1]) }, fps: min(30, m.fps), cuts: b.visualAnalysis(id)?.sceneCuts ?? [])
+                let samples = run.samples
                 var n = tracks.count + 1
                 while tracks.contains(where: { $0.id == "trk\(n)" }) { n += 1 }
                 let track = ObjectTrack(id: "trk\(n)", mediaId: id, label: args.optString("label") ?? "surface", samples: samples)
                 tracks.append(track)
                 try b.saveAnalysis(tracks, id, "tracks")
-                return .text(Toolbox.describeTrack(track) + "\nSurface track: corner-pin a clip onto it with recipe follow {clip, target: \"track:\(track.id)\"}; its box also works as bind source track:\(track.id).x|y|width|height.")
+                return .text(Toolbox.describeTrack(track) + (run.cut.map { "\nStopped at " + Toolbox.cutNote($0) + "; track the next shot separately." } ?? "") + "\nSurface track: corner-pin a clip onto it with recipe follow {clip, target: \"track:\(track.id)\"}; its box also works as bind source track:\(track.id).x|y|width|height.")
             }
             var box: NormRect
             if let f = args.optInt("face") {
@@ -54,14 +55,20 @@ extension Toolbox {
                 let shotEnd = b.analysis(ShotAnalysis.self, id, "shots")?.shot(at: at)?.end ?? b.visualAnalysis(id).flatMap { v in ([m.duration] + v.sceneCuts).filter { $0 > at }.min() }
                 end = min(m.duration, shotEnd ?? at + 10)
             }
-            let samples = try await ObjectTracker.track(media: m.url, from: at, to: end!, box: box)
+            let run = try await ObjectTracker.run(media: m.url, from: at, to: end!, box: box, cuts: b.visualAnalysis(id)?.sceneCuts ?? [])
+            let samples = run.samples
             var n = tracks.count + 1
             while tracks.contains(where: { $0.id == "trk\(n)" }) { n += 1 }
             let track = ObjectTrack(id: "trk\(n)", mediaId: id, label: args.optString("label") ?? "object", samples: ObjectTrack.smoothed(samples, sigma: 0.1))
             tracks.append(track)
             try b.saveAnalysis(tracks, id, "tracks")
-            return .text(Toolbox.describeTrack(track) + "\nUse it with recipe follow {clip, target: \"track:\(track.id)\"} or param_set bind {\"transform.x\": {\"source\": \"track:\(track.id).x\"}}.")
+            return .text(Toolbox.describeTrack(track) + (run.cut.map { "\nStopped at " + Toolbox.cutNote($0) + "; track the next shot separately." } ?? "") + "\nUse it with recipe follow {clip, target: \"track:\(track.id)\"} or param_set bind {\"transform.x\": {\"source\": \"track:\(track.id).x\"}}.")
         })
+    }
+
+    /// "the cut at 12.34s (scene analysis)".
+    static func cutNote(_ b: ShotBoundary) -> String {
+        "the cut at \(fmt2(b.time))s" + (b.fromAnalysis ? " (scene analysis)" : " (detected from the frames)")
     }
 
     static func describeTrack(_ t: ObjectTrack) -> String {

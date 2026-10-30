@@ -9,8 +9,14 @@ import Vision
 public enum PlanarTracker {
     static let analysisSize = CGSize(width: 960, height: 960)
 
-    /// `corners` are tl, tr, br, bl at `start`, as frame fractions with a top-left origin.
-    public static func track(media url: URL, from start: Seconds, to end: Seconds, corners: [SIMD2<Double>], fps: Double = 25, progress: (@Sendable (Double) -> Void)? = nil) async throws -> [TrackSample] {
+    /// `corners` are tl, tr, br, bl at `start`, as frame fractions with a top-left origin. Tracking stops at a cut
+    /// (`cuts` from scene analysis, or detected from the frames).
+    public static func track(media url: URL, from start: Seconds, to end: Seconds, corners: [SIMD2<Double>], fps: Double = 25, cuts: [Seconds] = [], progress: (@Sendable (Double) -> Void)? = nil) async throws -> [TrackSample] {
+        try await run(media: url, from: start, to: end, corners: corners, fps: fps, cuts: cuts, progress: progress).samples
+    }
+
+    /// `track`, saying where it stopped at a cut.
+    public static func run(media url: URL, from start: Seconds, to end: Seconds, corners: [SIMD2<Double>], fps: Double = 25, cuts: [Seconds] = [], progress: (@Sendable (Double) -> Void)? = nil) async throws -> TrackRun {
         guard corners.count == 4 else { throw EditError("Give four corners: top-left, top-right, bottom-right, bottom-left") }
         let forward = end >= start
         let frames = try await SourceFrames.open(url: url, maxSize: analysisSize, forward: forward, from: start)
@@ -18,15 +24,21 @@ public enum PlanarTracker {
         let n = Int((abs(end - start) / step + 1e-6).rounded(.down))
         let times = (0...n).map { start + (forward ? 1 : -1) * Double($0) * step }
         let size = SIMD2(Double(frames.size.width), Double(frames.size.height))
-        let samples = try await runBlocking { cancelled -> [TrackSample] in
+        let result = try await runBlocking { cancelled -> TrackRun in
+            let shots = TrackerShotGuard(cuts: cuts, frameDuration: max(step, frames.frameDuration))
             var quad = corners.map { $0 * size }
             var samples = [sample(start, quad, size: size, confidence: 1)]
             var prev = try frames.frame(near: start)
+            var cut = shots.feed(prev.buffer, time: prev.time)
             let reference = (buffer: prev.buffer, quad: quad)
             for (k, t) in times.enumerated().dropFirst() {
                 if cancelled() { throw CancellationError() }
                 let next = try frames.frame(near: t)
                 if next.time != prev.time {
+                    if let b = shots.feed(next.buffer, time: next.time) {
+                        cut = b
+                        break
+                    }
                     guard let h = homography(from: prev.buffer, to: next.buffer, inside: quad, size: size) else {
                         samples.append(sample(t, quad, size: size, confidence: 0))
                         break
@@ -42,10 +54,13 @@ public enum PlanarTracker {
                 samples.append(sample(t, quad, size: size, confidence: 1))
                 if k % 10 == 0 { progress?(Double(k) / Double(times.count)) }
             }
-            return samples
+            if cut == nil { cut = shots.finish() }
+            if let cut { samples.removeAll { forward ? $0.t >= cut.time : $0.t <= cut.time } }
+            if samples.isEmpty { samples = [sample(start, corners.map { $0 * size }, size: size, confidence: 1)] }
+            return TrackRun(samples: samples, cut: cut)
         }
         progress?(1)
-        return samples.sorted { $0.t < $1.t }
+        return TrackRun(samples: result.samples.sorted { $0.t < $1.t }, cut: result.cut)
     }
 
     static func sample(_ t: Seconds, _ quad: [SIMD2<Double>], size: SIMD2<Double>, confidence: Double) -> TrackSample {

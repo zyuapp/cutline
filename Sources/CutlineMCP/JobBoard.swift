@@ -328,7 +328,7 @@ extension Session {
             return { try await work(ctx.progress) }
         }
         if job.features == [Session.pictureJob] {
-            let requests = ProcessedPicture.requests(p).filter { $0.media.id == job.mediaId && ProcessedPicture.cached($0) == nil && (job.keys?.contains($0.key) ?? true) }
+            let requests = ProcessedPicture.requests(p, cuts: Session.sceneCuts(p, b)).filter { $0.media.id == job.mediaId && ProcessedPicture.cached($0) == nil && (job.keys?.contains($0.key) ?? true) }
             guard !requests.isEmpty else { return { "nothing left to render" } }
             let work = pictureWork(requests)
             return { try await work(ctx.progress) }

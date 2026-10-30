@@ -5,12 +5,21 @@ import Foundation
 extension Session {
     static let pictureJob = "picture"
 
+    /// Scene cuts from analysis of the project's media, by media id, so temporal filters stay inside a shot.
+    static func sceneCuts(_ p: Project, _ b: ProjectBundle) -> [String: [Seconds]] {
+        var out: [String: [Seconds]] = [:]
+        for m in p.media where m.hasVideo && !m.isImage {
+            if let cuts = b.visualAnalysis(m.id)?.sceneCuts, !cuts.isEmpty { out[m.id] = cuts }
+        }
+        return out
+    }
+
     /// Queues background renders of the processed pictures `p` needs that aren't cached or queued yet; one line per clip.
     func queuePictures(_ p: Project) -> [String] {
         guard let b = bundle else { return [] }
         var lines: [String] = []
         let queued = Set(jobs.active.filter { $0.features == [Session.pictureJob] }.flatMap { $0.keys ?? [] })
-        for r in ProcessedPicture.requests(p) where ProcessedPicture.cached(r) == nil && !queued.contains(r.key) {
+        for r in ProcessedPicture.requests(p, cuts: Session.sceneCuts(p, b)) where ProcessedPicture.cached(r) == nil && !queued.contains(r.key) {
             let id = jobs.enqueue(r.media.id, named: [Session.pictureJob], bundle: b.url, keys: [r.key])
             lines.append("\(r.summary) on \(r.clipId) renders in the background (\(id), \(fmt1(r.range.duration))s of source); the preview plays the unprocessed picture until it is done, and timeline_frames and export wait for it.")
         }
@@ -75,9 +84,12 @@ extension Toolbox {
                 samples = [TrackSample(t: lo, box: box, confidence: 1), TrackSample(t: hi, box: box, confidence: 1)]
                 note = "Fixed box over \(fmt2(lo))–\(fmt2(hi))s."
             } else {
-                let forward = hi - src > 0.02 ? try await ObjectTracker.track(media: m.url, from: src, to: hi, box: box, fps: min(30, max(10, m.fps))) : [TrackSample(t: src, box: box, confidence: 1)]
-                let backward = src - lo > 0.02 ? try await ObjectTracker.track(media: m.url, from: src, to: lo, box: box, fps: min(30, max(10, m.fps))) : []
-                let all = (backward.filter { $0.t < src - 1e-6 } + forward).sorted { $0.t < $1.t }
+                let cuts = b.visualAnalysis(mid)?.sceneCuts ?? []
+                let fps = min(30, max(10, m.fps))
+                let forward = hi - src > 0.02 ? try await ObjectTracker.run(media: m.url, from: src, to: hi, box: box, fps: fps, cuts: cuts) : TrackRun(samples: [TrackSample(t: src, box: box, confidence: 1)], cut: nil)
+                let backward = src - lo > 0.02 ? try await ObjectTracker.run(media: m.url, from: src, to: lo, box: box, fps: fps, cuts: cuts) : TrackRun(samples: [], cut: nil)
+                let before: [TrackSample] = backward.samples.filter { $0.t < src - 1e-6 }
+                let all: [TrackSample] = (before + forward.samples).sorted { $0.t < $1.t }
                 var tracks = b.analysis([ObjectTrack].self, mid, "tracks") ?? []
                 var n = tracks.count + 1
                 while tracks.contains(where: { $0.id == "trk\(n)" }) { n += 1 }
@@ -89,6 +101,8 @@ extension Toolbox {
                 }
                 samples = track.samples.filter { $0.confidence >= ObjectTrack.lostConfidence }
                 note = Toolbox.describeTrack(track)
+                let stops = [backward.cut, forward.cut].compactMap { $0 }.map { Toolbox.cutNote($0) }
+                if !stops.isEmpty { note += " Tracking stopped at " + stops.joined(separator: " and ") + "; the object is removed only inside this shot, and the fill never takes pixels from across a cut." }
             }
         }
         guard !samples.isEmpty else { throw EditError("The object's track has no confident samples; give a tighter box or a media_track track") }

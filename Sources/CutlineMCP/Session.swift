@@ -109,7 +109,7 @@ final class Session {
         if shared, let built, built.project == p, built.transcripts == transcripts, built.scale == renderScale,
            built.timeline.missingStems.isEmpty, built.timeline.missingPictures.isEmpty { return built.timeline }
         try await analyzeMotion(p)
-        try await ProcessedPicture.renderMissing(p)
+        try await ProcessedPicture.renderMissing(p, cuts: Session.sceneCuts(p, b))
         let stems = try stems()
         try await stems.renderMissing(p, transcripts: transcripts, library: library)
         let t = try await TimelineBuilder.build(p, transcripts: transcripts, library: library, renderScale: renderScale, stems: stems)
