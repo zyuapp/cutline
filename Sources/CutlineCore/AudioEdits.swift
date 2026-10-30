@@ -46,7 +46,10 @@ extension Project {
 
     /// Makes the cut between two adjacent clips a split edit. Positive `offset` is a J cut
     /// (the second clip's sound starts early); negative is an L cut (the first clip's sound runs long).
-    public mutating func splitEdit(left leftId: String, right rightId: String, offset: Seconds) throws {
+    /// The offset snaps to whole frames unless `subframe`; returns the offset applied.
+    @discardableResult
+    public mutating func splitEdit(left leftId: String, right rightId: String, offset requested: Seconds, subframe: Bool = false) throws -> Seconds {
+        let offset = subframe ? requested : canvas.snap(requested)
         guard let l = locateClip(leftId), let r = locateClip(rightId) else { throw EditError("Both clips must exist") }
         guard l.track == r.track else { throw EditError("\(leftId) and \(rightId) are on different tracks") }
         let a = tracks[l.track].clips[l.clip], b = tracks[r.track].clips[r.clip]
@@ -65,6 +68,14 @@ extension Project {
         try checkClipFits(nb, track: track)
         tracks[l.track].clips[l.clip] = na
         tracks[r.track].clips[r.clip] = nb
+        return offset
+    }
+
+    /// " (snapped to 14 frames, 0.583s)" when snapping moved `requested`, else "".
+    public func snapNote(_ requested: Seconds, _ applied: Seconds) -> String {
+        guard abs(requested - applied) > 1e-6 else { return "" }
+        let frames = Int((abs(applied) * canvas.fps).rounded())
+        return " (snapped from \(fmt(requested))s to \(frames) frame\(frames == 1 ? "" : "s") at \(fmt(canvas.fps))fps, \(fmt(applied))s; subframe:true keeps it sample-accurate)"
     }
 }
 
@@ -91,8 +102,9 @@ extension Project {
     /// Moves the start or end of a clip's sound by `delta` timeline seconds (positive is later), leaving its picture.
     /// When that edge meets a touching clip with sound on the same track, the cut between the two sounds rolls:
     /// the neighbour's sound shortens or lengthens by the same amount, so the two never play over each other.
+    /// The new sound edge lands on the frame grid unless `subframe`.
     @discardableResult
-    public mutating func trimAudio(_ id: String, edge: ClipEdge, delta: Seconds) throws -> String {
+    public mutating func trimAudio(_ id: String, edge: ClipEdge, delta: Seconds, subframe: Bool = false) throws -> String {
         guard let loc = locateClip(id) else { throw EditError("No clip \(id)") }
         guard abs(delta) > eps else { return "No change" }
         let clips = tracks[loc.track].clips
@@ -102,22 +114,25 @@ extension Project {
             ? (loc.clip > 0 ? clips[loc.clip - 1] : nil).flatMap { abs($0.end - c.start) < 1e-3 ? $0 : nil }
             : (loc.clip + 1 < clips.count ? clips[loc.clip + 1] : nil).flatMap { abs($0.start - c.end) < 1e-3 ? $0 : nil }
         if let n = neighbour, hasSound(n) {
-            if edge == .start {
-                try splitEdit(left: n.id, right: id, offset: c.audioLead - delta)
-            } else {
-                try splitEdit(left: id, right: n.id, offset: -(c.audioLag + delta))
-            }
+            let requested = edge == .start ? c.audioLead - delta : -(c.audioLag + delta)
+            let applied = edge == .start
+                ? try splitEdit(left: n.id, right: id, offset: requested, subframe: subframe)
+                : try splitEdit(left: id, right: n.id, offset: requested, subframe: subframe)
+            let note = snapNote(requested, applied)
             let u = clip(id)!, o = clip(n.id)!
             let cut = edge == .start ? u.audioRange.start : u.audioRange.end
             let (out, inc) = edge == .start ? (o, u) : (u, o)
-            return "Rolled the sound cut between \(out.id) and \(inc.id) to \(fmt2(cut))s: \(out.id)'s sound ends and \(inc.id)'s begins there (pictures cut at \(fmt2(inc.start))s)"
+            return "Rolled the sound cut between \(out.id) and \(inc.id) to \(fmt2(cut))s: \(out.id)'s sound ends and \(inc.id)'s begins there (pictures cut at \(fmt2(inc.start))s)" + note
         }
         var u = c
-        if edge == .start { u.audioLead -= delta } else { u.audioLag += delta }
+        let requested = edge == .start ? c.audioLead - delta : c.audioLag + delta
+        let applied = subframe ? requested : canvas.snap(requested)
+        if edge == .start { u.audioLead = applied } else { u.audioLag = applied }
+        guard abs(applied - (edge == .start ? c.audioLead : c.audioLag)) > eps else { return "No change: \(fmt(abs(delta)))s is under half a frame" + snapNote(requested, applied) }
         guard u.audioRange.duration > 0.05 else { throw EditError("That would leave \(id) with no sound") }
         try checkClipFits(u, track: tracks[loc.track])
         tracks[loc.track].clips[loc.clip] = u
-        return "\(id)'s sound now runs \(fmt2(u.audioRange.start))–\(fmt2(u.audioRange.end)) (picture \(fmt2(u.start))–\(fmt2(u.end)))"
+        return "\(id)'s sound now runs \(fmt2(u.audioRange.start))–\(fmt2(u.audioRange.end)) (picture \(fmt2(u.start))–\(fmt2(u.end)))" + snapNote(requested, applied)
     }
 
     /// Butt-joined pieces filling `range` from the room-tone span `source`. Each piece reads a different part of the
@@ -146,8 +161,14 @@ extension Project {
     }
 
     /// The crossfade room tone uses for `range`: `crossfade`, shortened to half the range so short gaps get short fades.
-    public static func roomToneCrossfade(_ crossfade: Seconds, range: TimeRange) -> Seconds {
-        min(max(0, crossfade), range.duration / 2)
+    /// With `fps`, half the crossfade (each piece's sound overlap) is a whole number of frames, unless that half is
+    /// under a frame (gaps that short keep their sample-accurate declick).
+    public static func roomToneCrossfade(_ crossfade: Seconds, range: TimeRange, fps: Double? = nil) -> Seconds {
+        let x = min(max(0, crossfade), range.duration / 2)
+        guard let fps, fps > 0, x / 2 * fps >= 1 - 1e-9 else { return x }
+        var frames = (x / 2 * fps).rounded()
+        if 2 * frames / fps > range.duration / 2 + 1e-9 { frames = (x / 2 * fps + 1e-9).rounded(.down) }
+        return 2 * frames / fps
     }
 
     /// Fills a timeline range with room tone on `trackId`: clips of `mediaId` from the quiet `source` span, crossfaded
@@ -160,7 +181,7 @@ extension Project {
         guard source.start >= -eps, source.end <= m.duration + eps, source.duration > 0 else {
             throw EditError("The room-tone span \(fmt2(source.start))–\(fmt2(source.end))s isn't inside \(mediaId) (0–\(fmt2(m.duration))s)")
         }
-        let x = Project.roomToneCrossfade(crossfade, range: range)
+        let x = Project.roomToneCrossfade(crossfade, range: range, fps: canvas.fps)
         var ids: [String] = []
         for piece in try roomTonePieces(range: range, source: source, crossfade: x) {
             var c = Clip(id: Project.newClipId(), kind: .media, name: "Room tone", mediaId: mediaId, start: piece.start, duration: piece.duration, sourceIn: piece.sourceIn)

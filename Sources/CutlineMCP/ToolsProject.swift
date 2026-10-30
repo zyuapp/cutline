@@ -23,7 +23,7 @@ extension Toolbox {
             "preset": Schema.string("Canvas size preset: landscape 1920×1080, vertical 1080×1920 (Shorts/Reels/TikTok), square 1080×1080, portrait 1080×1350, uhd 3840×2160", values: CanvasPreset.allCases.map(\.rawValue)),
             "width": Schema.integer("Canvas width in pixels (overrides preset)"),
             "height": Schema.integer("Canvas height in pixels (overrides preset)"),
-            "fps": Schema.number("Frame rate, default 30"),
+            "fps": Schema.number("Frame rate; without size or rate arguments the first video imported sets both (default 1920×1080 @30)"),
             "background": Schema.string("Background color as hex, default #000000"),
             "color_space": Schema.string("Output color: rec709 (SDR, default), p3 (Display P3), rec2020_hlg or rec2020_pq (HDR, exports as 10-bit HEVC)", values: WorkingSpace.allCases.map(\.rawValue)),
             "timecode_start": Schema.string("Timecode of the first timeline frame in exports, \"hh:mm:ss:ff\" (drop frame at 29.97 and 59.94); default 01:00:00:00"),
@@ -44,10 +44,12 @@ extension Toolbox {
             try Toolbox.applyCanvas(&canvas, args)
             let name = args.optString("name") ?? url.deletingPathExtension().lastPathComponent
             var project = Project(name: name, canvas: canvas)
+            if Toolbox.canvasKeys.contains(where: args.has) { project.canvasSet = true }
             var notes: [String] = []
             if let source = args.optString("import") {
                 let (imported, report) = try await importTimeline(session.resolve(source), name: name, edlFps: args.optDouble("edl_fps") ?? 30)
                 project = imported
+                project.canvasSet = true
                 notes = report
             }
             try ProjectBundle.create(at: url, project: project)
@@ -66,7 +68,7 @@ extension Toolbox {
             let b = try session.open(url)
             var msg = ""
             if args.bool("open_preview", default: false) { msg = try session.openPreview() + "\n" }
-            if !session.resumed.isEmpty { msg += "Resumed analysis an exited server left unfinished: " + session.resumed.joined(separator: ", ") + " (analysis_read wait:300 blocks until done)\n" }
+            if !session.resumed.isEmpty { msg += "Resumed analysis left unfinished, continuing in the background worker: " + session.resumed.joined(separator: ", ") + " (analysis_read wait:300 blocks until done)\n" }
             return .text(msg + Describe.project(try b.loadProject(), bundle: b))
         })
 
@@ -93,6 +95,7 @@ extension Toolbox {
             let mode = try args.enumValue("conform", FrameRateConform.self) ?? .snap
             let old = p.canvas.fps
             try Toolbox.applyCanvas(&p.canvas, args)
+            p.canvasSet = true
             var lines = ["Canvas is \(p.canvas.width)×\(p.canvas.height) @\(Describe.fmtFps(p.canvas.fps))fps"]
             if args.has("master_peak_nits") {
                 lines.append(p.canvas.masterPeakNits.map { p.canvas.colorSpace == .rec2020_pq ? "Highlights roll off from \(Int($0 * 0.75)) to a \(Int($0)) cd/m² peak; check with timeline_measure picture" : "master_peak_nits \(Int($0)) is kept but only acts on rec2020_pq canvases" } ?? "Highlight roll-off off")
@@ -185,6 +188,9 @@ extension Toolbox {
             return .text(j.encoded(pretty: true))
         })
     }
+
+    /// Arguments that choose the canvas; a project created with any of them keeps it on import.
+    static let canvasKeys = ["preset", "width", "height", "fps"]
 
     static func applyCanvas(_ c: inout Canvas, _ args: Args) throws {
         if let preset = try args.enumValue("preset", CanvasPreset.self) {

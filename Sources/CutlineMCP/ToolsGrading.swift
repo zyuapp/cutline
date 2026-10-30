@@ -189,9 +189,8 @@ extension Toolbox {
 
     /// timeline_measure compare: each shot's graded color against a reference shot.
     func measureCompare(_ p: Project, reference: String?, referenceTime: Seconds?, range: TimeRange?) async throws -> [String] {
-        let b = try session.requireBundle()
         let scale = min(1, 360 / Double(max(p.canvas.width, p.canvas.height)))
-        let built = try await TimelineBuilder.build(p, transcripts: b.transcripts(for: p), library: session.library, renderScale: scale)
+        let built = try await session.timeline(for: p, renderScale: scale)
         var cuts = Set<Double>([0, p.duration])
         for t in p.tracks where t.kind == .video && !t.hidden { for c in t.clips where c.kind == .media { cuts.insert(c.start); cuts.insert(c.end) } }
         let bounds = cuts.sorted()

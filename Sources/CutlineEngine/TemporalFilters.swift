@@ -333,9 +333,13 @@ final class FrameWindow {
     /// Called for each decoded frame with the frame before it.
     var onDecode: ((Int, CVPixelBuffer, CVPixelBuffer?) throws -> Void)?
     private var last: CVPixelBuffer?
+    /// Shots of the decoded frames; filters never take pixels from another shot.
+    let shots: ShotSplitter
 
-    init(_ next: @escaping Next) {
+    /// `cuts` are scene cuts from analysis, in source seconds; cuts are also detected as frames decode.
+    init(cuts: [Seconds] = [], frameDuration: Seconds = 1.0 / 30, _ next: @escaping Next) {
         self.next = next
+        shots = ShotSplitter(cuts: cuts, frameDuration: frameDuration)
     }
 
     var decoded: Int { times.count }
@@ -343,15 +347,31 @@ final class FrameWindow {
     /// Frame `i`, decoding forward to it; nil past the end or once dropped.
     func frame(_ i: Int) throws -> CVPixelBuffer? {
         guard i >= 0 else { return nil }
-        while decoded <= i, !exhausted {
-            guard let f = try next() else { exhausted = true; break }
-            let index = decoded
-            times.append(f.time)
-            try onDecode?(index, f.buffer, last)
-            last = f.buffer
-            if keep(index) { frames[index] = f.buffer }
-        }
+        while decoded <= i, !exhausted { try decodeOne() }
         return frames[i]
+    }
+
+    private func decodeOne() throws {
+        guard let f = try next() else {
+            exhausted = true
+            shots.finish()
+            return
+        }
+        let index = decoded
+        times.append(f.time)
+        shots.feed(f.buffer, time: f.time)
+        try onDecode?(index, f.buffer, last)
+        last = f.buffer
+        if keep(index) { frames[index] = f.buffer }
+    }
+
+    /// Whether decoded frames `i` and `j` belong to the same shot, decoding ahead until that is settled.
+    func sameShot(_ i: Int, _ j: Int) throws -> Bool {
+        let hi = max(i, j)
+        _ = try frame(hi)
+        guard hi < decoded else { return false }
+        while !exhausted, !(min(i, j)...hi).allSatisfy(shots.isFinal) { try decodeOne() }
+        return shots.sameShot(i, j)
     }
 
     func time(_ i: Int) -> Seconds? { times.indices.contains(i) ? times[i] : nil }
@@ -374,6 +394,13 @@ extension TemporalStage {
     func decoded(_ index: Int, _ buffer: CVPixelBuffer, previous: CVPixelBuffer?) throws {}
 }
 
+/// A clean plate at the frame size: an image file, or the frame of the clip at `time` with the object's `box` in it.
+struct CleanPlate {
+    var buffer: CVPixelBuffer
+    var box: NormRect?
+    var time: Seconds?
+}
+
 /// Runs temporal stages over every frame of a window in order.
 final class PictureProcessor {
     let stages: [TemporalStage]
@@ -384,7 +411,7 @@ final class PictureProcessor {
 
     /// Builds the stages for the enabled `video.*` effects of a clip, for frames `width`×`height` at `fps`.
     /// `plates` are the clean plates of object removals by effect id, at the frame size, with the object's box in each.
-    static func stages(_ effects: [Effect], width: Int, height: Int, fps: Double, context: CIContext, plates: [String: (CVPixelBuffer, NormRect?)] = [:]) -> [TemporalStage] {
+    static func stages(_ effects: [Effect], width: Int, height: Int, fps: Double, context: CIContext, plates: [String: CleanPlate] = [:], cuts: [Seconds] = []) -> [TemporalStage] {
         var flow: OpticalFlow?
         var triedFlow = false
         return effects.compactMap { e -> TemporalStage? in
@@ -402,8 +429,11 @@ final class PictureProcessor {
                 guard !samples.isEmpty else { return nil }
                 var s = ObjectRemover.Settings(samples: samples, padding: Float(n("padding")), window: n("window"), feather: Float(n("feather")), mix: Float(e.mix))
                 s.patchFill = (e.params["fill"]?.string ?? "patch") != "smooth"
-                if let (plate, box) = plates[e.id] {
-                    s.plate = plate
+                if let p = plates[e.id] {
+                    let box = p.box
+                    s.plate = p.buffer
+                    s.plateTime = p.time
+                    s.plateCuts = cuts
                     let pad = s.padding * Float(height)
                     s.plateHole = box.map { SIMD4(Float($0.x) * Float(width) - pad, Float($0.y) * Float(height) - pad, Float($0.x + $0.width) * Float(width) + pad, Float($0.y + $0.height) * Float(height) + pad) }
                 }
@@ -506,7 +536,7 @@ final class Denoiser: TemporalStage {
         var floors: [Float] = []
         let order = (1...settings.radius).flatMap { [i - $0, i + $0] }
         for j in order {
-            guard let there = try window.frame(j) else { continue }
+            guard let there = try window.frame(j), try window.sameShot(i, j) else { continue }
             let f = try field(i, j, window)
             var warped = [Float](repeating: 0, count: n * 3)
             var diff = [Float](repeating: 0, count: n)
@@ -695,6 +725,10 @@ final class ObjectRemover: TemporalStage {
         /// A picture of the background to take it from first, with the object's box in it (pixels) if it shows.
         var plate: CVPixelBuffer?
         var plateHole: SIMD4<Float>?
+        /// Source time of a plate taken from a frame of the clip; nil for an image file.
+        var plateTime: Seconds?
+        /// Scene cuts from analysis, for telling whether the plate's frame is in the current shot.
+        var plateCuts: [Seconds] = []
     }
 
     let settings: Settings
@@ -702,6 +736,7 @@ final class ObjectRemover: TemporalStage {
     /// The previous frame's completed region, guiding this one so the fill holds still.
     private var previous: (index: Int, origin: SIMD2<Int>, width: Int, height: Int, rgb: [Float], has: [Bool], nnf: [Int32])?
     private var plateSmall: CVPixelBuffer?
+    private var plateSignature: FrameSignature?
     /// Frames each side searched for the background.
     let reach: Int
     /// Only every `step`th frame is kept and searched.
@@ -716,7 +751,10 @@ final class ObjectRemover: TemporalStage {
         self.context = context
         reach = max(2, Int((settings.window * max(1, fps)).rounded()))
         step = max(1, reach / 12)
-        if let plate = settings.plate { plateSmall = Registration.small(plate, context: context) }
+        if let plate = settings.plate {
+            plateSmall = Registration.small(plate, context: context)
+            if settings.plateTime != nil { plateSignature = FrameSignature(plate) }
+        }
     }
 
     func needs(_ j: Int, from i: Int) -> Bool { j >= i - reach && j % step == 0 }
@@ -758,7 +796,7 @@ final class ObjectRemover: TemporalStage {
         let ring = ObjectRemover.ring(box, width: w, height: h)
         for d in 1...reach {
             for j in [i - d, i + d] where j % step == 0 {
-                guard path.indices.contains(j), let tj = window.time(j), let hj = hole(at: tj, width: w, height: h), let pb = try window.frame(j) else { continue }
+                guard path.indices.contains(j), let tj = window.time(j), let hj = hole(at: tj, width: w, height: h), let pb = try window.frame(j), try window.sameShot(i, j) else { continue }
                 let o = path[j] - path[i]
                 candidates.append(Candidate(view: PixelView(pb), offset: SIMD2(Float(o.x), Float(o.y)), hole: hj))
             }
@@ -809,9 +847,10 @@ final class ObjectRemover: TemporalStage {
                 }
             }
         }
-        if let plate = settings.plate {
+        if let plate = settings.plate, try plateInShot(i, window) {
             usePlate(plate, here: herePB, ring: ring, box: box, origin: SIMD2(x0, y0), width: rw, height: rh, fill: &fill, known: &known)
         }
+        if previous?.index == i - 1, try !window.sameShot(i - 1, i) { previous = nil }
         if settings.patchFill, known.contains(false) {
             complete(i, current, box: SIMD4(x0, y0, x1, y1), fill: &fill, known: &known)
         } else {
@@ -837,6 +876,20 @@ final class ObjectRemover: TemporalStage {
                 }
             }
         }
+    }
+
+    /// Whether the clean plate can stand in for frame `i`: always for an image file; for a frame of the clip, only
+    /// inside the plate frame's shot.
+    func plateInShot(_ i: Int, _ window: FrameWindow) throws -> Bool {
+        guard let at = settings.plateTime else { return true }
+        guard let t = window.time(i) else { return false }
+        let fd = window.decoded > 1 ? (window.times[window.decoded - 1] - window.times[0]) / Double(window.decoded - 1) : 1.0 / 30
+        if let k = window.times.firstIndex(where: { abs($0 - at) <= fd / 2 + 1e-6 }) { return try window.sameShot(k, i) }
+        let lo = min(at, t), hi = max(at, t)
+        if settings.plateCuts.contains(where: { $0 > lo - ShotSplitter.slack && $0 <= hi + fd }) { return false }
+        guard let sig = plateSignature, let pb = try window.frame(i) else { return true }
+        let d = FrameSignature(pb).distance(sig)
+        return !(d.histogram > 0.35 || d.blocks > 0.15)
     }
 
     /// Takes the box's background from the clean plate where the plate shows it: aligned to this frame around the

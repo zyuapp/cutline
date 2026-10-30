@@ -20,6 +20,9 @@ public enum ProcessedPicture {
         public var maxWidth: Int
         public var maxHeight: Int
         public var key: String
+        /// Scene cuts of the media from analysis, in source seconds. Filters never reach across a cut; cuts are also
+        /// detected while rendering, so these only sharpen detection and aren't part of `key`.
+        public var cuts: [Seconds] = []
 
         public var url: URL { ProcessedPicture.directory.appendingPathComponent("\(key).mov") }
         public var summary: String { effects.map { EffectCatalog.title($0.type) }.joined(separator: " + ") }
@@ -60,13 +63,13 @@ public enum ProcessedPicture {
             return "\(e.type)|\(e.mix)|\(params)\(plate)"
         }.joined(separator: "||")
         let attrs = try? FileManager.default.attributesOfItem(atPath: media.path)
-        let stamp = "\(media.path)|\(attrs?[.size] as? Int ?? 0)|\((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)|\(fmt(range.start))|\(fmt(range.end))|\(canvas.width)x\(canvas.height)|\(fx)|v2"
+        let stamp = "\(media.path)|\(attrs?[.size] as? Int ?? 0)|\((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)|\(fmt(range.start))|\(fmt(range.end))|\(canvas.width)x\(canvas.height)|\(fx)|v3"
         let key = String(SHA256.hash(data: Data(stamp.utf8)).map { String(format: "%02x", $0) }.joined().prefix(24))
         return Request(clipId: clip.id, media: media, range: range, effects: effects, maxWidth: canvas.width, maxHeight: canvas.height, key: key)
     }
 
-    /// Every processed copy a project's picture uses, nested sequences included.
-    public static func requests(_ project: Project) -> [Request] {
+    /// Every processed copy a project's picture uses, nested sequences included. `cuts` are scene cuts by media id.
+    public static func requests(_ project: Project, cuts: [String: [Seconds]] = [:]) -> [Request] {
         let project = project.resolvingAudioTransitions()
         var heads: [String: Seconds] = [:], tails: [String: Seconds] = [:]
         for w in project.transitionWindows where w.transition.hasVideo {
@@ -88,7 +91,8 @@ public enum ProcessedPicture {
                 }
                 for clip in clips {
                     guard let m = clip.mediaId.flatMap({ project.mediaAsset($0) }),
-                          let r = request(clip, media: m, canvas: project.canvas, head: heads[clip.id] ?? 0, tail: tails[clip.id] ?? 0) else { continue }
+                          var r = request(clip, media: m, canvas: project.canvas, head: heads[clip.id] ?? 0, tail: tails[clip.id] ?? 0) else { continue }
+                    r.cuts = cuts[m.id] ?? []
                     out.append(r)
                 }
             }
@@ -105,8 +109,8 @@ public enum ProcessedPicture {
 
     /// Renders every copy the project is missing; returns the clip ids rendered.
     @discardableResult
-    public static func renderMissing(_ project: Project, progress: (@Sendable (Double) -> Void)? = nil) async throws -> [String] {
-        let missing = requests(project).filter { cached($0) == nil }
+    public static func renderMissing(_ project: Project, cuts: [String: [Seconds]] = [:], progress: (@Sendable (Double) -> Void)? = nil) async throws -> [String] {
+        let missing = requests(project, cuts: cuts).filter { cached($0) == nil }
         var done: [String] = []
         for (k, r) in missing.enumerated() {
             let n = Double(missing.count)
@@ -142,8 +146,8 @@ public enum ProcessedPicture {
 
     /// The clean plate each object removal names, as a frame-sized 32BGRA picture with the object's box in it: an
     /// image file, or a frame of the clip's media decoded like the frames it cleans.
-    static func cleanPlates(_ r: Request, width w: Int, height h: Int) async throws -> [String: (CVPixelBuffer, NormRect?)] {
-        var out: [String: (CVPixelBuffer, NormRect?)] = [:]
+    static func cleanPlates(_ r: Request, width w: Int, height h: Int) async throws -> [String: CleanPlate] {
+        var out: [String: CleanPlate] = [:]
         for e in r.effects where e.type == "video.remove_object" {
             let path = e.params["clean_plate"]?.string ?? "", at = e.params["clean_plate_at"]?.number ?? -1
             if !path.isEmpty {
@@ -158,7 +162,7 @@ public enum ProcessedPicture {
                 ctx?.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
                 CVPixelBufferUnlockBaseAddress(pb, [])
                 guard ctx != nil else { throw EditError("Cannot draw the clean plate \(path)") }
-                out[e.id] = (pb, nil)
+                out[e.id] = CleanPlate(buffer: pb, box: nil, time: nil)
             } else if at >= 0 {
                 let frames = try await SourceFrames.open(url: r.media.url, maxSize: CGSize(width: r.maxWidth, height: r.maxHeight), forward: true, from: max(0, at - 0.5))
                 let eps = frames.frameDuration / 2
@@ -171,7 +175,7 @@ public enum ProcessedPicture {
                     return last
                 }
                 guard let plate, CVPixelBufferGetWidth(plate) == w, CVPixelBufferGetHeight(plate) == h else { throw EditError("No frame at \(at)s of \(r.media.name) to use as the clean plate") }
-                out[e.id] = (plate, ObjectTrack.box(ObjectTrack.decodeBoxes(e.params["boxes"]?.string ?? ""), at: at))
+                out[e.id] = CleanPlate(buffer: plate, box: ObjectTrack.box(ObjectTrack.decodeBoxes(e.params["boxes"]?.string ?? ""), at: at), time: at)
             }
         }
         return out
@@ -203,7 +207,7 @@ public enum ProcessedPicture {
         var lastTime: Seconds = 0
         do {
             try await runBlocking { cancelled in
-                let window = FrameWindow {
+                let window = FrameWindow(cuts: r.cuts, frameDuration: frames.frameDuration) {
                     while let f = try frames.next() {
                         if f.time < range.start - eps { continue }
                         if f.time > range.end + eps { return nil }
@@ -211,7 +215,7 @@ public enum ProcessedPicture {
                     }
                     return nil
                 }
-                let stages = PictureProcessor.stages(r.effects, width: w, height: h, fps: frames.fps, context: frames.context, plates: plates)
+                let stages = PictureProcessor.stages(r.effects, width: w, height: h, fps: frames.fps, context: frames.context, plates: plates, cuts: r.cuts)
                 try PictureProcessor(stages: stages).run(window, cancelled: cancelled) { i, t, plane in
                     while !input.isReadyForMoreMediaData {
                         if cancelled() { throw CancellationError() }

@@ -24,6 +24,13 @@ public final class MCPServer {
 
     public init() {}
 
+    /// `runsJobsInWorker` runs background analysis in detached `<this executable> --worker <bundle>` processes,
+    /// which outlive the server.
+    public convenience init(runsJobsInWorker: Bool) {
+        self.init()
+        if runsJobsInWorker { JobBoard.workerExecutable = Bundle.main.executableURL?.resolvingSymlinksInPath() }
+    }
+
     public func run() async {
         log("cutline-mcp \(Self.version) ready")
         do {

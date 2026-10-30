@@ -12,6 +12,7 @@ extension Toolbox {
             "animate": ["type": "object", "description": "{path: [[time, value, ease?], ...]}, e.g. {\"transform.scale\": [[\"clip_x.start\", 1], [\"clip_x.end\", 1.15, \"easeOut\"]]}. Replaces that path's existing animation."],
             "unset": Schema.strings("Paths whose animation is removed (or reset to default when not animated)"),
             "relative": Schema.bool("Key times are seconds from each clip's start, default false"),
+            "subframe": Schema.bool("Keep audio.fade_in/fade_out/lead/lag sample-accurate instead of snapping them to whole frames, default false"),
             "bind": ["type": "object", "description": .string(Toolbox.bindDocs)],
         ], required: ["target"]), label: { a, p in Toolbox.describeParamSet(a, p) }) { [unowned self] p, args in
             let targets = try Toolbox.resolveTargets(args.raw["target"], p)
@@ -230,13 +231,23 @@ extension Toolbox {
     }
 
     /// Applies set, animate and unset to one clip and describes the result.
+    /// Sound edges and fades that interchange carries in frames, so edits keep them on the frame grid.
+    static let frameGridAudioPaths: Set<String> = ["audio.fade_in", "audio.fade_out", "audio.lead", "audio.lag"]
+
     static func applyParams(_ c: inout Clip, _ args: Args, canvas: Canvas) throws -> String {
         var parts: [String] = []
+        let subframe = args.bool("subframe", default: false)
         for (path, v) in (args.raw["set"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
             let before = c.staticValue(path)
-            try c.set(path, try paramValue(v))
             let canonical = Clip.canonical(path)
-            parts.append("\(canonical) \(before.map(\.description) ?? "–")→\(c.staticValue(canonical).map(\.description) ?? "?")" + (c.anim[canonical] != nil ? " (animated; the animation still wins)" : ""))
+            var value = try paramValue(v)
+            var snapped = ""
+            if !subframe, Toolbox.frameGridAudioPaths.contains(canonical), let n = value.number, abs(canvas.snap(n) - n) > 1e-6 {
+                value = .number(canvas.snap(n))
+                snapped = " (snapped from \(fmt(n))s to the \(Describe.fmtFps(canvas.fps))fps frame grid; subframe:true keeps it sample-accurate)"
+            }
+            try c.set(path, value)
+            parts.append("\(canonical) \(before.map(\.description) ?? "–")→\(c.staticValue(canonical).map(\.description) ?? "?")" + snapped + (c.anim[canonical] != nil ? " (animated; the animation still wins)" : ""))
         }
         let relative = args.bool("relative", default: false)
         for (path, raw) in (args.raw["animate"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {

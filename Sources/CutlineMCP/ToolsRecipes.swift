@@ -7,16 +7,6 @@ extension Toolbox {
     func moreRecipes(_ name: String, _ a: Args, dry: Bool) async throws -> ToolResult {
         let b = try session.requireBundle()
         let current = try session.project()
-        // Face-driven recipes are only as good as the shot analysis; wait briefly for it, then say if it's still missing.
-        if ["reframe", "punch_in", "follow"].contains(name) {
-            let used = Set(current.tracks.flatMap(\.clips).compactMap(\.mediaId))
-            if session.jobs.active.contains(where: { used.contains($0.mediaId) && $0.features.contains("shots") }) {
-                await session.jobs.wait(timeout: 240)
-            }
-            if let job = session.jobs.active.first(where: { used.contains($0.mediaId) && $0.features.contains("shots") }) {
-                throw EditError("Shot and face analysis of \(job.mediaId) is still running (\(Int(job.progress * 100))%); call analysis_read wait: 300, then run \(name) again")
-            }
-        }
         switch name {
         case "room_tone", "fill_gaps":
             let mid = try a.string("media")
@@ -40,8 +30,8 @@ extension Toolbox {
                 for r in fill {
                     let ids = try p.fillRoomTone(r, mediaId: mid, source: source, trackId: trackId, crossfade: crossfade)
                     if ids.isEmpty { skipped += 1; continue }
-                    let x = Project.roomToneCrossfade(crossfade, range: r)
-                    lines.append("\(fmt2(r.start))–\(fmt2(r.end))s: \(ids.count) clip(s)" + (x < crossfade - 1e-9 ? ", crossfade \(fmt2(x))s to fit" : ""))
+                    let x = Project.roomToneCrossfade(crossfade, range: r, fps: p.canvas.fps)
+                    lines.append("\(fmt2(r.start))–\(fmt2(r.end))s: \(ids.count) clip(s)" + (x < crossfade - 1e-9 ? ", crossfade \(fmt(x))s to fit" : abs(x - crossfade) > 1e-9 ? ", crossfade \(fmt(x))s on the frame grid" : ""))
                 }
                 if skipped > 0 { lines.append("\(skipped) gap(s) shorter than a frame left as they are") }
                 return "Room tone from \(mid) \(fmt2(source.start))–\(fmt2(source.end))s on \(trackId), crossfaded \(fmt2(crossfade))s: " + lines.joined(separator: "; ") + ". Set its level with param_set target \(trackId)/* audio.volume or track_update volume."
