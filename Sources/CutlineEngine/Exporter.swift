@@ -131,7 +131,7 @@ public enum Exporter {
         let size = built.videoComposition.renderSize
         let canvas = built.scene.project.canvas
         let space = canvas.colorSpace
-        let tc = TimecodeFormat(fps: canvas.fps)
+        let tc = canvas.timecodeFormat
         let leader = options.leader
         let leaderFrames = leader?.frames(tc) ?? 0
         let leaderTime = CMTime(value: CMTimeValue(leaderFrames * tc.frameNum), timescale: CMTimeScale(tc.frameDen))

@@ -136,7 +136,7 @@ extension Toolbox {
             let project = b.url.path
             var options = ExportOptions(preset: preset, bitrateMbps: args.optDouble("bitrate_mbps"), range: range, subtitles: subs == "embed" || subs == "both" ? cues : [], chapters: chapters)
             options.closedCaptions = closed
-            let tcFormat = TimecodeFormat(fps: p.canvas.fps)
+            let tcFormat = p.canvas.timecodeFormat
             if let tc = args.optString("timecode_start") {
                 guard let f = tcFormat.frames(tc) else { throw EditError("timecode_start is hh:mm:ss:ff with frames below \(tcFormat.nominal), e.g. 01:00:00:00") }
                 options.timecodeStart = tcFormat.string(f)

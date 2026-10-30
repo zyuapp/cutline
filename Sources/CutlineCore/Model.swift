@@ -91,6 +91,8 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
     public var colorSpace: WorkingSpace
     /// Timecode of the first timeline frame ("hh:mm:ss:ff"); nil uses TimecodeFormat.defaultStart.
     public var timecodeStart: String?
+    /// Timecode counting for interchange; nil is drop frame at 29.97 and 59.94 fps.
+    public var dropFrame: Bool?
 
     public init(width: Int = 1920, height: Int = 1080, fps: Double = 30, background: RGBA = .black, colorSpace: WorkingSpace = .rec709, timecodeStart: String? = nil) {
         self.width = width
@@ -101,7 +103,7 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
         self.timecodeStart = timecodeStart
     }
 
-    enum CodingKeys: String, CodingKey { case width, height, fps, background, colorSpace, timecodeStart }
+    enum CodingKeys: String, CodingKey { case width, height, fps, background, colorSpace, timecodeStart, dropFrame }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -111,6 +113,7 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
         background = try c.decodeIfPresent(RGBA.self, forKey: .background) ?? .black
         colorSpace = try c.decodeIfPresent(WorkingSpace.self, forKey: .colorSpace) ?? .rec709
         timecodeStart = try c.decodeIfPresent(String.self, forKey: .timecodeStart)
+        dropFrame = try c.decodeIfPresent(Bool.self, forKey: .dropFrame)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -121,6 +124,7 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
         try c.encode(background, forKey: .background)
         if colorSpace != .rec709 { try c.encode(colorSpace, forKey: .colorSpace) }
         try c.encodeIfPresent(timecodeStart, forKey: .timecodeStart)
+        try c.encodeIfPresent(dropFrame, forKey: .dropFrame)
     }
 
     public func snap(_ t: Seconds) -> Seconds {
@@ -128,6 +132,18 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
     }
 
     public var frameDuration: Seconds { 1 / fps }
+
+    /// Whether interchange timecode counts drop frame: only NTSC 29.97 and 59.94 can, and they do unless `dropFrame` is false.
+    /// Every exporter (EDL FCM, FCPXML tcFormat, xmeml displayformat) asks this.
+    public var isDropFrame: Bool { timecodeFormat.dropFrame }
+
+    public var timecodeFormat: TimecodeFormat { TimecodeFormat(fps: fps, dropFrame: dropFrame) }
+
+    /// The `dropFrame` an importer should keep for a file that counts `drop`: nil when that is the default or the rate can't.
+    static func dropFrame(_ drop: Bool, fps: Double) -> Bool? {
+        let auto = Canvas(fps: fps).isDropFrame
+        return auto == drop || (drop && !auto) ? nil : drop
+    }
 }
 
 public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {

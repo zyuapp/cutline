@@ -274,7 +274,7 @@ public enum TimecodeTrack {
         let quanta = Int(CMTimeCodeFormatDescriptionGetFrameQuanta(fd))
         let drop = CMTimeCodeFormatDescriptionGetTimeCodeFlags(fd) & kCMTimeCodeFlag_DropFrame != 0
         let fps = drop ? Double(quanta) * 1000 / 1001 : Double(quanta)
-        let format = TimecodeFormat(fps: fps)
+        let format = TimecodeFormat(fps: fps, dropFrame: drop)
         return format.nominal == quanta && format.dropFrame == drop ? format.string(frame) : nil
     }
 }

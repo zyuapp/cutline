@@ -12,10 +12,11 @@ public struct TimecodeFormat: Equatable, Sendable {
     /// Program start when a project doesn't set one, as in EDL export.
     public static let defaultStart = "01:00:00:00"
 
-    public init(fps: Double) {
+    /// `dropFrame: false` counts NTSC rates non-drop.
+    public init(fps: Double, dropFrame allowDrop: Bool? = nil) {
         let grid = FrameGrid(fps: fps)
         nominal = max(1, Int(grid.rate.rounded()))
-        dropFrame = grid.num == 1001 && EDLTimecode.dropFrames(nominal) > 0
+        dropFrame = grid.num == 1001 && EDLTimecode.dropFrames(nominal) > 0 && allowDrop != false
         frameNum = grid.num
         frameDen = grid.den
     }

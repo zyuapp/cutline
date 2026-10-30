@@ -31,13 +31,65 @@ struct FrameGrid: Equatable {
     }
 }
 
+// MARK: Shared
+
+extension Project {
+    /// Gain a clip's sound is heard at, `local` seconds from its start: its level or volume animation, the
+    /// track's fader and, with `master`, the master gain.
+    func heardGain(_ clip: Clip, track: Track, at local: Seconds, master: Bool = true) -> Double {
+        let level = clip.anim["audio.volume"]?.value(at: local)?.number ?? clip.volume
+        return max(0, level) * max(0, track.volume(at: clip.start + local)) * (master ? self.master.gain : 1)
+    }
+
+    /// A clip's level for a target without track or master gain: the gain at the start of its sound and, when it
+    /// changes, keys at local seconds on `grid` frames over the sound (split-edit lead and lag included). Eased
+    /// segments of the volume animation and fader are sampled every 0.1 s, since targets interpolate keys linearly,
+    /// and the whole sound every 0.25 s when both change.
+    func bakedLevel(_ clip: Clip, track: Track, grid: FrameGrid, master: Bool = true) -> (gain: Double, keys: [(t: Seconds, gain: Double)]) {
+        let a0 = -clip.audioLead, a1 = clip.duration + clip.audioLag
+        let curves = [clip.anim["audio.volume"].map { ($0, 0.0) }, track.volumeCurve.map { ($0, clip.start) }].compactMap { $0 }
+        guard !curves.isEmpty else { return (heardGain(clip, track: track, at: 0, master: master), []) }
+        var times = [a0, a1]
+        // The product of two ramps isn't linear between their keys.
+        if curves.count > 1 { times += stride(from: a0, to: a1, by: 0.25).map { $0 } }
+        for (curve, shift) in curves {
+            times += curve.keys.map { $0.t - shift }
+            for (a, b) in zip(curve.keys, curve.keys.dropFirst()) where b.ease != .linear || b.bezier != nil {
+                times += stride(from: a.t + 0.1, to: b.t, by: 0.1).map { $0 - shift }
+            }
+        }
+        var frames: [Int] = []
+        for f in times.map({ grid.frames($0) }).sorted() where f >= grid.frames(a0) && f <= grid.frames(a1) && frames.last != f { frames.append(f) }
+        let keys = frames.map { f -> (t: Seconds, gain: Double) in
+            let t = Double(f * grid.num) / Double(grid.den)
+            return (t, heardGain(clip, track: track, at: min(max(t, a0), a1), master: master))
+        }
+        let first = heardGain(clip, track: track, at: a0, master: master)
+        if keys.allSatisfy({ abs($0.gain - first) < 1e-6 }) { return (first, []) }
+        return (keys.first?.gain ?? first, keys)
+    }
+
+    static func decibels(_ gain: Double) -> String {
+        gain <= 1e-5 ? "-96dB" : String(format: "%.2fdB", 20 * log10(gain))
+    }
+
+    static func gain(decibels s: String) -> Double {
+        let t = s.replacingOccurrences(of: "dB", with: "").replacingOccurrences(of: "−", with: "-").trimmingCharacters(in: .whitespaces)
+        let db = Double(t) ?? 0
+        return db <= -96 ? 0 : pow(10, db / 20)
+    }
+}
+
 // MARK: OpenTimelineIO
 
 extension Project {
     /// OpenTimelineIO JSON (Clip.2 with `media_references`, OTIO 0.15+), timed in frames at the canvas fps.
     /// Video tracks come first, bottom layer first, then the embedded audio of video tracks, then audio tracks.
     /// Text, solid and adjustment clips become gaps carrying `{"cutline": {kind, text}}` metadata;
-    /// speed is a LinearTimeWarp with `source_range` duration in timeline frames.
+    /// speed is a LinearTimeWarp with `source_range` duration in timeline frames. Sound (embedded and audio
+    /// tracks) spans each clip's audio range, so split edits read as offset audio, with an `AudioLevel` effect
+    /// holding the heard level (`gain_db`, `keyframes`, fades; faders and master folded in). Clips carry a `cdl`
+    /// like the CMX adapter's and Cutline metadata with the transform, effects, animation and audio settings.
     public func otio() throws -> Data {
         let grid = FrameGrid(fps: canvas.fps)
         let rate = canvas.fps > 0 ? canvas.fps : 30
@@ -53,15 +105,35 @@ extension Project {
         func summary(_ clip: Clip) -> [String: Any] {
             var md: [String: Any] = [
                 "clipId": clip.id, "kind": clip.kind.rawValue, "speed": clip.speed, "volume": clip.volume,
-                "effects": clip.effects.map { ["id": $0.id, "type": $0.type, "enabled": $0.enabled, "mix": $0.mix] as [String: Any] },
+                "effects": Self.jsonValue(clip.effects), "transform": Self.jsonValue(clip.transform),
             ]
             if clip.blend != .normal { md["blend"] = clip.blend.rawValue }
             if clip.fadeIn > 0 { md["fadeIn"] = clip.fadeIn }
             if clip.fadeOut > 0 { md["fadeOut"] = clip.fadeOut }
-            if !clip.anim.isEmpty { md["animated"] = clip.anim.keys.sorted() }
+            if clip.audioFadeIn > 0 { md["audioFadeIn"] = clip.audioFadeIn }
+            if clip.audioFadeOut > 0 { md["audioFadeOut"] = clip.audioFadeOut }
+            if clip.audioLead != 0 { md["audioLead"] = clip.audioLead }
+            if clip.audioLag != 0 { md["audioLag"] = clip.audioLag }
+            if !clip.anim.isEmpty { md["anim"] = Self.jsonValue(clip.anim) }
             if let t = clip.text { md["text"] = t.text }
             if let c = clip.color { md["color"] = c.hex }
             return md
+        }
+        /// OTIO's CMX adapter keeps an EDL's `*ASC_SOP`/`*ASC_SAT` this way.
+        func cdlMetadata(_ c: CDL) -> [String: Any] {
+            ["asc_sop": ["slope": [c.slope.x, c.slope.y, c.slope.z], "offset": [c.offset.x, c.offset.y, c.offset.z], "power": [c.power.x, c.power.y, c.power.z]],
+             "asc_sat": c.saturation]
+        }
+        /// The level a clip is heard at, track fader and master gain folded in, for readers that don't know Cutline's metadata.
+        /// Times are seconds from the item's start, which is `itemStart` seconds from the clip's.
+        func audioLevel(_ clip: Clip, track: Track, itemStart: Seconds) -> [String: Any] {
+            let level = bakedLevel(clip, track: track, grid: grid)
+            func db(_ g: Double) -> Double { g <= 1e-5 ? -96 : (2000 * log10(g)).rounded() / 100 }
+            var md: [String: Any] = ["gain_db": track.muted ? -96 : db(level.gain)]
+            if !level.keys.isEmpty, !track.muted { md["keyframes"] = level.keys.map { ["time": $0.t - itemStart, "gain_db": db($0.gain)] } }
+            if clip.audioFadeIn > 0 { md["fade_in"] = clip.audioFadeIn }
+            if clip.audioFadeOut > 0 { md["fade_out"] = clip.audioFadeOut }
+            return ["OTIO_SCHEMA": "Effect.1", "name": "AudioLevel", "effect_name": "AudioLevel", "metadata": ["cutline": md]]
         }
         func reference(_ asset: MediaAsset?) -> [String: Any] {
             guard let m = asset else {
@@ -71,28 +143,36 @@ extension Project {
             return ["OTIO_SCHEMA": "ExternalReference.1", "name": m.name, "target_url": m.url.absoluteString,
                     "available_range": available, "available_image_bounds": NSNull(), "metadata": [String: Any]()]
         }
-        func clipItem(_ clip: Clip, frames: Int) -> [String: Any] {
+        /// `sound` is the clip as heard: from its audio source range over its audio range, with its level.
+        func clipItem(_ clip: Clip, track: Track, frames: Int, sound: Bool) -> [String: Any] {
             let asset = clip.mediaId.flatMap(mediaAsset)
             var effects: [Any] = []
             if abs(clip.speed - 1) > 1e-9 {
                 effects.append(["OTIO_SCHEMA": "LinearTimeWarp.1", "name": "", "effect_name": "LinearTimeWarp",
                                 "time_scalar": clip.speed, "metadata": [String: Any]()] as [String: Any])
             }
+            let audible = asset.map { $0.hasAudio && !$0.isImage } ?? false
+            if sound, audible { effects.append(audioLevel(clip, track: track, itemStart: -clip.audioLead)) }
+            var metadata: [String: Any] = ["cutline": summary(clip)]
+            if !sound, let cdl = clip.cdl { metadata["cdl"] = cdlMetadata(cdl) }
+            let sourceIn = sound ? clip.audioSourceRange.start : clip.sourceIn
             return ["OTIO_SCHEMA": "Clip.2", "name": clip.name ?? asset?.name ?? clip.id,
-                    "source_range": range(grid.frames(clip.sourceIn), frames),
+                    "source_range": range(grid.frames(sourceIn), frames),
                     "media_references": ["DEFAULT_MEDIA": reference(asset)], "active_media_reference_key": "DEFAULT_MEDIA",
-                    "effects": effects, "markers": [Any](), "metadata": ["cutline": summary(clip)], "enabled": true]
+                    "effects": effects, "markers": [Any](), "metadata": metadata, "enabled": true]
         }
         func otioTrack(_ track: Track, name: String, kind: String, embeddedAudio: Bool) -> [String: Any] {
             var children: [[String: Any]] = []
             var cursor = 0
-            for clip in track.clips.sorted(by: { $0.start < $1.start }) {
-                let s = max(grid.frames(clip.start), cursor), e = grid.frames(clip.end)
+            let sound = embeddedAudio || track.kind == .audio
+            for clip in track.clips.sorted(by: { (sound ? $0.audioRange.start : $0.start) < (sound ? $1.audioRange.start : $1.start) }) {
+                let span = sound && clip.kind == .media ? clip.audioRange : TimeRange(clip.start, clip.end)
+                let s = max(grid.frames(span.start), cursor), e = grid.frames(span.end)
                 guard e > s else { continue }
                 if s > cursor { children.append(gap(s - cursor)) }
                 let audible = clip.mediaId.flatMap(mediaAsset).map { $0.hasAudio && !$0.isImage } ?? false
                 if clip.kind == .media && (!embeddedAudio || audible) {
-                    children.append(clipItem(clip, frames: e - s))
+                    children.append(clipItem(clip, track: track, frames: e - s, sound: sound))
                     if !embeddedAudio, let w = transitionWindows.first(where: { $0.transition.from == clip.id && $0.transition.to != nil && $0.transition.hasVideo }) {
                         children.append(["OTIO_SCHEMA": "Transition.1", "name": w.transition.type, "transition_type": w.transition.type == "dissolve" ? "SMPTE_Dissolve" : "Custom_Transition",
                                          "in_offset": rt(grid.frames(w.head)), "out_offset": rt(grid.frames(w.tail)), "metadata": ["cutline": ["type": w.transition.type]]])
@@ -110,6 +190,7 @@ extension Project {
             let enabled = embeddedAudio || track.kind == .audio ? !track.muted : !track.hidden
             var md: [String: Any] = ["trackId": track.id, "volume": track.volume]
             if embeddedAudio { md["embeddedAudio"] = true }
+            if let curve = track.volumeCurve { md["volumeCurve"] = Self.jsonValue(curve) }
             if !track.effects.isEmpty { md["effects"] = track.effects.map(\.type) }
             return ["OTIO_SCHEMA": "Track.1", "name": name, "kind": kind, "children": children, "effects": [Any](),
                     "markers": [Any](), "metadata": ["cutline": md], "source_range": NSNull(), "enabled": enabled]
@@ -129,11 +210,22 @@ extension Project {
         }
         let stack: [String: Any] = ["OTIO_SCHEMA": "Stack.1", "name": "tracks", "children": children, "effects": [Any](),
                                     "markers": markerItems, "metadata": [String: Any](), "source_range": NSNull(), "enabled": true]
+        var md: [String: Any] = ["width": canvas.width, "height": canvas.height, "fps": canvas.fps, "background": canvas.background.hex]
+        if let df = canvas.dropFrame { md["dropFrame"] = df }
+        if master.gainDb != 0 { md["masterGainDb"] = master.gainDb }
         let timeline: [String: Any] = [
-            "OTIO_SCHEMA": "Timeline.1", "name": name, "global_start_time": rt(0), "tracks": stack,
-            "metadata": ["cutline": ["width": canvas.width, "height": canvas.height, "fps": canvas.fps, "background": canvas.background.hex]],
+            "OTIO_SCHEMA": "Timeline.1", "name": name, "global_start_time": rt(0), "tracks": stack, "metadata": ["cutline": md],
         ]
         return try JSONSerialization.data(withJSONObject: timeline, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    }
+
+    static func jsonValue<T: Encodable>(_ v: T) -> Any {
+        (try? JSONEncoder().encode(v)).flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) } ?? NSNull()
+    }
+
+    static func decode<T: Decodable>(_ type: T.Type, _ v: Any?) -> T? {
+        guard let v, JSONSerialization.isValidJSONObject(v), let data = try? JSONSerialization.data(withJSONObject: v) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
     }
 }
 
@@ -206,6 +298,9 @@ extension Project {
     /// higher video tracks connect at lanes 1, 2, … and audio tracks at lanes -1, -2, …, each attached to
     /// the storyline item under its start. Text clips become Basic Titles; speed becomes a `timeMap`.
     /// Solid and adjustment clips have no FCP equivalent and become gaps on the storyline or are left out above it.
+    /// Split edits are expanded audio (`audioStart`/`audioDuration`); levels, fades and volume keys are
+    /// `adjust-volume` with track faders and master gain folded in; transform, crop, fill and opacity are
+    /// `adjust-*`; the clip's CDL goes in its note as `ASC_SOP … ASC_SAT …`.
     public func fcpxml() -> String {
         let grid = FrameGrid(fps: canvas.fps)
         var nextId = 1
@@ -261,10 +356,42 @@ extension Project {
 
         // Story elements
         var styleCount = 0
-        func volumeChildren(_ gain: Double) -> [XMLElem] {
-            guard abs(gain - 1) > 1e-6 else { return [] }
-            let db = gain <= 1e-5 ? "-96dB" : String(format: "%.2fdB", 20 * log10(gain))
-            return [XMLElem("adjust-volume", [("amount", db)])]
+        let w = Double(canvas.width), h = Double(canvas.height)
+        func num(_ v: Double) -> String { CDL.number((v * 10000).rounded() / 10000) }
+        /// Level, fades and volume keys; track faders and the master gain are folded in, since Final Cut has neither.
+        func volumeChildren(_ clip: Clip, track: Track, start: Int) -> [XMLElem] {
+            if track.muted && track.kind == .video { return [XMLElem("adjust-volume", [("amount", "-96dB")])] }
+            let level = bakedLevel(clip, track: track, grid: grid)
+            var kids: [XMLElem] = []
+            if clip.audioFadeIn > 0 { kids.append(XMLElem("fadeIn", [("type", "easeIn"), ("duration", grid.fcp(grid.frames(clip.audioFadeIn)))])) }
+            if clip.audioFadeOut > 0 { kids.append(XMLElem("fadeOut", [("type", "easeOut"), ("duration", grid.fcp(grid.frames(clip.audioFadeOut)))])) }
+            if !level.keys.isEmpty {
+                kids.append(XMLElem("keyframeAnimation", children: level.keys.map {
+                    XMLElem("keyframe", [("time", grid.fcp(start + grid.frames($0.t))), ("value", Self.decibels($0.gain))])
+                }))
+            }
+            guard abs(level.gain - 1) > 1e-6 || !kids.isEmpty else { return [] }
+            return [XMLElem("adjust-volume", [("amount", Self.decibels(level.gain))], children: kids.isEmpty ? [] : [XMLElem("param", [("name", "amount")], children: kids)])]
+        }
+        /// Crop, conform, position (percent of the frame height, up positive), scale, counterclockwise rotation and opacity.
+        func pictureChildren(_ clip: Clip) -> [XMLElem] {
+            let t = clip.transform
+            var kids: [XMLElem] = []
+            if !t.crop.isEmpty {
+                kids.append(XMLElem("adjust-crop", [("mode", "trim")], children: [XMLElem("trim-rect", [
+                    ("left", num(t.crop.left * w / h * 100)), ("top", num(t.crop.top * 100)), ("right", num(t.crop.right * w / h * 100)), ("bottom", num(t.crop.bottom * 100)),
+                ])]))
+            }
+            if t.fit == .fill { kids.append(XMLElem("adjust-conform", [("type", "fill")])) }
+            if t.x != 0 || t.y != 0 || t.scale != 1 || t.rotation != 0 {
+                var attrs: [(String, String)] = []
+                if t.x != 0 || t.y != 0 { attrs.append(("position", "\(num(t.x * w / h * 100)) \(num(-t.y * 100))")) }
+                if t.scale != 1 { attrs.append(("scale", "\(num(t.scale)) \(num(t.scale))")) }
+                if t.rotation != 0 { attrs.append(("rotation", num(-t.rotation))) }
+                kids.append(XMLElem("adjust-transform", attrs))
+            }
+            if t.opacity < 1 - 1e-6 { kids.append(XMLElem("adjust-blend", [("amount", num(t.opacity))])) }
+            return kids
         }
         /// The clip's local start, which is in retimed time when the speed is not 1.
         func localStart(_ clip: Clip) -> Int {
@@ -278,7 +405,13 @@ extension Project {
             attrs += [("offset", grid.fcp(offset)), ("name", clip.name ?? asset.name), ("start", grid.fcp(start)), ("duration", grid.fcp(frames))]
             if audioOnly && asset.hasVideo { attrs.append(("srcEnable", "audio")) }
             if audioOnly ? track.muted : track.hidden { attrs.append(("enabled", "0")) }
+            let sound = asset.hasAudio && !asset.isImage
+            let lead = grid.frames(clip.audioLead), lag = grid.frames(clip.audioLag)
+            if sound, lead != 0 || lag != 0 {
+                attrs += [("audioStart", grid.fcp(start - lead)), ("audioDuration", grid.fcp(frames + lead + lag))]
+            }
             var children: [XMLElem] = []
+            if !audioOnly, asset.hasVideo, let cdl = clip.cdl { children.append(XMLElem("note", text: cdl.text)) }
             if abs(clip.speed - 1) > 1e-9, clip.speed > 0, !asset.isImage {
                 let end = start + frames
                 let p = Int((clip.speed * 1000).rounded())
@@ -287,9 +420,8 @@ extension Project {
                     XMLElem("timept", [("time", grid.fcp(end)), ("value", FrameGrid.fcp(end * grid.num * p, grid.den * 1000)), ("interp", "linear")]),
                 ]))
             }
-            if !asset.isImage {
-                children += volumeChildren(track.kind == .video && track.muted ? 0 : track.volume * clip.volume)
-            }
+            if !audioOnly && asset.hasVideo { children += pictureChildren(clip) }
+            if sound { children += volumeChildren(clip, track: track, start: start) }
             return XMLElem(asset.isImage ? "video" : "asset-clip", attrs, children: children)
         }
         func titleElement(_ clip: Clip, track: Track, lane: Int?, offset: Int, frames: Int) -> XMLElem {
@@ -397,7 +529,7 @@ extension Project {
             }
         }
         let sequence = XMLElem("sequence", [
-            ("format", sequenceFormat), ("duration", grid.fcp(end)), ("tcStart", "0s"), ("tcFormat", TimecodeFormat(fps: canvas.fps).dropFrame ? "DF" : "NDF"),
+            ("format", sequenceFormat), ("duration", grid.fcp(end)), ("tcStart", "0s"), ("tcFormat", canvas.isDropFrame ? "DF" : "NDF"),
             ("audioLayout", "stereo"), ("audioRate", "48k"),
         ], children: [XMLElem("spine", children: spineElems)])
         let root = XMLElem("fcpxml", [("version", "1.11")], children: [

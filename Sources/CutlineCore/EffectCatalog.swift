@@ -123,6 +123,18 @@ public enum EffectCatalog {
         EffectType(id: "color.lut", category: "color", summary: "Applies a 3D LUT from a .cube file (Resolve, Premiere and camera LUTs)", params: [
             ParamSpec("file", .text, .string(""), "Absolute path to a .cube file"),
         ]),
+        EffectType(id: "color.cdl", category: "color", summary: "ASC CDL primary from a colorist: slope, offset and power per channel, then saturation", params: [
+            ParamSpec("slope_r", .number, .number(1), min: 0, max: 8, "Red slope (gain)"),
+            ParamSpec("slope_g", .number, .number(1), min: 0, max: 8, "Green slope (gain)"),
+            ParamSpec("slope_b", .number, .number(1), min: 0, max: 8, "Blue slope (gain)"),
+            ParamSpec("offset_r", .number, .number(0), min: -1, max: 1, "Red offset"),
+            ParamSpec("offset_g", .number, .number(0), min: -1, max: 1, "Green offset"),
+            ParamSpec("offset_b", .number, .number(0), min: -1, max: 1, "Blue offset"),
+            ParamSpec("power_r", .number, .number(1), min: 0.1, max: 8, "Red power (gamma)"),
+            ParamSpec("power_g", .number, .number(1), min: 0.1, max: 8, "Green power (gamma)"),
+            ParamSpec("power_b", .number, .number(1), min: 0.1, max: 8, "Blue power (gamma)"),
+            ParamSpec("saturation", .number, .number(1), min: 0, max: 4, "1 unchanged, 0 black and white"),
+        ]),
         EffectType(id: "stylize.glow", category: "stylize", summary: "Bloom that makes highlights glow", params: [
             ParamSpec("amount", .number, .number(0.6), min: 0, max: 2, "Strength"),
             ParamSpec("radius", .number, .number(0.02), min: 0, max: 0.2, unit: "of frame height", "Spread"),
@@ -281,7 +293,7 @@ public enum EffectCatalog {
     public static func title(_ type: String) -> String {
         let titles = [
             "blur.gaussian": "blur", "blur.motion": "motion blur", "blur.zoom": "zoom blur", "blur.sharpen": "sharpening",
-            "color.adjust": "color correction", "color.grade": "color wheels", "color.curves": "curves", "color.hsl": "HSL", "color.look": "look", "color.lut": "LUT", "color.monochrome": "black and white", "color.invert": "invert",
+            "color.adjust": "color correction", "color.grade": "color wheels", "color.curves": "curves", "color.hsl": "HSL", "color.look": "look", "color.lut": "LUT", "color.cdl": "CDL", "color.monochrome": "black and white", "color.invert": "invert",
             "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask", "mask.person": "person mask", "mask.subject": "subject mask", "key.chroma": "chroma key",
             "distort.bulge": "bulge", "distort.twirl": "twirl",
         ]

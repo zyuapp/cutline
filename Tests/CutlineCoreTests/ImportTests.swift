@@ -110,12 +110,12 @@ private func markers(_ p: Project, fps: Double = 30) -> [String] {
 @Test func edlRoundTripKeepsTimingSpeedDissolveAndMarkers() throws {
     let p = roundTripProject()
     let edl = p.edl(title: "Round Trip")
-    #expect(edl.hasPrefix("TITLE: Round Trip\nFCM: NON-DROP FRAME\n\n001  A        V     C        00:00:02:00 00:00:06:00 01:00:00:00 01:00:04:00\n"))
+    #expect(edl.hasPrefix("TITLE: Round Trip\nFCM: NON-DROP FRAME\n\n001  A        AA/V  C        00:00:02:00 00:00:06:00 01:00:00:00 01:00:04:00\n"))
     #expect(edl.contains("002  A        V     C        00:00:06:00 00:00:06:00 01:00:04:00 01:00:04:00\n002  B        V     D    030 00:00:01:00 00:00:04:00 01:00:04:00 01:00:07:00\n"))
     #expect(edl.contains("M2   A              060.0                00:00:10:00"))
     #expect(edl.contains("* SOURCE FILE: /tmp/cutline import/a.mov"))
     #expect(edl.contains("* LOC: 01:00:02:00 RED     Hook"))
-    #expect(edl.contains("004  MUSIC    A     C        00:00:00:00 00:00:06:00 01:00:00:00 01:00:06:00"))
+    #expect(edl.contains("004  MUSIC    NONE  C        00:00:00:00 00:00:06:00 01:00:00:00 01:00:06:00\nAUD  3\n"))
 
     let ids = ["a": "a", "b": "b", "music": "music"]
     let r = try Importer.edl(edl, fps: 30) { ids[$0] }
@@ -193,8 +193,8 @@ private func markers(_ p: Project, fps: Double = 30) -> [String] {
         Transition(id: "out", from: "c3", to: nil, type: "dissolve", duration: 1),
     ]
     let edl = p.edl(title: "Fades")
-    #expect(edl.contains("BL       V     C        00:00:00:00 00:00:00:00 01:00:00:00 01:00:00:00"))
-    #expect(edl.contains("BL       V     D    030 00:00:00:00 00:00:01:00 01:00:09:00 01:00:10:00"))
+    #expect(edl.contains("BL       AA/V  C        00:00:00:00 00:00:00:00 01:00:00:00 01:00:00:00"))
+    #expect(edl.contains("BL       AA/V  D    030 00:00:00:00 00:00:01:00 01:00:09:00 01:00:10:00"))
 
     let r = try Importer.edl(edl, fps: 30) { ["a": "a", "b": "b", "music": "music"][$0] }
     let q = r.project

@@ -27,6 +27,7 @@ extension Toolbox {
             "background": Schema.string("Background color as hex, default #000000"),
             "color_space": Schema.string("Output color: rec709 (SDR, default), p3 (Display P3), rec2020_hlg or rec2020_pq (HDR, exports as 10-bit HEVC)", values: WorkingSpace.allCases.map(\.rawValue)),
             "timecode_start": Schema.string("Timecode of the first timeline frame in exports, \"hh:mm:ss:ff\" (drop frame at 29.97 and 59.94); default 01:00:00:00"),
+            "drop_frame": Schema.bool("Timecode in exported EDL, FCPXML and XML: drop frame (default at 29.97 and 59.94) or false for non-drop"),
         ]
 
         add(Tool(name: "project_create", description: "Create a new Cutline project (a .cutline folder holding the timeline, history, comments and analysis), open it in this session and, by default, in the preview app the human watches.", schema: Schema.object(canvasProps.merging([
@@ -183,8 +184,9 @@ extension Toolbox {
         if let bg = try args.color("background") { c.background = bg }
         if let cs = try args.enumValue("color_space", WorkingSpace.self) { c.colorSpace = cs }
         guard c.fps >= 1, c.fps <= 240 else { throw EditError("fps must be between 1 and 240") }
+        if let df = args.optBool("drop_frame") { c.dropFrame = df }
         if let tc = args.optString("timecode_start") {
-            let format = TimecodeFormat(fps: c.fps)
+            let format = c.timecodeFormat
             guard let frames = format.frames(tc) else { throw EditError("timecode_start is hh:mm:ss:ff, e.g. 01:00:00:00, with frames below \(format.nominal)") }
             c.timecodeStart = format.string(frames)
         }
