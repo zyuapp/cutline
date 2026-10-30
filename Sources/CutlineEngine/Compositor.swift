@@ -245,6 +245,7 @@ public final class RenderScene: @unchecked Sendable {
         if clip.kind == .media, let mid = clip.mediaId {
             ctx.source = MaskCache.Key(mediaId: mid, time: images[mid] != nil ? 0 : clip.sourceTime(atTimeline: t))
             ctx.crop = xf.crop
+            ctx.mediaPath = project.mediaAsset(mid)?.path
         }
         let effects = clip.effects(atTimeline: t)
         if let view = matteView, view.clip == clip.id {

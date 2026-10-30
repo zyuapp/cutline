@@ -31,6 +31,8 @@ public struct Project: Codable, Equatable, Sendable {
     /// True once the canvas was chosen deliberately (project_create with canvas arguments, canvas_set, an imported
     /// timeline); until then the first video import adopts its footage's size and rate.
     public var canvasSet: Bool?
+    /// What the preview plays: proxies or originals, and at which proxy size. Export always reads originals.
+    public var playback: Playback?
 
     public init(name: String, canvas: Canvas = Canvas()) {
         formatVersion = Project.currentFormat
@@ -50,7 +52,7 @@ public struct Project: Codable, Equatable, Sendable {
         timelines = []
     }
 
-    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions, sequences, syncGroups, timelineName, timelines, buses, canvasSet }
+    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions, sequences, syncGroups, timelineName, timelines, buses, canvasSet, playback }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -69,6 +71,7 @@ public struct Project: Codable, Equatable, Sendable {
         timelines = try c.decodeIfPresent([StoredTimeline].self, forKey: .timelines) ?? []
         buses = try c.decodeIfPresent([AudioBus].self, forKey: .buses) ?? []
         canvasSet = try c.decodeIfPresent(Bool.self, forKey: .canvasSet)
+        playback = try c.decodeIfPresent(Playback.self, forKey: .playback)
     }
 
     public var duration: Seconds {
@@ -217,6 +220,8 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     /// Camera RAW source: format, as-shot metadata and the media's own development settings. For video `path` is then
     /// the developed picture (encoded in `CameraRaw.workingLog`); for stills it is the raw file.
     public var raw: RawMedia?
+    /// Whether the preview plays a proxy of this file; nil is auto.
+    public var proxy: ProxyMode?
 
     public init(id: String, path: String, name: String, duration: Seconds, width: Int, height: Int, fps: Double, hasVideo: Bool, hasAudio: Bool, isImage: Bool = false) {
         self.id = id
@@ -371,7 +376,7 @@ public enum ClipKind: String, Codable, Sendable, CaseIterable {
     case adjustment
     /// A nested sequence (`Project.sequences`), played as one clip.
     case sequence
-    /// Drawn graphics (shapes, arrows, lower thirds, counters); the first effect is the generator, fx.gen.<param>.
+    /// Drawn graphics (shapes, arrows, lower thirds, counters); the first effect is the generator: fx.gen.<param>, and for shape layers fx.gen.<shape id>.<property>.
     case generator
 }
 

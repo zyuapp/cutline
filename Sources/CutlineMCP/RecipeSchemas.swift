@@ -310,6 +310,15 @@ extension Toolbox {
             .init("clean_plate", .string, "Image of the background without the object"),
             .init("clean_plate_at", .time, "Or a timeline time where the background shows"),
         ]),
+        RecipeSpec(name: "sky_replace", group: "Finishing", summary: "Sky replacement: keys the clip's sky with mask.sky (heuristic: bright, smooth, sky-colored region touching the top, edge-refined and smoothed over time), places the new sky on a track under it and relights the foreground toward the new horizon. Check with timeline_frames view:\"matte\".", args: [
+            .init("clip", .string, "Media clip whose sky is replaced"),
+            .init("media", .string, "Media id of the new sky (a still or a clip)"),
+            .init("image", .string, "Image file of the new sky, imported, instead of media"),
+            .init("blend", .number, "How far the foreground's highlights move toward the new sky's horizon light, 0 none to 1, default 0.5"),
+            .init("feather", .number, "Soft edge of the sky matte, frame heights, default 0.004"),
+            .init("sensitivity", .number, "mask.sky sensitivity, default 0.5; raise it when hazy sky is missed"),
+            .init("at", .time, "Timeline time the sky and light are measured at, default the clip's middle"),
+        ]),
         RecipeSpec(name: "track_mask", group: "Finishing", summary: "Tracked roto: makes a mask.shape follow the footage by keyframing its points (fx.<id>.points) from the clip's source in and out. planar: the homography of the flat surface the shape lies on (a screen, sign, card; perspective included), from the shape's bounding box or corners; points: each control point tracked on its own; translate: the shape moves with its tracked bounding box. refine snaps every point to the nearest edge of Apple's subject or person matte (magnetic roto). Check with timeline_frames view:\"matte\".", args: [
             .init("clip", .string, "Video clip with the mask.shape"),
             .init("effect", .string, "The mask.shape effect id; default the clip's first"),

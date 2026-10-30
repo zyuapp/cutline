@@ -25,6 +25,7 @@ public enum GeneratorRenderer {
         var key = "\(type)|\(Int(canvas.width.rounded()))x\(Int(canvas.height.rounded()))"
         var names = spec.params.map(\.name)
         if type == "shape" { names += ShapeLayers.names(shapes: value("shapes").string ?? "").map(\.0) }
+        if type == "timecode_burn" { names.append("__burn") }
         for name in names {
             var v = value(name)
             // 1e-4 of the frame is well under a pixel at 4K, so neighbouring frames of a still graphic share an image.
@@ -36,6 +37,13 @@ public enum GeneratorRenderer {
                 key += "|\(v)"
             }
             map[name] = v
+        }
+        if type == "credits" {
+            let fixed = map["progress"]?.number ?? -1
+            let p = fixed >= 0 ? fixed : Credits.progress(time: time, duration: duration, endHold: map["end_hold"]?.number ?? 0)
+            let q = (p * 100_000).rounded()
+            map["__progress"] = .number(q / 100_000)
+            key += "|p\(q)"
         }
         let values = Values(map: map, spec: spec)
         let clocks = type.hasPrefix("title.") ? TitlePresets.clocks(values, time: time, duration: duration) : nil
@@ -89,6 +97,8 @@ public enum GeneratorRenderer {
         case "grid_overlay": d.grid()
         case "text.path": PathText.drawPath(v, ctx: ctx, W: CGFloat(w), H: CGFloat(h))
         case "text.extruded": PathText.drawExtruded(v, ctx: ctx, W: CGFloat(w), H: CGFloat(h))
+        case "credits": ReviewGraphics.credits(v, ctx: ctx, W: CGFloat(w), H: CGFloat(h))
+        case "timecode_burn": ReviewGraphics.burnIn(v, ctx: ctx, W: CGFloat(w), H: CGFloat(h))
         case "shape":
             guard let items = try? ShapeLayers.parse(v.text("shapes")) else { return nil }
             ShapeRenderer.draw(items, ctx: ctx, W: CGFloat(w), H: CGFloat(h)) { v.map[$0] }

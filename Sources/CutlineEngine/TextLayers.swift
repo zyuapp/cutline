@@ -8,6 +8,10 @@ extension RenderScene {
     /// takes that shape layer's path (with its scale and rotation) and position at the same timeline time.
     func generatorValues(_ clip: Clip, _ gen: Effect, at local: Seconds) -> (String) -> ParamValue {
         let plain: (String) -> ParamValue = { clip.generatorValue($0, at: local) ?? .number(0) }
+        if gen.type == "timecode_burn" {
+            let burn = BurnIn.text(project, clip: clip.id, at: clip.start + local, show: plain("show").string ?? "record", label: plain("label").string ?? "", sourceTrack: plain("source_track").string ?? "")
+            return { $0 == "__burn" ? .string(burn) : plain($0) }
+        }
         guard gen.type == "text.path", let ref = plain("d").string, ref.hasPrefix("shape:"),
               let resolved = shapeReference(String(ref.dropFirst(6)), at: clip.start + local) else { return plain }
         return { name in

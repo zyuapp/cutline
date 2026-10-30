@@ -45,7 +45,7 @@ extension Toolbox {
             "media_id": Schema.string("Media to place"),
             "color": Schema.string("Hex color for a solid color clip"),
             "adjustment": Schema.bool("Make an adjustment layer"),
-            "generator": Schema.string("Draw a graphic: \(GeneratorCatalog.all.map(\.id).joined(separator: ", ")). shape is a shape layer (paths, strokes, trim paths, morphs, repeaters), particles an emitter, title.* designed titles that build on and off by themselves, camera the 3D camera for layers with transform.3d. catalog type=<id> for params; animate them as fx.gen.<param>"),
+            "generator": Schema.string("Draw a graphic: \(GeneratorCatalog.all.map(\.id).joined(separator: ", ")). shape is a shape layer (paths, strokes, trim paths, morphs, repeaters), particles an emitter, title.* designed titles that build on and off by themselves, camera the 3D camera for layers with transform.3d. catalog type=<id> for params; animate them as fx.gen.<param> (shape layers: fx.gen.<shape id>.<property>, e.g. fx.gen.ring.trim_end)"),
             "params": ["type": "object", "description": "Generator parameters, e.g. {\"title\": \"Ada Lovelace\", \"subtitle\": \"Mathematician\"}; shape takes {\"shapes\": [{\"id\": \"ring\", \"type\": \"ellipse\", \"width\": 0.3, \"height\": 0.3, \"stroke\": \"#FFFFFF\", \"stroke_width\": 0.01, \"trim_end\": 0}]}"],
             "track": Schema.string("Track id, or \"new\" for a new layer on top"),
             "start": Schema.time("Timeline start (seconds or anchor)"),

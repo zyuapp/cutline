@@ -143,7 +143,7 @@ public final class MediaLibrary: @unchecked Sendable {
     private var entries: [String: Entry] = [:]
     private var images: [String: CIImage] = [:]
     private let lock = NSLock()
-    /// Preview libraries read cached proxies when there are any; export libraries always read originals.
+    /// Set for preview libraries, which read cached proxies; export libraries (nil) always read originals.
     public let proxyQuality: Proxies.Quality?
 
     public init(proxyQuality: Proxies.Quality? = nil) {
@@ -155,11 +155,13 @@ public final class MediaLibrary: @unchecked Sendable {
         lock.withLock { entries.removeAll() }
     }
 
-    public func entry(for media: MediaAsset) async throws -> Entry {
+    /// The opened file for `media`. Preview libraries play its proxy when one is made, as `project`'s playback
+    /// settings choose (without a project, the proxy at `proxyQuality`).
+    public func entry(for media: MediaAsset, project: Project? = nil) async throws -> Entry {
         if media.isTranscoding {
             throw EditError("\(media.id) is still being transcoded from \(media.conformPath) to a playable ProRes file; wait for its job (analysis_read media_id:\(media.id) wait:600)")
         }
-        let proxy = proxyQuality.flatMap { Proxies.cached(media, quality: $0) }
+        let proxy = proxyQuality.flatMap { q in project.map { Proxies.preview(media, in: $0) } ?? Proxies.cached(media, quality: q) }
         let key = proxy?.path ?? media.path
         if let e = lock.withLock({ entries[key] }) { return e }
         let asset = AVURLAsset(url: proxy ?? media.url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])

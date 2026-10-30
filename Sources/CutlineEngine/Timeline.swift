@@ -137,7 +137,7 @@ public enum TimelineBuilder {
                     }
                     continue
                 }
-                let entry = try await library.entry(for: media)
+                let entry = try await library.entry(for: media, project: project)
                 orientations[mid] = entry.orientation
                 // Reversed clips read an upright backwards copy whose time 0 is the range's end.
                 var video = entry.video, videoRange = entry.videoRange, audio = entry.audio, audioRange = entry.audioRange
