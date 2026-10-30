@@ -31,7 +31,10 @@ enum EffectRenderer {
             }
             let mix = min(max(param(e, "mix")?.number ?? e.mix, 0), 1)
             guard mix > 0.001 else { continue }
-            let out = render(e.type, img, context, value)
+            var out = render(e.type, img, context, value)
+            if let mask = limitMask(img, context, value) {
+                out = out.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: img, kCIInputMaskImageKey: mask]).cropped(to: img.extent)
+            }
             img = mix >= 0.999 ? out : dissolve(from: img, to: out, mix: mix)
         }
         return img
@@ -155,6 +158,24 @@ enum EffectRenderer {
     }
 
     /// White where the clip is kept, black elsewhere, covering the image extent.
+    /// The window or qualifier an effect is limited to, or nil when it applies everywhere.
+    static func limitMask(_ img: CIImage, _ ctx: Context, _ v: @escaping (String) -> ParamValue) -> CIImage? {
+        let kind = v("limit").string ?? "none"
+        let n: (String) -> CGFloat = { CGFloat(v($0).number ?? 0) }
+        let invert = v("limit_invert").bool ?? false
+        switch kind {
+        case "rect", "ellipse":
+            let names = ["center_x": "limit_x", "center_y": "limit_y", "width": "limit_width", "height": "limit_height", "feather": "limit_feather", "roundness": "limit_roundness"]
+            return maskImage(kind == "rect" ? "mask.rect" : "mask.ellipse", extent: img.extent, unit: ctx.unit, n: { n(names[$0] ?? $0) }, invert: invert)
+        case "qualifier":
+            guard let cube = ColorCubes.qualifier(hue: Float(n("q_hue")), width: Float(n("q_hue_width")), sat: (Float(n("q_sat_min")), Float(n("q_sat_max"))), luma: (Float(n("q_luma_min")), Float(n("q_luma_max"))), softness: Float(n("q_softness")), invert: invert) else { return nil }
+            return img.applyingFilter("CIColorCubeWithColorSpace", parameters: ["inputCubeDimension": cube.size, "inputCubeData": cube.data, "inputColorSpace": ColorCubes.space])
+                .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: 1]).applyingGaussianBlur(sigma: 1.5).cropped(to: img.extent)
+        default:
+            return nil
+        }
+    }
+
     static func maskImage(_ type: String, extent e: CGRect, unit: CGFloat, n: (String) -> CGFloat, invert: Bool) -> CIImage {
         let w = max(1, n("width") * e.width), h = max(1, n("height") * e.height)
         let cx = e.minX + n("center_x") * e.width, cy = e.maxY - n("center_y") * e.height
@@ -262,6 +283,39 @@ enum ColorCubes {
         if let hit = cache.object(forKey: key as NSString) { return hit }
         guard let cube = make(type, v) else { return nil }
         cache.setObject(cube, forKey: key as NSString)
+        return cube
+    }
+
+    /// A key that is white where colors match the hue, saturation and lightness ranges.
+    static func qualifier(hue: Float, width: Float, sat: (Float, Float), luma: (Float, Float), softness: Float, invert: Bool) -> Cube? {
+        let key = String(format: "q|%.1f|%.1f|%.3f|%.3f|%.3f|%.3f|%.3f|%d", hue, width, sat.0, sat.1, luma.0, luma.1, softness, invert ? 1 : 0) as NSString
+        if let hit = cache.object(forKey: key) { return hit }
+        let soft = max(0.001, softness)
+        func ramp(_ x: Float, _ lo: Float, _ hi: Float, _ s: Float) -> Float {
+            let a = min(1, max(0, (x - (lo - s)) / s)), b = min(1, max(0, ((hi + s) - x) / s))
+            return min(a, b)
+        }
+        let data = ColorMath.cubeData(size: 33) { c in
+            let mx = max(c.x, c.y, c.z), mn = min(c.x, c.y, c.z)
+            let l = (mx + mn) / 2
+            let d = mx - mn
+            let s = d < 1e-5 ? 0 : d / (1 - abs(2 * l - 1) + 1e-5)
+            var h: Float = 0
+            if d > 1e-5 {
+                if mx == c.x { h = 60 * ((c.y - c.z) / d).truncatingRemainder(dividingBy: 6) }
+                else if mx == c.y { h = 60 * ((c.z - c.x) / d + 2) } else { h = 60 * ((c.x - c.y) / d + 4) }
+                if h < 0 { h += 360 }
+            }
+            var dh = abs(h - hue).truncatingRemainder(dividingBy: 360)
+            if dh > 180 { dh = 360 - dh }
+            let hw = width >= 359 ? Float(1) : min(1, max(0, (width / 2 + soft * 90 - dh) / (soft * 90)))
+            var w = hw * ramp(min(s, 1), sat.0, sat.1, soft) * ramp(l, luma.0, luma.1, soft)
+            if d < 1e-5 && width < 359 { w = 0 }
+            if invert { w = 1 - w }
+            return SIMD3(w, w, w)
+        }
+        let cube = Cube(size: 33, data: data.withUnsafeBufferPointer { Data(buffer: $0) })
+        cache.setObject(cube, forKey: key)
         return cube
     }
 

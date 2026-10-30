@@ -32,15 +32,24 @@ extension Toolbox {
             "path": Schema.string("Where to create the project; .cutline is appended if missing. Relative paths resolve against the working directory."),
             "name": Schema.string("Display name, default from the path"),
             "open_preview": Schema.bool("Open the preview app, default true"),
+            "import": Schema.string("Start from another editor's timeline: an .fcpxml/.fcpxmld (Final Cut Pro), .otio (DaVinci Resolve, Premiere via OTIO) or .edl (CMX 3600) file"),
+            "edl_fps": Schema.number("Frame rate of an EDL, default 30"),
         ]) { a, _ in a }, required: ["path"])) { [unowned self] args in
             var url = session.resolve(try args.string("path"))
             if url.pathExtension != ProjectBundle.fileExtension { url.appendPathExtension(ProjectBundle.fileExtension) }
             var canvas = Canvas()
             try Toolbox.applyCanvas(&canvas, args)
             let name = args.optString("name") ?? url.deletingPathExtension().lastPathComponent
-            try ProjectBundle.create(at: url, project: Project(name: name, canvas: canvas))
+            var project = Project(name: name, canvas: canvas)
+            var notes: [String] = []
+            if let source = args.optString("import") {
+                let (imported, report) = try await importTimeline(session.resolve(source), name: name, edlFps: args.optDouble("edl_fps") ?? 30)
+                project = imported
+                notes = report
+            }
+            try ProjectBundle.create(at: url, project: project)
             let b = try session.open(url)
-            var msg = "Created \(url.path)\n"
+            var msg = "Created \(url.path)\n" + (notes.isEmpty ? "" : notes.joined(separator: "\n") + "\n")
             if args.bool("open_preview", default: true) { msg += try session.openPreview() + "\n" }
             return .text(msg + Describe.project(try b.loadProject(), bundle: b))
         })
@@ -175,5 +184,45 @@ extension Toolbox {
         guard c.fps >= 1, c.fps <= 240 else { throw EditError("fps must be between 1 and 240") }
         c.width -= c.width % 2
         c.height -= c.height % 2
+    }
+}
+
+extension Toolbox {
+    /// Reads another editor's timeline and swaps in real media details from the files it points at.
+    func importTimeline(_ file: URL, name: String, edlFps: Double) async throws -> (Project, [String]) {
+        var source = file
+        if file.pathExtension == "fcpxmld" { source = file.appendingPathComponent("Info.fcpxml") }
+        guard let data = try? Data(contentsOf: source) else { throw EditError("Cannot read \(file.path)") }
+        let base = file.deletingLastPathComponent()
+        var result: ImportResult
+        switch file.pathExtension.lowercased() {
+        case "fcpxml", "fcpxmld", "xml": result = try Importer.fcpxml(data, relativeTo: base)
+        case "otio": result = try Importer.otio(data, relativeTo: base)
+        case "edl":
+            let text = String(decoding: data, as: UTF8.self)
+            var media: [String: String] = [:]
+            result = try Importer.edl(text, fps: edlFps) { ref in
+                let candidates = [ref, base.appendingPathComponent(ref).path]
+                guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else { return nil }
+                let id = Toolbox.mediaId(for: URL(fileURLWithPath: path), existing: Set(media.values))
+                media[path] = id
+                return id
+            }
+        default: throw EditError("Import reads .fcpxml, .fcpxmld, .otio or .edl")
+        }
+        var p = result.project
+        p.name = name
+        var notes = ["Imported \(file.lastPathComponent): \(p.tracks.flatMap(\.clips).count) clips on \(p.tracks.count) tracks, \(p.media.count) media, \(fmt2(p.duration))s."]
+        for i in p.media.indices where FileManager.default.fileExists(atPath: p.media[i].path) {
+            if var real = try? await MediaProbe.probe(p.media[i].url, id: p.media[i].id) {
+                real.name = p.media[i].name
+                real.tags = p.media[i].tags
+                real.timecodeStart = real.timecodeStart ?? p.media[i].timecodeStart
+                p.media[i] = real
+            }
+        }
+        if !result.missingMedia.isEmpty { notes.append("Missing media (relink with media_import, then clip_update media_id): " + result.missingMedia.prefix(10).joined(separator: ", ")) }
+        if !result.warnings.isEmpty { notes.append("Import notes: " + result.warnings.prefix(12).joined(separator: "; ") + (result.warnings.count > 12 ? "; …\(result.warnings.count - 12) more" : "")) }
+        return (p, notes)
     }
 }

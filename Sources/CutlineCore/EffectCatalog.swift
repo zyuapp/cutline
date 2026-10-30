@@ -6,7 +6,31 @@ import Foundation
 /// positions are fractions of the clip's frame with the origin at the top left,
 /// angles are degrees clockwise.
 public enum EffectCatalog {
-    public static func type(_ id: String) -> EffectType? { byId[id] ?? ProAudioCatalog.type(id) ?? GeneratorCatalog.type(id) ?? PluginRegistry.type(id) }
+    public static func type(_ id: String) -> EffectType? { limited[id] ?? byId[id] ?? ProAudioCatalog.type(id) ?? GeneratorCatalog.type(id) ?? PluginRegistry.type(id) }
+
+    /// Secondary correction: any picture effect can be limited to a window (rectangle or ellipse) or to
+    /// pixels matching a hue/saturation/luma qualifier, like power windows and qualifiers in a grading suite.
+    public static let limitSpecs: [ParamSpec] = [
+        ParamSpec("limit", .choice(["none", "rect", "ellipse", "qualifier"]), .string("none"), "Apply only inside a window or to qualified colors"),
+        ParamSpec("limit_x", .number, .number(0.5), min: -1, max: 2, "Window center, 0 left to 1 right (animate or bind to track an object)"),
+        ParamSpec("limit_y", .number, .number(0.5), min: -1, max: 2, "Window center, 0 top to 1 bottom"),
+        ParamSpec("limit_width", .number, .number(0.5), min: 0, max: 3, "Window width, fraction of the frame"),
+        ParamSpec("limit_height", .number, .number(0.5), min: 0, max: 3, "Window height"),
+        ParamSpec("limit_roundness", .number, .number(0), min: 0, max: 0.5, "Rounded rectangle corners"),
+        ParamSpec("limit_feather", .number, .number(0.05), min: 0, max: 0.5, unit: "of frame height", "Soft edge of the window"),
+        ParamSpec("limit_invert", .bool, .bool(false), "Apply outside the window or to everything but the qualified colors"),
+        ParamSpec("q_hue", .number, .number(30), min: 0, max: 360, unit: "degrees", animatable: false, "Qualifier hue center (0 red, 30 skin/orange, 120 green, 210 sky blue)"),
+        ParamSpec("q_hue_width", .number, .number(40), min: 1, max: 360, unit: "degrees", animatable: false, "Qualifier hue range"),
+        ParamSpec("q_sat_min", .number, .number(0.1), min: 0, max: 1, animatable: false, "Minimum saturation"),
+        ParamSpec("q_sat_max", .number, .number(1), min: 0, max: 1, animatable: false, "Maximum saturation"),
+        ParamSpec("q_luma_min", .number, .number(0), min: 0, max: 1, animatable: false, "Minimum lightness"),
+        ParamSpec("q_luma_max", .number, .number(1), min: 0, max: 1, animatable: false, "Maximum lightness"),
+        ParamSpec("q_softness", .number, .number(0.15), min: 0, max: 1, animatable: false, "Softness of the qualifier's edges"),
+    ]
+
+    static let limited: [String: EffectType] = Dictionary(uniqueKeysWithValues: all.filter { ["blur", "color", "stylize", "distort"].contains($0.category) && $0.id != "distort.stabilize" && $0.id != "distort.corner_pin" }.map { t in
+        (t.id, EffectType(id: t.id, category: t.category, summary: t.summary, params: t.params + limitSpecs))
+    })
 
     public static let categories: [(String, String)] = [
         ("blur", "Blurs and focus"),

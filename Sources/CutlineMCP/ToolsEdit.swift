@@ -105,9 +105,26 @@ extension Toolbox {
             "end": Schema.time("Timeline end, instead of duration (e.g. \"talk.w46.end\")"),
             "duration": Schema.time("How long it shows, default 3"),
             "track": Schema.string("Track id; default picks or creates a text layer"),
-        ]) { a, _ in a }.merging(Toolbox.setProp) { a, _ in a }, required: ["text", "start"]), label: { a, _ in "Add title “\(Toolbox.excerpt(a.optString("text") ?? "", 34))”" }) { p, args in
+            "subtitles": Schema.string("Instead of one title, import an .srt or .vtt file as titles on a new track, styled by the other arguments (default: bottom, boxed); offset shifts them"),
+            "offset": Schema.number("Seconds added to imported subtitle times"),
+        ]) { a, _ in a }.merging(Toolbox.setProp) { a, _ in a }), label: { a, _ in a.has("subtitles") ? "Import subtitles" : "Add title “\(Toolbox.excerpt(a.optString("text") ?? "", 34))”" }) { p, args in
+            if let file = args.optString("subtitles") {
+                let url = URL(fileURLWithPath: (file as NSString).expandingTildeInPath)
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else { throw EditError("Cannot read \(file)") }
+                let cues = url.pathExtension.lowercased() == "vtt" ? try Importer.vtt(text) : try Importer.srt(text)
+                let track = p.addTrack(kind: .video, name: "Subtitles")
+                let shift = args.optDouble("offset") ?? 0
+                for cue in cues {
+                    var spec = TextSpec(text: cue.text, size: 0.045, weight: 600, background: RGBA(hex: "#000000B3"), shadow: false, y: 0.88, maxWidth: 0.8, animationIn: .none, animationOut: .none)
+                    try Toolbox.applyText(&spec, args)
+                    let clip = Clip(id: Project.newClipId(), kind: .text, name: String(cue.text.prefix(30)), start: cue.start + shift, duration: max(p.canvas.frameDuration, cue.end - cue.start), text: spec)
+                    try p.addClip(clip, trackId: track.id, mode: .overwrite)
+                }
+                return "Imported \(cues.count) subtitles from \(url.lastPathComponent) onto \(track.id)."
+            }
             var spec = TextSpec(text: try args.string("text"))
             try Toolbox.applyText(&spec, args)
+            guard args.has("start") else { throw EditError("Pass start") }
             let start = p.canvas.snap(try args.time("start"))
             let duration = try args.optTime("end").map { $0 - start } ?? args.optTime("duration") ?? 3
             var clip = Clip(id: Project.newClipId(), kind: .text, name: String(spec.text.prefix(30)), start: start, duration: duration, text: spec)

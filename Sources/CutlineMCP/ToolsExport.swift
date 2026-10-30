@@ -14,7 +14,7 @@ extension Toolbox {
             "end": Schema.time("Export until this timeline time"),
             "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (.srt and .vtt) or both", values: ["none", "embed", "sidecar", "both"]),
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
-            "interchange": Schema.strings("Also write otio and/or fcpxml next to the video"),
+            "interchange": Schema.strings("Also write otio, fcpxml and/or edl next to the video"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
             "reveal": Schema.bool("Show the file in Finder when done, default false"),
             "variants": ["type": "array", "description": "Render several versions in one call: [{name, ops: [{tool, args}], and any export argument such as platform, path, start, end}]. Each variant applies its ops (any tools, e.g. recipe reframe, text edits, a different hook), exports, then the project returns to how it was.", "items": ["type": "object"]],
@@ -85,7 +85,8 @@ extension Toolbox {
                 switch kind {
                 case "otio": try p.otio().write(to: base.appendingPathExtension("otio"))
                 case "fcpxml": try p.fcpxml().write(to: base.appendingPathExtension("fcpxml"), atomically: true, encoding: .utf8)
-                default: throw EditError("interchange is otio or fcpxml")
+                case "edl": try p.edl(title: p.name).write(to: base.appendingPathExtension("edl"), atomically: true, encoding: .utf8)
+                default: throw EditError("interchange is otio, fcpxml or edl")
                 }
                 report.append("Interchange: \(base.lastPathComponent).\(kind)")
             }
