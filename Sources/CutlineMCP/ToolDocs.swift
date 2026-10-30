@@ -18,7 +18,7 @@ extension Toolbox {
     static let briefs: [String: ToolBrief] = [
         "project_create": ToolBrief(text: "Create a .cutline project, open it here and in the preview app.", args: [
             "path": "Where; .cutline is appended",
-            "import": "Start from an .fcpxml(d), .otio or .edl timeline",
+            "import": "Start from an .fcpxml(d), .otio, .edl or .aaf timeline",
             "preset": "landscape 1920×1080, vertical 1080×1920, square, portrait 1080×1350, uhd",
             "color_space": "rec709 (default), p3, rec2020_hlg, rec2020_pq (HDR)",
             "drop_frame": "Drop-frame timecode in EDL/FCPXML/XML; default at 29.97/59.94",
@@ -202,7 +202,7 @@ extension Toolbox {
             "leader.bars": "", "leader.black": "", "leader.pop": "", "leader.slate": "", "leader.version": "",
             "timecode_start": "\"hh:mm:ss:ff\" of the program", "subtitles": "Soft subtitles from the transcripts, default none", "subtitle_formats": "srt, vtt, ttml, imsc, ebu-tt-d", "subtitle_languages": "Translations too", "subtitle_default": "", "subtitle_forced": "",
             "subtitle_position": "", "subtitle_speakers": "Color speakers in TTML", "closed_captions": "CEA-608 plus .scc",
-            "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml (+ .notes.txt)", "render_graphics": "Bake generators", "bake_luts": "Grades as .cube", "trim": "For archive: used parts only",
+            "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml, aaf (+ .notes.txt)", "aaf_handles": "Default 2 s", "render_graphics": "Bake generators", "bake_luts": "Grades as .cube", "trim": "For archive: used parts only",
             "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported after the base, then undone", "base": "With variants: render this export too, default true",
             "sdr_from_hdr": "true or {method, target_nits}",
         ]),
@@ -242,7 +242,7 @@ extension Toolbox {
         "media_list": ToolBrief(text: "List media with bins, metadata, tags, format, channels and use; filter and sort.", args: [
             "bin": "", "search": "Names, metadata, tags, transcripts", "keyword": "", "rating": "", "kind": "", "unused": "", "sort": "Any column",
         ]),
-        "timeline_import": ToolBrief(text: "Import an .fcpxml, .otio, .edl or FCP7 .xml as a new current timeline, matching the project's media.", args: [
+        "timeline_import": ToolBrief(text: "Import an .fcpxml, .otio, .edl, FCP7 .xml or .aaf as a new current timeline, matching the project's media.", args: [
             "path": "", "name": "", "edl_fps": "Default the project's",
         ]),
         "timelines": ToolBrief(text: "Several timelines per project: list, new (duplicate copies the current), switch, rename, delete.", args: [

@@ -4,7 +4,7 @@ import Foundation
 
 extension Toolbox {
     func registerTimelineTools() {
-        add(Tool(name: "timeline_import", description: "Bring another editor's timeline (.fcpxml/.fcpxmld, .otio, .edl or FCP7 .xml) into the open project as a new timeline, reusing the project's media where the files match (EDL sources also match by reel and clip name). Use it to conform an offline edit or a colorist's/editor's revision against footage you already have. The new timeline becomes current; timelines switches back.", schema: Schema.object([
+        add(Tool(name: "timeline_import", description: "Bring another editor's timeline (.fcpxml/.fcpxmld, .otio, .edl, FCP7 .xml or .aaf from Media Composer or Pro Tools) into the open project as a new timeline, reusing the project's media where the files match (EDL sources also match by reel and clip name). Use it to conform an offline edit or a colorist's/editor's revision against footage you already have. The new timeline becomes current; timelines switches back.", schema: Schema.object([
             "path": Schema.string("Timeline file"),
             "name": Schema.string("Name of the new timeline (default: the file name)"),
             "edl_fps": Schema.number("Frame rate for EDLs (default: the project's)"),

@@ -2,7 +2,7 @@ import Foundation
 
 /// Timeline files other editors read.
 public enum InterchangeFormat: String, CaseIterable, Sendable {
-    case otio, fcpxml, edl, xml
+    case otio, fcpxml, edl, xml, aaf
 
     public var title: String {
         switch self {
@@ -10,6 +10,7 @@ public enum InterchangeFormat: String, CaseIterable, Sendable {
         case .fcpxml: "FCPXML"
         case .edl: "CMX 3600 EDL"
         case .xml: "Final Cut Pro 7 XML"
+        case .aaf: "AAF"
         }
     }
 }
@@ -22,11 +23,14 @@ public struct InterchangeOptions: Sendable {
     public var luts: [String: String]
     /// Where graphics that weren't rendered would be; their offline placeholders point there.
     public var graphicsFolder: String
+    /// Seconds of media an AAF's master clips reach past what the edit uses, each side.
+    public var aafHandles: Seconds
 
-    public init(graphics: [String: String] = [:], luts: [String: String] = [:], graphicsFolder: String = "") {
+    public init(graphics: [String: String] = [:], luts: [String: String] = [:], graphicsFolder: String = "", aafHandles: Seconds = 2) {
         self.graphics = graphics
         self.luts = luts
         self.graphicsFolder = graphicsFolder
+        self.aafHandles = aafHandles
     }
 }
 
@@ -39,7 +43,7 @@ public struct InterchangeExport: Sendable {
     /// The notes file written beside the export.
     public func notesText(project: String, format: InterchangeFormat) -> String {
         let head = "\(format.title) export of \(project): " + (notes.isEmpty ? "everything on the timeline is carried." : "\(notes.count) thing(s) the format can't carry exactly.")
-        return ([head, ""] + notes.map { "- " + $0 }).joined(separator: "\n") + "\n"
+        return ([head] + (format == .aaf ? [Project.aafCaveat] : []) + [""] + notes.map { "- " + $0 }).joined(separator: "\n") + "\n"
     }
 }
 
@@ -91,6 +95,7 @@ extension Project {
         case .fcpxml: data = Data(p.fcpxml(ctx).utf8)
         case .edl: data = Data(p.edl(title: name, ctx).utf8)
         case .xml: data = Data(p.xmeml(ctx).utf8)
+        case .aaf: data = p.aaf(ctx, handles: options.aafHandles, date: Date())
         }
         return InterchangeExport(data: data, notes: interchangeLosses(format, options: options))
     }
@@ -250,6 +255,7 @@ extension Project {
 
     /// What `format` can't carry, clip by clip, as the exporters write it.
     public func interchangeLosses(_ format: InterchangeFormat, options: InterchangeOptions = InterchangeOptions()) -> [String] {
+        if format == .aaf { return aafLosses(options) }
         var out: [String] = []
         let otio = format == .otio, edl = format == .edl, fcp = format == .fcpxml
         let cutlineOnly = otio ? " (kept in Cutline metadata; other apps ignore it)" : ""
