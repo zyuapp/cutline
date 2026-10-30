@@ -47,7 +47,7 @@ private func frames(_ t: Seconds, _ grid: FrameGrid) -> Int { grid.frames(t) }
 
 /// Every clip's timeline range, source range and split, and every transition (ends, type, duration, alignment, part),
 /// are the same frames in `q`, with no fraction of a frame between them.
-private func expectExact(_ p: Project, _ q: Project, _ label: String, sourceLocation: SourceLocation = #_sourceLocation) {
+func expectExact(_ p: Project, _ q: Project, _ label: String, sourceLocation: SourceLocation = #_sourceLocation) {
     let grid = FrameGrid(fps: p.canvas.fps)
     #expect(abs(q.canvas.fps - p.canvas.fps) < 1e-3, "\(label) fps \(q.canvas.fps)", sourceLocation: sourceLocation)
     func same(_ a: Seconds, _ b: Seconds) -> Bool { abs(a - b) < 1e-6 }
@@ -158,7 +158,7 @@ private func expectExact(_ p: Project, _ q: Project, _ label: String, sourceLoca
 }
 
 /// No two events on one EDL channel overlap in record time.
-private func expectNoOverlaps(_ edl: String, sourceLocation: SourceLocation = #_sourceLocation) {
+func expectNoOverlaps(_ edl: String, sourceLocation: SourceLocation = #_sourceLocation) {
     var byChannel: [String: [(r0: Int, r1: Int, event: String)]] = [:]
     let lines = edl.components(separatedBy: "\n")
     func tc(_ s: String) -> Int? {

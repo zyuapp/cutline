@@ -99,6 +99,61 @@ struct RationalTime: Equatable {
 
 // MARK: Shared
 
+/// A sound clip's picture range, split and fades in timeline frames, written beside an EDL or FCP7 XML event
+/// that can only say where the sound plays: "Cutline sound 50-114 lead 3 lag 3 fades 6/6".
+struct SoundHint: Equatable {
+    var start: Int
+    var end: Int
+    var lead: Int
+    var lag: Int
+    var fadeIn: Int
+    var fadeOut: Int
+    /// The event's join into the clip (an EDL dissolve) is its sound overlapping the previous clip's, not a transition.
+    var overlap = false
+
+    static let prefix = "Cutline sound"
+
+    init(start: Int, end: Int, lead: Int, lag: Int, fadeIn: Int, fadeOut: Int) {
+        self.start = start
+        self.end = end
+        self.lead = lead
+        self.lag = lag
+        self.fadeIn = fadeIn
+        self.fadeOut = fadeOut
+    }
+
+    init(_ c: Clip, grid: FrameGrid, offset: Int = 0) {
+        let s = grid.frames(c.start)
+        self.init(start: s + offset, end: grid.frames(c.end) + offset, lead: s - grid.frames(c.start - c.audioLead), lag: grid.frames(c.end + c.audioLag) - grid.frames(c.end),
+                  fadeIn: grid.frames(c.audioFadeIn), fadeOut: grid.frames(c.audioFadeOut))
+    }
+
+    init?(text: String) {
+        guard let r = text.range(of: SoundHint.prefix) else { return nil }
+        let v = text[r.upperBound...].split(whereSeparator: { " -/;\n".contains($0) }).filter { !["lead", "lag", "fades"].contains($0) }
+        let n = v.prefix(6).compactMap { Int($0) }
+        guard n.count == 6 else { return nil }
+        self.init(start: n[0], end: n[1], lead: n[2], lag: n[3], fadeIn: n[4], fadeOut: n[5])
+        overlap = v.contains("overlap")
+    }
+
+    var text: String { "\(SoundHint.prefix) \(start)-\(end) lead \(lead) lag \(lag) fades \(fadeIn)/\(fadeOut)" + (overlap ? " overlap" : "") }
+
+    /// `c`, read from an event whose sound starts `soundStart` frames into the timeline, placed as the hint says.
+    func apply(_ c: inout Clip, soundStart: Int, grid: FrameGrid) {
+        func t(_ f: Int) -> Seconds { Double(f * grid.num) / Double(grid.den) }
+        let before = c.start
+        c.sourceIn += t(start - soundStart) * c.speed
+        c.start = t(start)
+        c.duration = t(end - start)
+        c.audioLead = t(lead)
+        c.audioLag = t(lag)
+        c.audioFadeIn = t(fadeIn)
+        c.audioFadeOut = t(fadeOut)
+        if let k = c.anim["audio.volume"] { c.anim["audio.volume"] = k.shifted(by: before - c.start) }
+    }
+}
+
 extension Canvas {
     /// Frames from midnight to the first timeline frame, from `startTimecode`.
     var startFrame: Int { timecodeFormat.frames(startTimecode) ?? 0 }
@@ -164,7 +219,8 @@ extension Project {
 extension Project {
     /// OpenTimelineIO JSON (Clip.2 with `media_references`, OTIO 0.15+), timed in frames at the canvas fps.
     /// Video tracks come first, bottom layer first, then the embedded audio of video tracks, then audio tracks.
-    /// Text, solid and adjustment clips become gaps carrying `{"cutline": {kind, text}}` metadata;
+    /// Text, solid, adjustment and generator clips become gaps carrying `{"cutline": {kind, text, clip}}` metadata
+    /// (`clip` the whole Cutline clip); sound overlapping the next clip's on a track is a crossfade marked `overlap`;
     /// speed is a LinearTimeWarp with `source_range` duration in timeline frames. Sound (embedded and audio
     /// tracks) spans each clip's audio range, so split edits read as offset audio, with an `AudioLevel` effect
     /// holding the heard level (`gain_db`, `keyframes`, fades; faders and master folded in). Transitions sit on the
@@ -175,7 +231,10 @@ extension Project {
     /// `source_range` the part played. `global_start_time` is the canvas's start timecode. Media with source
     /// timecode have their `available_range` from it at their own rate and clips' `source_range` start in it, with
     /// the label and reel in the reference's Cutline metadata.
-    public func otio() throws -> Data {
+    public func otio() throws -> Data { try otio(InterchangeContext()) }
+
+    /// With clips the export replaced (`InterchangeContext.originals`) written as the clip they stand for, in metadata.
+    func otio(_ ctx: InterchangeContext) throws -> Data {
         let grid = FrameGrid(fps: canvas.fps)
         let rate = canvas.fps > 0 ? canvas.fps : 30
 
@@ -202,6 +261,9 @@ extension Project {
             if !clip.anim.isEmpty { md["anim"] = Self.jsonValue(clip.anim) }
             if let t = clip.text { md["text"] = t.text }
             if let c = clip.color { md["color"] = c.hex }
+            if clip.reverse { md["reverse"] = true }
+            // Everything about titles, solids and generators, and the clip a baked graphic stands for.
+            if let e = ctx.embedded(clip) { md["clip"] = Self.jsonValue(e) }
             return md
         }
         /// OTIO's CMX adapter keeps an EDL's `*ASC_SOP`/`*ASC_SAT` this way.
@@ -242,8 +304,9 @@ extension Project {
             return ["OTIO_SCHEMA": "ExternalReference.1", "name": m.name, "target_url": m.conformURL.absoluteString,
                     "available_range": available, "available_image_bounds": NSNull(), "metadata": metadata]
         }
-        /// `sound` is the clip as heard: from its audio source range over its audio range, with its level.
-        func clipItem(_ clip: Clip, track: Track, frames: Int, sound: Bool, scope: Project) -> [String: Any] {
+        /// `sound` is the clip as heard: from its audio source range over its audio range, with its level; the item
+        /// starts `skip` seconds into it.
+        func clipItem(_ clip: Clip, track: Track, frames: Int, sound: Bool, scope: Project, skip: Seconds = 0) -> [String: Any] {
             let asset = clip.mediaId.flatMap(mediaAsset)
             var effects: [Any] = []
             if abs(clip.speed - 1) > 1e-9 {
@@ -251,11 +314,11 @@ extension Project {
                                 "time_scalar": clip.speed, "metadata": [String: Any]()] as [String: Any])
             }
             let audible = asset.map { $0.hasAudio && !$0.isImage } ?? false
-            if sound, audible { effects.append(audioLevel(clip, track: track, itemStart: -clip.audioLead, scope: scope)) }
+            if sound, audible { effects.append(audioLevel(clip, track: track, itemStart: skip - clip.audioLead, scope: scope)) }
             var metadata: [String: Any] = ["cutline": summary(clip)]
             if !sound, let cdl = clip.cdl { metadata["cdl"] = cdlMetadata(cdl) }
-            if !sound, let lut = clip.lutFiles.first { metadata["lut"] = ["file": lut] }
-            let sourceIn = sound ? clip.audioSourceRange.start : clip.sourceIn
+            if !sound, let lut = ctx.luts[clip.id] { metadata["lut"] = ["file": lut, "whole_grade": true] } else if !sound, let lut = clip.lutFiles.first { metadata["lut"] = ["file": lut] }
+            let sourceIn = (sound ? clip.audioSourceRange.start : clip.sourceIn) + skip * clip.speed
             var sourceRange = range(grid.frames(sourceIn), frames)
             // In source timecode, at the media's rate like its available range.
             if let tc = sourceTimecode(asset) {
@@ -294,18 +357,40 @@ extension Project {
                             "in_offset": rt(at.cut - at.start), "out_offset": rt(at.start + at.length - at.cut), "metadata": ["cutline": md]]
                 }
             }
-            for clip in track.clips.sorted(by: { span($0).start < span($1).start }) {
-                let s = max(grid.frames(span(clip).start), cursor), e = grid.frames(span(clip).end)
+            let ordered = track.clips.sorted(by: { span($0).start < span($1).start })
+            // Sound overlapping the next clip's with no transition between them: a crossfade over the overlap, cut where
+            // the items meet, which Cutline reads back as the overlap.
+            var cutAfter: [String: (cut: Int, before: Int, after: Int)] = [:], cutBefore: [String: Int] = [:]
+            if sound {
+                let heard = ordered.filter { $0.kind == .media && !$0.reverse }
+                for (a, b) in zip(heard, heard.dropFirst()) where transitionItems(from: a.id, to: b.id).isEmpty {
+                    let s = grid.frames(b.audioRange.start), e = grid.frames(a.audioRange.end)
+                    guard e > s, s > cutBefore[a.id] ?? grid.frames(a.audioRange.start), e < grid.frames(b.audioRange.end),
+                          transitionItems(from: a.id, to: nil).isEmpty, transitionItems(from: nil, to: b.id).isEmpty else { continue }
+                    let picture = grid.frames(b.start)
+                    let cut = picture >= s && picture <= e ? picture : (s + e) / 2
+                    cutAfter[a.id] = (cut, cut - s, e - cut)
+                    cutBefore[b.id] = cut
+                }
+            }
+            for clip in ordered {
+                let s = cutBefore[clip.id] ?? max(grid.frames(span(clip).start), cursor), e = cutAfter[clip.id]?.cut ?? grid.frames(span(clip).end)
                 guard e > s else { continue }
                 if s > cursor { children.append(gap(s - cursor)) }
                 let audible = clip.mediaId.flatMap(mediaAsset).map { $0.hasAudio && !$0.isImage } ?? false
                 if clip.kind == .sequence, !embeddedAudio, let seq = clip.mediaId.flatMap(scope.sequence) {
                     children.append(stackItem(clip, seq, frames: e - s, scope: scope))
                 } else if clip.kind == .media && (!embeddedAudio || audible) {
-                    if !edges.contains(where: { $0.1 == s }) { children += transitionItems(from: nil, to: clip.id) }
-                    children.append(clipItem(clip, track: track, frames: e - s, sound: sound, scope: scope))
-                    for next in track.clips where next.id != clip.id && grid.frames(span(next).start) == e { children += transitionItems(from: clip.id, to: next.id) }
-                    if !edges.contains(where: { $0.0 == e }) { children += transitionItems(from: clip.id, to: nil) }
+                    if !edges.contains(where: { $0.1 == s }), cutBefore[clip.id] == nil { children += transitionItems(from: nil, to: clip.id) }
+                    let skip = cutBefore[clip.id].map { Double(($0 - grid.frames(clip.audioRange.start)) * grid.num) / Double(grid.den) } ?? 0
+                    children.append(clipItem(clip, track: track, frames: e - s, sound: sound, scope: scope, skip: skip))
+                    if let o = cutAfter[clip.id] {
+                        children.append(["OTIO_SCHEMA": "Transition.1", "name": "Cross Fade (0dB)", "transition_type": "SMPTE_Dissolve",
+                                         "in_offset": rt(o.before), "out_offset": rt(o.after), "metadata": ["cutline": ["overlap": true]]])
+                    } else {
+                        for next in track.clips where next.id != clip.id && grid.frames(span(next).start) == e { children += transitionItems(from: clip.id, to: next.id) }
+                    }
+                    if !edges.contains(where: { $0.0 == e }), cutAfter[clip.id] == nil { children += transitionItems(from: clip.id, to: nil) }
                 } else if embeddedAudio {
                     children.append(gap(e - s))
                 } else {
@@ -429,8 +514,10 @@ struct XMLElem {
 extension Project {
     /// FCPXML 1.11 for Final Cut Pro. The lowest video track is the primary storyline (gaps fill holes);
     /// higher video tracks connect at lanes 1, 2, … and audio tracks at lanes -1, -2, …, each attached to
-    /// the storyline item under its start. Text clips become Basic Titles; speed becomes a `timeMap`.
-    /// Solid and adjustment clips have no FCP equivalent and become gaps on the storyline or are left out above it.
+    /// the storyline item under its start. Text clips become Basic Titles (text, font, size, color, alignment,
+    /// Position), solids the Custom solid generator, each with the whole Cutline clip as `com.cutline.clip` metadata;
+    /// speed becomes a `timeMap`. Adjustment clips have no FCP equivalent and become gaps on the storyline or are left
+    /// out above it. Butting audio-track clips whose sound overlaps share a secondary storyline.
     /// Transitions sit between the items they join, with a `filter-video` for the picture and a `filter-audio`
     /// (Audio Crossfade) for the sound; connected clips joined by transitions go in a secondary storyline.
     /// Sequence clips are compound clips: a `media` resource holding the sequence, played by a `ref-clip`.
@@ -440,7 +527,9 @@ extension Project {
     /// The project's `tcStart` is the canvas's start timecode; assets declare their own audio sample rate. An asset
     /// with source timecode starts at it (with its reel as metadata), and clips of it start at that timecode plus
     /// their in point, as Final Cut writes them.
-    public func fcpxml() -> String {
+    public func fcpxml() -> String { fcpxml(InterchangeContext()) }
+
+    func fcpxml(_ ctx: InterchangeContext) -> String {
         let grid = FrameGrid(fps: canvas.fps)
         var nextId = 1
         func makeId() -> String { defer { nextId += 1 }; return "r\(nextId)" }
@@ -510,6 +599,15 @@ extension Project {
             resources.append(XMLElem("effect", [("id", titleRef), ("name", "Basic Title"),
                                                 ("uid", ".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti")]))
         }
+        let solidRef = "r_solid"
+        if allTracks.contains(where: { $0.kind == .video && $0.clips.contains { $0.kind == .solid } }) {
+            resources.append(XMLElem("effect", [("id", solidRef), ("name", "Custom"), ("uid", ".../Generators.localized/Solids.localized/Custom.localized/Custom.motn")]))
+        }
+        /// The whole Cutline clip, for clips Final Cut can only approximate.
+        func cutlineMetadata(_ clip: Clip) -> [XMLElem] {
+            guard let e = ctx.embedded(clip) else { return [] }
+            return [XMLElem("metadata", children: [XMLElem("md", [("key", Self.fcpClipKey), ("value", Self.clipJSON(e))])])]
+        }
 
         // Story elements
         var styleCount = 0
@@ -552,7 +650,7 @@ extension Project {
         }
         /// The clip's CDL and LUT files, which Final Cut has no place for.
         func note(_ clip: Clip) -> XMLElem? {
-            let parts = (clip.cdl.map { [$0.text] } ?? []) + clip.lutFiles.map { "LUT \($0)" }
+            let parts = (clip.cdl.map { [$0.text] } ?? []) + clip.lutFiles.map { "LUT \($0)" } + (ctx.luts[clip.id].map { ["\(Self.gradeLUTTag) \($0)"] } ?? [])
             return parts.isEmpty ? nil : XMLElem("note", text: parts.joined(separator: "; "))
         }
         /// The clip's local start, which is in retimed time when the speed is not 1.
@@ -589,7 +687,18 @@ extension Project {
             }
             if !audioOnly && asset.hasVideo { children += pictureChildren(clip) }
             if sound { children += volumeChildren(clip, track: track, start: start, scope: scope) }
+            if !audioOnly { children += cutlineMetadata(clip) }
             return XMLElem(asset.isImage ? "video" : "asset-clip", attrs, children: children)
+        }
+        /// A solid as Final Cut's Custom solid generator in its color.
+        func solidElement(_ clip: Clip, track: Track, lane: Int?, offset: RationalTime, frames: Int) -> XMLElem {
+            var attrs: [(String, String)] = [("ref", solidRef)]
+            if let lane { attrs.append(("lane", "\(lane)")) }
+            attrs += [("offset", offset.fcp), ("name", clip.name ?? "Solid"), ("start", "0s"), ("duration", grid.fcp(frames))]
+            if track.hidden { attrs.append(("enabled", "0")) }
+            let c = clip.color ?? .black
+            return XMLElem("video", attrs, children: [XMLElem("param", [("name", "Color"), ("value", [c.r, c.g, c.b, c.a].map { String(format: "%.4g", $0) }.joined(separator: " "))])]
+                + pictureChildren(clip) + cutlineMetadata(clip))
         }
         func titleElement(_ clip: Clip, track: Track, lane: Int?, offset: RationalTime, frames: Int) -> XMLElem {
             let spec = clip.text ?? TextSpec(text: clip.name ?? "")
@@ -607,10 +716,14 @@ extension Project {
                 ("fontColor", [c.r, c.g, c.b, c.a].map { String(format: "%.4g", $0) }.joined(separator: " ")),
                 ("alignment", spec.align.rawValue),
             ])
+            // Basic Title's Position: pixels from the frame's center, up positive.
+            let position = XMLElem("param", [("name", "Position"), ("key", "9999/999166631/999166633/1/100/101"),
+                                             ("value", "\(num((spec.x - 0.5) * w)) \(num((0.5 - spec.y) * h))")])
             return XMLElem("title", attrs, children: [
+                position,
                 XMLElem("text", children: [XMLElem("text-style", [("ref", styleId)], text: spec.text)], inline: true),
                 XMLElem("text-style-def", [("id", styleId)], children: [style]),
-            ])
+            ] + cutlineMetadata(clip))
         }
         /// A sequence clip: a `ref-clip` playing the compound clip of its sequence from the clip's offset into it.
         var compounds: [String: String] = [:]
@@ -671,7 +784,9 @@ extension Project {
                         spine.append(SpineItem(elem: refElement(clip, seq, track: primary, lane: nil, offset: at, frames: e - s, scope: scope),
                                                offset: s, localStart: RationalTime(frames: grid.frames(clip.sourceIn), grid), frames: e - s, clipId: clip.id))
                     } else if clip.kind == .text {
-                        spine.append(SpineItem(elem: titleElement(clip, track: primary, lane: nil, offset: at, frames: e - s), offset: s, localStart: .zero, frames: e - s))
+                        spine.append(SpineItem(elem: titleElement(clip, track: primary, lane: nil, offset: at, frames: e - s), offset: s, localStart: .zero, frames: e - s, clipId: clip.id))
+                    } else if clip.kind == .solid {
+                        spine.append(SpineItem(elem: solidElement(clip, track: primary, lane: nil, offset: at, frames: e - s), offset: s, localStart: .zero, frames: e - s, clipId: clip.id))
                     } else {
                         spine.append(gapItem(s, e - s, name: clip.name ?? clip.kind.rawValue.capitalized))
                     }
@@ -713,6 +828,8 @@ extension Project {
                     return refElement(clip, seq, track: track, lane: lane, offset: offset, frames: frames, scope: scope)
                 } else if clip.kind == .text, track.kind == .video {
                     return titleElement(clip, track: track, lane: lane, offset: offset, frames: frames)
+                } else if clip.kind == .solid, track.kind == .video {
+                    return solidElement(clip, track: track, lane: lane, offset: offset, frames: frames)
                 }
                 return nil
             }
@@ -721,7 +838,12 @@ extension Project {
                 var k = 0
                 while k < clips.count {
                     var run = [clips[k]]
-                    while k + run.count < clips.count, !transitions(from: run.last!.id, to: clips[k + run.count].id).isEmpty { run.append(clips[k + run.count]) }
+                    // Butting sound clips whose sound overlaps share a storyline, where expanded audio may overlap.
+                    func joined(_ a: Clip, _ b: Clip) -> Bool {
+                        !transitions(from: a.id, to: b.id).isEmpty || track.kind == .audio && a.kind == .media && b.kind == .media
+                            && grid.frames(a.end) == grid.frames(b.start) && grid.frames(a.audioRange.end) > grid.frames(b.audioRange.start)
+                    }
+                    while k + run.count < clips.count, joined(run.last!, clips[k + run.count]) { run.append(clips[k + run.count]) }
                     k += run.count
                     let s = grid.frames(run[0].start)
                     let p = parent(of: s)
@@ -754,6 +876,7 @@ extension Project {
                 var e = item.elem
                 e.children += item.anchored.sorted { ($0.offset, $0.lane) < ($1.offset, $1.lane) }.map(\.elem)
                 e.children += item.markers
+                e.children = e.children.filter { $0.name != "metadata" } + e.children.filter { $0.name == "metadata" }
                 // A transition sits between the two spine items it joins, overlapping both; from or to nothing, beside a gap.
                 let before = k > 0 ? spine[k - 1].clipId : nil, after = k + 1 < spine.count ? spine[k + 1].clipId : nil
                 if let id = item.clipId, before == nil { spineElems += transitions(from: nil, to: id) }
