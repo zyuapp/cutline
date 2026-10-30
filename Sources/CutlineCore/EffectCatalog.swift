@@ -190,6 +190,11 @@ public enum EffectCatalog {
             ParamSpec("feather", .number, .number(0.005), min: 0, max: 0.3, unit: "of frame height", "Soft edge"),
             ParamSpec("invert", .bool, .bool(false), "Keep everything outside the shape"),
         ]),
+        EffectType(id: "mask.matte", category: "mask", summary: "Track matte: shows this clip only where another track's picture is (its alpha, or its brightness), e.g. video inside text; hide the matte track", params: [
+            ParamSpec("track", .text, .string(""), animatable: false, "Track id whose picture is the matte"),
+            ParamSpec("mode", .choice(["alpha", "luma"]), .string("alpha"), "Use the matte's transparency or its brightness"),
+            ParamSpec("invert", .bool, .bool(false), "Show the clip where the matte is not"),
+        ]),
         EffectType(id: "mask.person", category: "mask", summary: "Keeps the people (Apple person segmentation); invert to keep the background, e.g. text behind a person or a background swap", params: [
             ParamSpec("quality", .choice(["fast", "balanced", "accurate"]), .string("balanced"), "Edge quality against speed"),
             ParamSpec("feather", .number, .number(0.003), min: 0, max: 0.05, unit: "of frame height", "Soft edge"),

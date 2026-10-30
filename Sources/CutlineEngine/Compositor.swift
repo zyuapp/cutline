@@ -59,6 +59,9 @@ public final class RenderScene: @unchecked Sendable {
                 continue
             }
             guard var placed = blurredLayer(clip, at: t, source: source) else { continue }
+            if let fx = clip.effects.first(where: { $0.type == "mask.matte" && $0.enabled }) {
+                placed = matte(placed, fx, at: t, source: source)
+            }
             if !track.effects.isEmpty {
                 placed = EffectRenderer.apply(track.effects, to: placed, context: EffectRenderer.Context(unit: unit, time: t, opaque: false)) { _, _ in nil }
             }
@@ -210,6 +213,26 @@ public final class RenderScene: @unchecked Sendable {
             return CutlineCore.TextAnimator.state(animator, unitIndex: i, unitStart: animator.start(ofUnit: i, spoken: spoken), local: local, clipDuration: duration)
         }
         return AnimatedText.render(layout, states: states, spec: spec).map { CIImage(cgImage: $0) }
+    }
+
+    /// Keeps a layer only where another track's picture is, by its alpha or brightness.
+    func matte(_ picture: CIImage, _ fx: Effect, at t: Seconds, source: (String) -> CVPixelBuffer?) -> CIImage {
+        guard let tid = fx.params["track"]?.string, let track = project.tracks.first(where: { $0.id == tid }),
+              let c = track.clip(at: t), c.kind != .adjustment, var m = layer(c, at: t, source: source) else {
+            return (fx.params["invert"]?.bool ?? false) ? picture : CIImage.empty()
+        }
+        m = m.cropped(to: canvasRect)
+        if fx.params["mode"]?.string == "luma" {
+            m = m.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0])
+        } else {
+            m = m.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 1), "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 1), "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            ])
+        }
+        m = m.composited(over: CIImage(color: .black).cropped(to: canvasRect))
+        if fx.params["invert"]?.bool ?? false { m = m.applyingFilter("CIColorInvert") }
+        return picture.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(), kCIInputMaskImageKey: m])
     }
 
     func alpha(_ img: CIImage, _ a: Double) -> CIImage {
