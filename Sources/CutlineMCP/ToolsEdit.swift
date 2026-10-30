@@ -174,9 +174,11 @@ extension Toolbox {
             if let mid = args.optString("media_id") {
                 guard let m = p.mediaAsset(mid) else { throw EditError("No media \(mid)") }
                 guard c.kind == .media else { throw EditError("Replace edits work on media clips") }
+                let synced = c.mediaId.flatMap { p.syncedTime(c.sourceIn, from: $0, to: mid) }
                 c.mediaId = mid
                 c.name = m.name
-                if try args.optSourceTime("source_in") == nil { c.sourceIn = m.isImage ? 0 : min(c.sourceIn, max(0, m.duration - c.duration * c.speed)) }
+                // Synced angles keep the same moment; other media keep the source time where possible.
+                if try args.optSourceTime("source_in") == nil { c.sourceIn = m.isImage ? 0 : synced ?? min(c.sourceIn, max(0, m.duration - c.duration * c.speed)) }
             }
             if let v = args.optDouble("speed") {
                 let src = c.duration * c.speed

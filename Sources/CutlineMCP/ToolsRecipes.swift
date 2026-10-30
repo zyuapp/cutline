@@ -207,6 +207,7 @@ extension Toolbox {
                     guard let loc = p.locateClip(id) else { continue }
                     var c = p.tracks[loc.track].clips[loc.clip]
                     guard let (off, conf) = c.mediaId.flatMap({ found[$0] }) else { continue }
+                    p.addSyncGroup([c.mediaId!: 0, audioId: off])
                     let link = c.link ?? IDs.make("lnk")
                     c.link = link
                     if !keep { c.volume = 0 }
@@ -344,6 +345,7 @@ extension Toolbox {
                 c.volume = 0
                 try p.addClip(c, trackId: trackId, mode: .overwrite)
             }
+            p.addSyncGroup(offsets)
             let audioTrack = p.addTrack(kind: .audio, name: "Multicam sound")
             try p.addClip(Clip(id: Project.newClipId(), kind: .media, mediaId: audioId, start: at, duration: hi - lo, sourceIn: lo), trackId: audioTrack.id, mode: .place)
             let counts = Dictionary(grouping: finalTurns, by: \.angle).mapValues(\.count)

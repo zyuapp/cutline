@@ -135,3 +135,23 @@ extension Project {
         return placed
     }
 }
+
+extension Project {
+    /// Source time in `to` of the moment at source time `t` in `from`, when both are in one sync group.
+    public func syncedTime(_ t: Seconds, from: String, to: String) -> Seconds? {
+        guard let g = syncGroups.first(where: { $0[from] != nil && $0[to] != nil }) else { return nil }
+        return t - g[from]! + g[to]!
+    }
+
+    /// Records that media were recorded together, merging with any group that shares one of them.
+    public mutating func addSyncGroup(_ offsets: [String: Seconds]) {
+        var merged = offsets
+        syncGroups.removeAll { g in
+            guard let shared = g.keys.first(where: { offsets[$0] != nil }) else { return false }
+            let shift = offsets[shared]! - g[shared]!
+            for (k, v) in g where merged[k] == nil { merged[k] = v + shift }
+            return true
+        }
+        syncGroups.append(merged)
+    }
+}
