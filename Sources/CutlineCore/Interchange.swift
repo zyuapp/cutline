@@ -671,6 +671,21 @@ extension Project {
             if clip.needsTimeMap { return grid.frames(clip.sourceIn) + max(0, grid.frames(clip.audioLead)) }
             return abs(clip.speed - 1) > 1e-9 && clip.speed > 0 ? grid.frames(clip.sourceIn / clip.speed) : grid.frames(clip.sourceIn)
         }
+        /// A constant-speed `timeMap`: local time from `origin` to frame `end` plays source time at `speed`.
+        func speedMap(origin: RationalTime, end: Int, speed: Double) -> XMLElem {
+            let p = Int((speed * 1000).rounded())
+            return XMLElem("timeMap", children: [
+                XMLElem("timept", [("time", origin.fcp), ("value", origin.fcp), ("interp", "linear")]),
+                XMLElem("timept", [("time", (origin + RationalTime(frames: end, grid)).fcp), ("value", (origin + RationalTime(frames: end, grid).scaled(p, 1000)).fcp), ("interp", "linear")]),
+            ])
+        }
+        /// A sequence clip's local start (its sequence time, retimed when it plays at another speed) and timeMap.
+        func sequenceTiming(_ clip: Clip, frames: Int) -> (start: Int, map: XMLElem?) {
+            let k = Project.sequenceRate(clip)
+            guard abs(k - 1) > 1e-9 else { return (grid.frames(clip.sourceIn), nil) }
+            let start = grid.frames(clip.sourceIn / k)
+            return (start, speedMap(origin: .zero, end: start + frames, speed: k))
+        }
         /// Source seconds in thousandths of a frame.
         func sourceTime(_ s: Seconds) -> RationalTime {
             RationalTime(n: Int((s * Double(grid.den) * 1000 / Double(grid.num)).rounded()) * grid.num, d: grid.den * 1000)
@@ -704,12 +719,7 @@ extension Project {
                 }))
             } else if abs(clip.speed - 1) > 1e-9, clip.speed > 0, !asset.isImage {
                 // Local time runs from the asset's timecode, as source time does.
-                let end = localStart(clip) + frames
-                let p = Int((clip.speed * 1000).rounded())
-                children.append(XMLElem("timeMap", children: [
-                    XMLElem("timept", [("time", origin.fcp), ("value", origin.fcp), ("interp", "linear")]),
-                    XMLElem("timept", [("time", (origin + RationalTime(frames: end, grid)).fcp), ("value", (origin + RationalTime(frames: end, grid).scaled(p, 1000)).fcp), ("interp", "linear")]),
-                ]))
+                children.append(speedMap(origin: origin, end: localStart(clip) + frames, speed: clip.speed))
             }
             if !audioOnly && asset.hasVideo { children += pictureChildren(clip) }
             if sound { children += volumeChildren(clip, track: track, start: start, scope: scope) }
@@ -775,15 +785,15 @@ extension Project {
             let audioOnly = track.kind == .audio
             var attrs: [(String, String)] = [("ref", ref)]
             if let lane { attrs.append(("lane", "\(lane)")) }
-            attrs += [("offset", offset.fcp), ("name", clip.name ?? seq.name), ("start", grid.fcp(grid.frames(clip.sourceIn))), ("duration", grid.fcp(frames))]
+            let timing = sequenceTiming(clip, frames: frames)
+            attrs += [("offset", offset.fcp), ("name", clip.name ?? seq.name), ("start", grid.fcp(timing.start)), ("duration", grid.fcp(frames))]
             if audioOnly { attrs.append(("srcEnable", "audio")) }
             if audioOnly ? track.muted : track.hidden { attrs.append(("enabled", "0")) }
             var children: [XMLElem] = []
-            if !audioOnly {
-                if let n = note(clip) { children.append(n) }
-                children += pictureChildren(clip)
-            }
-            children += volumeChildren(clip, track: track, start: RationalTime(frames: grid.frames(clip.sourceIn), grid), scope: scope)
+            if !audioOnly, let n = note(clip) { children.append(n) }
+            if let map = timing.map { children.append(map) }
+            if !audioOnly { children += pictureChildren(clip) }
+            children += volumeChildren(clip, track: track, start: RationalTime(frames: timing.start, grid), scope: scope)
             return XMLElem("ref-clip", attrs, children: children)
         }
         /// A multicam clip (one piece of `splittingMulticam`): an `mc-clip` of the `multicam` media holding every angle
@@ -817,12 +827,14 @@ extension Project {
             let sound = shown?.audio ?? setup.audio
             var attrs: [(String, String)] = [("ref", known.ref)]
             if let lane { attrs.append(("lane", "\(lane)")) }
-            attrs += [("offset", offset.fcp), ("name", clip.name ?? seq.name), ("start", grid.fcp(grid.frames(clip.sourceIn))), ("duration", grid.fcp(frames))]
+            let timing = sequenceTiming(clip, frames: frames)
+            attrs += [("offset", offset.fcp), ("name", clip.name ?? seq.name), ("start", grid.fcp(timing.start)), ("duration", grid.fcp(frames))]
             if audioOnly { attrs.append(("srcEnable", "audio")) }
             if audioOnly ? track.muted : track.hidden { attrs.append(("enabled", "0")) }
             var children: [XMLElem] = []
             if !audioOnly, let n = note(clip) { children.append(n) }
-            children += volumeChildren(clip, track: track, start: RationalTime(frames: grid.frames(clip.sourceIn), grid), scope: scope)
+            if let map = timing.map { children.append(map) }
+            children += volumeChildren(clip, track: track, start: RationalTime(frames: timing.start, grid), scope: scope)
             var sources: [XMLElem] = []
             if !audioOnly, let id = known.ids[picture] {
                 sources.append(XMLElem("mc-source", [("angleID", id), ("srcEnable", sound.contains(picture) ? "all" : "video")], children: pictureChildren(clip)))
@@ -863,7 +875,7 @@ extension Project {
                                                offset: s, localStart: clipStart(clip, asset), frames: e - s, clipId: clip.id))
                     } else if let seq = sequenceClip(clip) {
                         spine.append(SpineItem(elem: refElement(clip, seq, track: primary, lane: nil, offset: at, frames: e - s, scope: scope),
-                                               offset: s, localStart: RationalTime(frames: grid.frames(clip.sourceIn), grid), frames: e - s, clipId: clip.id))
+                                               offset: s, localStart: RationalTime(frames: sequenceTiming(clip, frames: e - s).start, grid), frames: e - s, clipId: clip.id))
                     } else if clip.kind == .text {
                         spine.append(SpineItem(elem: titleElement(clip, track: primary, lane: nil, offset: at, frames: e - s), offset: s, localStart: .zero, frames: e - s, clipId: clip.id))
                     } else if clip.kind == .solid {

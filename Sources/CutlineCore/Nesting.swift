@@ -33,18 +33,63 @@ extension Project {
         return p
     }
 
+    /// The speed a sequence clip plays its sequence at: its constant speed; ramps and reverse play it at 1×.
+    public static func sequenceRate(_ clip: Clip) -> Double {
+        clip.isRetimed || clip.reverse || !(clip.speed > 0) || !clip.speed.isFinite ? 1 : clip.speed
+    }
+
+    /// The stretch of its sequence a sequence clip plays, in sequence time.
+    public static func sequenceWindow(_ clip: Clip) -> TimeRange {
+        TimeRange(clip.sourceIn, clip.sourceIn + clip.duration * sequenceRate(clip))
+    }
+
+    /// `inner` (in sequence time, inside `sequenceWindow(clip)`) where the sequence clip plays it on the timeline:
+    /// shortened and sped up by the clip's speed.
+    public static func placed(_ inner: Clip, in clip: Clip) -> Clip {
+        var c = inner
+        let k = sequenceRate(clip)
+        c.start = clip.start + (inner.start - clip.sourceIn) / k
+        guard abs(k - 1) > 1e-9 else { return c }
+        c.duration /= k
+        c.speed *= k
+        c.fadeIn /= k
+        c.fadeOut /= k
+        c.audioFadeIn /= k
+        c.audioFadeOut /= k
+        c.audioLead /= k
+        c.audioLag /= k
+        c.anim = c.anim.mapValues { curve in
+            var curve = curve
+            curve.keys = curve.keys.map { key in
+                var key = key
+                key.t /= k
+                return key
+            }
+            return curve
+        }
+        if var ramp = c.anim["time.speed"] {
+            ramp.keys = ramp.keys.map { key in
+                var key = key
+                if let v = key.v.number { key.v = .number(v * k) }
+                return key
+            }
+            c.anim["time.speed"] = ramp
+        }
+        return c
+    }
+
     /// A sequence clip's contents placed on this timeline, trimmed to the clip, with ids "<clip>/<inner>".
     public func expanded(_ clip: Clip) -> [(kind: TrackKind, clip: Clip)] {
         guard clip.kind == .sequence, let seq = contents(of: clip) else { return [] }
-        let window = TimeRange(clip.sourceIn, clip.sourceIn + clip.duration)
+        let window = Project.sequenceWindow(clip)
         var out: [(TrackKind, Clip)] = []
         for track in seq.tracks where !(track.muted && track.kind == .audio) && !(track.hidden && track.kind == .video) {
             for inner in track.clips where inner.end > window.start + eps && inner.start < window.end - eps {
                 var c = inner
                 if c.start < window.start { c = Project.trimmedLeft(c, to: window.start) }
                 if c.end > window.end { c = Project.trimmedRight(c, to: window.end) }
+                c = Project.placed(c, in: clip)
                 c.id = "\(clip.id)/\(inner.id)"
-                c.start = clip.start + (c.start - clip.sourceIn)
                 c.volume *= clip.volume * track.volume
                 out.append((track.kind, c))
                 if c.kind == .sequence { out += expanded(c) }
@@ -103,13 +148,13 @@ extension Project {
         var placed: [String] = []
         var idMap: [String: String] = [:]
         for (i, track) in seq.tracks.enumerated() {
-            let window = TimeRange(clip.sourceIn, clip.sourceIn + clip.duration)
+            let window = Project.sequenceWindow(clip)
             let clips: [Clip] = track.clips.compactMap { inner in
                 guard inner.end > window.start + eps && inner.start < window.end - eps else { return nil }
                 var c = inner
                 if c.start < window.start { c = Project.trimmedLeft(c, to: window.start) }
                 if c.end > window.end { c = Project.trimmedRight(c, to: window.end) }
-                c.start = clip.start + (c.start - clip.sourceIn)
+                c = Project.placed(c, in: clip)
                 if locateClip(c.id) != nil { idMap[c.id] = Project.newClipId(); c.id = idMap[c.id]! }
                 return c
             }

@@ -238,7 +238,7 @@ public final class RenderScene: @unchecked Sendable {
             layer = CIImage(cgImage: cg)
         case .sequence:
             guard let child = child(for: clip) else { return nil }
-            layer = child.render(at: clip.sourceIn + local, background: false) { inner in source("\(clip.id)/\(inner)") }
+            layer = child.render(at: clip.sourceIn + local * Project.sequenceRate(clip), background: false) { inner in source("\(clip.id)/\(inner)") }
             center = CGPoint(x: canvas.midX + xf.x * canvas.width, y: canvas.midY - xf.y * canvas.height)
         }
         guard var layer else { return nil }
