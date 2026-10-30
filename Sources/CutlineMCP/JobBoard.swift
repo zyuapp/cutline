@@ -91,9 +91,7 @@ final class JobBoard: @unchecked Sendable {
     let pid = ProcessInfo.processInfo.processIdentifier
     private var lastHeal = Date.distantPast
 
-    var file: URL? { bundleURL?.appendingPathComponent("jobs.json") }
     var workerLockURL: URL? { bundleURL?.appendingPathComponent(".worker.lock") }
-    var jobsLockURL: URL? { bundleURL?.appendingPathComponent(".jobs.lock") }
 
     var all: [Job] { read() }
     /// Jobs queued or running for this bundle, whichever process runs them.
@@ -129,8 +127,8 @@ final class JobBoard: @unchecked Sendable {
         return id
     }
 
-    func update(_ id: String, _ body: (inout Job) -> Void) {
-        mutate { list in if let i = list.firstIndex(where: { $0.id == id }) { body(&list[i]) } }
+    func update(_ id: String, in bundle: URL? = nil, _ body: (inout Job) -> Void) {
+        mutate(bundle) { list in if let i = list.firstIndex(where: { $0.id == id }) { body(&list[i]) } }
     }
 
     /// Waits until pending jobs (of `mediaId` when given) finish or the timeout passes; false on timeout.
@@ -150,21 +148,23 @@ final class JobBoard: @unchecked Sendable {
 
     // MARK: jobs.json
 
-    private func read() -> [Job] {
-        guard let file else { return [] }
-        return (try? JSONDecoder().decode([Job].self, from: Data(contentsOf: file))) ?? []
+    /// The jobs of `bundle`, default the attached one.
+    private func read(_ bundle: URL? = nil) -> [Job] {
+        guard let url = bundle ?? bundleURL else { return [] }
+        return (try? JSONDecoder().decode([Job].self, from: Data(contentsOf: url.appendingPathComponent("jobs.json")))) ?? []
     }
 
     /// Changes jobs.json under the bundle's jobs lock, so servers and the worker never lose each other's writes.
     @discardableResult
-    func mutate<T>(_ body: (inout [Job]) -> T) -> T {
+    func mutate<T>(_ bundle: URL? = nil, _ body: (inout [Job]) -> T) -> T {
         lock.withLock {
-            let held = jobsLockURL.flatMap { FileLock($0, wait: true) }
+            let url = bundle ?? bundleURL
+            let held = url.flatMap { FileLock($0.appendingPathComponent(".jobs.lock"), wait: true) }
             defer { held?.release() }
-            var list = read()
+            var list = read(url)
             let before = list
             let out = body(&list)
-            if list != before, let file, let data = try? JSONEncoder().encode(list) { try? data.write(to: file, options: .atomic) }
+            if list != before, let url, let data = try? JSONEncoder().encode(list) { try? data.write(to: url.appendingPathComponent("jobs.json"), options: .atomic) }
             return out
         }
     }
@@ -179,7 +179,7 @@ final class JobBoard: @unchecked Sendable {
             probe.release()
             JobBoard.spawnWorker(exe, bundle: bundle)
         } else {
-            Task.detached { [self] in await drain(holding: probe) }
+            Task.detached { [self] in await drain(holding: probe, bundle: bundle) }
         }
     }
 
@@ -195,23 +195,23 @@ final class JobBoard: @unchecked Sendable {
 
     /// Runs pending jobs one at a time while holding the worker lock, lingering briefly for new ones, then
     /// releases the lock (under the jobs lock, so a job queued meanwhile always finds a runner).
-    func drain(holding runner: FileLock, linger: Seconds = 2) async {
+    func drain(holding runner: FileLock, bundle: URL, linger: Seconds = 2) async {
         var idle = Date()
         while true {
             let stop = Date().timeIntervalSince(idle) >= linger
-            guard let job = claimNext(releasingIfIdle: stop ? runner : nil) else {
+            guard let job = claimNext(bundle, releasingIfIdle: stop ? runner : nil) else {
                 if stop { return }
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 continue
             }
-            await run(job)
+            await run(job, bundle)
             idle = Date()
         }
     }
 
     /// The next queued job, or one a dead runner left running, marked as ours.
-    private func claimNext(releasingIfIdle runner: FileLock?) -> Job? {
-        mutate { list -> Job? in
+    private func claimNext(_ bundle: URL, releasingIfIdle runner: FileLock?) -> Job? {
+        mutate(bundle) { list -> Job? in
             guard let i = list.firstIndex(where: { $0.status == "running" }) ?? list.firstIndex(where: { $0.status == "queued" }) else {
                 runner?.release()
                 return nil
@@ -223,27 +223,27 @@ final class JobBoard: @unchecked Sendable {
         }
     }
 
-    private func run(_ job: Job) async {
+    private func run(_ job: Job, _ bundle: URL) async {
         let id = job.id
         let throttle = Throttle(start: job.progress)
         let context = Context(job: job, progress: { [self] p in
             guard let v = throttle.next(p) else { return }
-            update(id) { $0.progress = max($0.progress, v) }
+            update(id, in: bundle) { $0.progress = max($0.progress, v) }
         }, finished: { [self] step, notes in
-            update(id) { j in
+            update(id, in: bundle) { j in
                 j.done = (j.done ?? []) + [step]
                 j.notes = (j.notes ?? []) + notes
             }
         })
         guard let work = factory?(context) else {
-            update(id) { $0.status = "failed"; $0.message = "media \(job.mediaId) is no longer in the project" }
+            update(id, in: bundle) { $0.status = "failed"; $0.message = "media \(job.mediaId) is no longer in the project" }
             return
         }
         do {
             let note = try await work()
-            update(id) { $0.status = "done"; $0.progress = 1; $0.message = note }
+            update(id, in: bundle) { $0.status = "done"; $0.progress = 1; $0.message = note }
         } catch {
-            update(id) { $0.status = "failed"; $0.message = error.localizedDescription }
+            update(id, in: bundle) { $0.status = "failed"; $0.message = error.localizedDescription }
         }
     }
 
@@ -311,7 +311,7 @@ public enum AnalysisWorker {
         session.bundle = ProjectBundle(url: url)
         session.jobs.attach(url, run: false)
         guard let lockURL = session.jobs.workerLockURL, let held = FileLock(lockURL, wait: false) else { return 0 }
-        await session.jobs.drain(holding: held, linger: 3)
+        await session.jobs.drain(holding: held, bundle: url, linger: 3)
         return 0
     }
 }

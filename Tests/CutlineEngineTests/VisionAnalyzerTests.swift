@@ -57,6 +57,45 @@ private func makeTwoShotVideo() async throws -> URL {
     #expect(a.shot(at: 3)?.index == 1)
 }
 
+private final class Interrupt: @unchecked Sendable {
+    var task: Task<ShotAnalysis, Error>?
+    var fired = false
+    var first: Double?
+}
+
+@Test func shotAnalysisContinuesFromItsCheckpoint() async throws {
+    let url = try await makeTwoShotVideo()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let checkpoint = FileManager.default.temporaryDirectory.appendingPathComponent("shots-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: checkpoint) }
+    let whole = try await VisionAnalyzer.analyze(url: url, mediaId: "synthetic", sceneCuts: [2], duration: 4, samplesPerSecond: 10)
+
+    // Stopped once the sampling segment is done: the checkpoint keeps it.
+    let stop = Interrupt()
+    stop.task = Task {
+        try await VisionAnalyzer.analyze(url: url, mediaId: "synthetic", sceneCuts: [2], duration: 4, samplesPerSecond: 10, checkpoint: checkpoint) { p in
+            if p > 0.9, !stop.fired { stop.fired = true; stop.task?.cancel() }
+        }
+    }
+    await #expect(throws: CancellationError.self) { _ = try await stop.task!.value }
+    #expect(FileManager.default.fileExists(atPath: checkpoint.path))
+
+    let again = Interrupt()
+    let resumed = try await VisionAnalyzer.analyze(url: url, mediaId: "synthetic", sceneCuts: [2], duration: 4, samplesPerSecond: 10, checkpoint: checkpoint) { p in
+        if again.first == nil { again.first = p }
+    }
+    #expect((again.first ?? 0) > 0.9, "the sampled frames weren't decoded again")
+    #expect(resumed.shots.map(\.brightness) == whole.shots.map(\.brightness) && resumed.shots.map(\.text) == whole.shots.map(\.text))
+    #expect(!FileManager.default.fileExists(atPath: checkpoint.path))
+}
+
+@Test func longRecordingsTranscribeInChunksCutInPauses() {
+    #expect(Transcriber.chunkBounds(duration: 200, silences: []).isEmpty)
+    let pauses = [TimeRange(115, 116), TimeRange(250, 250.6), TimeRange(400, 400.1)]
+    let bounds = Transcriber.chunkBounds(duration: 500, silences: pauses)
+    #expect(bounds == [115.5, 250.3, 360], "\(bounds)")
+}
+
 @Test func longShotsSplitIntoSubShots() {
     let spans = Shot.spans(cuts: [3], duration: 20)
     #expect(spans.count == 4)

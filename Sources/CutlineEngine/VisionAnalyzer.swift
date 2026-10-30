@@ -87,6 +87,7 @@ public enum VisionAnalyzer {
         let gridDone = Set(partial.gridDone)
         let gridTodo = grid.filter { !gridDone.contains($0) }
         for lo in stride(from: 0, to: gridTodo.count, by: segment) {
+            try Task.checkCancellation()
             let times = Array(gridTodo[lo..<min(gridTodo.count, lo + segment)])
             let found = try await process(gridGen, times: times) { img, t in
                 let s = detect(img, t: t)
@@ -108,6 +109,7 @@ public enum VisionAnalyzer {
         let describedDone = Set(partial.described.map(\.requested))
         let middlesTodo = Array(Set(middles.filter { !describedDone.contains($0) })).sorted()
         for lo in stride(from: 0, to: middlesTodo.count, by: segment) {
+            try Task.checkCancellation()
             let found = try await process(detailGen, times: Array(middlesTodo[lo..<min(middlesTodo.count, lo + segment)])) { img, t in
                 let r = (detect(img, t: t), describe(img))
                 progress?(counter.increment() / total)
