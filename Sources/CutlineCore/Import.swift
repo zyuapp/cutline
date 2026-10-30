@@ -1806,6 +1806,9 @@ extension Importer {
                     lines[i].luts.append(value("LUT:"))
                 } else if uc.hasPrefix(Project.gradeLUTTag + ":"), let i = current.last {
                     lines[i].gradeLUT = value(Project.gradeLUTTag + ":")
+                } else if uc.hasPrefix(Project.edlSourceTCTag + ":"), let i = current.last {
+                    let own = value(Project.edlSourceTCTag + ":").split(whereSeparator: \.isWhitespace).map(String.init)
+                    if own.count >= 2 { lines[i].srcText = (own[0], own[1]) }
                 } else if comment.hasPrefix(SoundHint.prefix), let i = current.last {
                     lines[i].hint = SoundHint(text: comment)
                 } else if uc.contains("FREEZE FRAME"), let i = current.last {
@@ -2251,11 +2254,14 @@ extension Project {
     /// events they play (`flattenedSequences`). The main track's production sound rides with its picture as
     /// AA/V when picture and sound cut and dissolve together; otherwise (split edits, picture-only dissolves,
     /// audio-only crossfades) the picture is a V event and the sound an AA event over its audio range. Audio
-    /// tracks are A and A2, or channels 3 and 4 (NONE with an AUD line) when there is production sound. Sound
+    /// tracks are A and A2, or channels 3 and 4 (NONE with an AUD line) when there is production sound; a clip
+    /// routed to source channels (audio.channels ch1, ch2, ch1+ch2, ch3, ch4, ch3+ch4) goes on those channels
+    /// (A, A2, AA, AUD 3, AUD 4, AUD 3 4), as CMX patches source channel n to record channel n. Sound
     /// that would overlap other sound on its channel moves to a channel free at that time (3, 4, A or A2), and is
     /// cut short where none is, so no channel holds overlapping events. Source timecode is the media's own (its
-    /// first frame's timecode plus the in point, at its rate and drop frame), the reel its reel or file name
-    /// (`edlReel`). Each event names its clip and source file in comments, speed becomes an M2 line, the clip's CDL
+    /// first frame's timecode plus the in point) counted in the list's rate and drop frame: the same frame count at
+    /// the same rate, else the same time of day; a `* SOURCE TC:` comment then gives it at the source's own rate. The
+    /// reel is its reel or file name (`edlReel`). Each event names its clip and source file in comments, speed becomes an M2 line, the clip's CDL
     /// `*ASC_SOP` and `*ASC_SAT` lines and its LUT files `*LUT:` lines, and markers LOC comments. Dissolves (wipes
     /// stay wipes) and crossfades are written as CMX writes them: the outgoing event runs to the transition's
     /// start, then a zero-length line of it and a D line of the incoming event. They start at the edit, so a
@@ -2275,17 +2281,28 @@ extension Project {
         func pad(_ s: String, _ n: Int) -> String { s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }
         func reel(_ c: Clip) -> String { c.mediaId.flatMap(mediaAsset).map(Project.edlReel) ?? "AX" }
         func srcFormat(_ c: Clip) -> TimecodeFormat { c.mediaId.flatMap(mediaAsset)?.timecodeFormat(fallback: canvas.fps, dropFrame: canvas.dropFrame) ?? format }
-        /// Source frames from midnight at second `t` of the clip's media.
-        func src(_ c: Clip, _ t: Seconds) -> Int { c.mediaId.flatMap(mediaAsset)?.sourceFrames(at: t, fallback: canvas.fps) ?? grid.frames(t) }
-        /// Source frames played over `frames` record frames.
-        func srcLength(_ c: Clip, _ frames: Int) -> Int { srcFormat(c).frameCount(seconds(frames) * c.speed) }
+        /// Source frames from midnight at second `t` of the clip's media, in its own counting.
+        func nativeSrc(_ c: Clip, _ t: Seconds) -> Int { c.mediaId.flatMap(mediaAsset)?.sourceFrames(at: t, fallback: canvas.fps) ?? grid.frames(t) }
+        /// Source frame `f` counted as `s` does, in the list's counting: the same frame count at the same rate (only the
+        /// drop-frame labels change), else the label's time of day (hh:mm:ss and the fraction of a second) at the list's rate.
+        func listFrames(_ f: Int, from s: TimecodeFormat) -> Int {
+            if s.frameNum * format.frameDen == format.frameNum * s.frameDen { return f }
+            let parts = s.string(f).split(whereSeparator: { ":;".contains($0) }).compactMap { Int($0) }
+            guard parts.count == 4 else { return f }
+            var ff = min(nominal - 1, Int((Double(parts[3]) / Double(s.nominal) * Double(nominal)).rounded()))
+            if drop, parts[2] == 0, parts[1] % 10 != 0 { ff = max(ff, EDLTimecode.dropFrames(nominal)) }
+            return EDLTimecode.frames(parts[0], parts[1], parts[2], ff, nominal: nominal, drop: drop)
+        }
+        /// Source frame at second `t` of the clip's media, counted at the list's rate and drop frame.
+        func src(_ c: Clip, _ t: Seconds) -> Int { listFrames(nativeSrc(c, t), from: srcFormat(c)) }
+        /// List frames of source played over `frames` record frames.
+        func srcLength(_ c: Clip, _ frames: Int) -> Int { Int((Double(frames) * c.speed).rounded()) }
         func clipName(_ c: Clip) -> String { c.name ?? c.mediaId.flatMap(mediaAsset)?.name ?? c.id }
         var out = ["TITLE: \(title)", "FCM: \(drop ? "DROP FRAME" : "NON-DROP FRAME")", ""]
         var event = 0
-        func line(_ reel: String, _ ch: String, _ tr: String, _ dur: Int?, _ s0: Int, _ s1: Int, _ r0: Int, _ r1: Int, source: TimecodeFormat? = nil) {
+        func line(_ reel: String, _ ch: String, _ tr: String, _ dur: Int?, _ s0: Int, _ s1: Int, _ r0: Int, _ r1: Int) {
             let d = dur.map { String(format: "%03d", $0) } ?? "   "
-            let st: (Int) -> String = { source?.string($0) ?? tc($0) }
-            out.append("\(String(format: "%03d", event))  \(pad(reel, 8)) \(pad(ch, 5)) \(pad(tr, 4)) \(d) \(st(s0)) \(st(s1)) \(tc(r0 + origin)) \(tc(r1 + origin))")
+            out.append("\(String(format: "%03d", event))  \(pad(reel, 8)) \(pad(ch, 5)) \(pad(tr, 4)) \(d) \(tc(s0)) \(tc(s1)) \(tc(r0 + origin)) \(tc(r1 + origin))")
         }
         func code(_ tr: Transition) -> String { tr.type == "wipe" ? "W001" : "D" }
 
@@ -2296,11 +2313,18 @@ extension Project {
                 pendingMarkers.removeFirst()
             }
         }
-        func describe(_ c: Clip, s0: Int) {
+        /// `t0` is the source second at the event's start, `frames` its record length.
+        func describe(_ c: Clip, s0: Int, t0: Seconds, frames: Int) {
             if let path = c.mediaId.flatMap(mediaAsset)?.conformPath, !path.isEmpty { out.append("* SOURCE FILE: \(path)") }
+            let own = srcFormat(c)
+            if own != format {
+                let n0 = nativeSrc(c, t0), n1 = n0 + own.frameCount(seconds(frames) * c.speed)
+                let rate = (Double(own.frameDen) / Double(own.frameNum) * 1000).rounded() / 1000
+                out.append("* \(Project.edlSourceTCTag): \(own.string(n0)) \(own.string(n1)) (\(String(format: "%g", rate)) fps\(own.dropFrame ? " DF" : own.frameNum == 1001 ? " NDF" : ""))")
+            }
             if abs(c.speed - 1) > 1e-9 || c.reverse {
                 let v = c.speed * canvas.fps * (c.reverse ? -1 : 1)
-                out.append("M2   \(pad(reel(c), 8))       \(String(format: "%05.1f", v))                \(srcFormat(c).string(s0))")
+                out.append("M2   \(pad(reel(c), 8))       \(String(format: "%05.1f", v))                \(tc(s0))")
             }
         }
 
@@ -2325,20 +2349,20 @@ extension Project {
             if let (tr, d, from) = e.into {
                 if let from {
                     let fs = src(from, sourceTime(from, at: e.r0, sound: !picture))
-                    line(reel(from), ch, "C", nil, fs, fs, e.r0, e.r0, source: srcFormat(from))
+                    line(reel(from), ch, "C", nil, fs, fs, e.r0, e.r0)
                 } else {
                     line("BL", ch, "C", nil, 0, 0, e.r0, e.r0)
                 }
-                line(reel(c), ch, code(tr), d, s0, s1, e.r0, e.r1, source: srcFormat(c))
+                line(reel(c), ch, code(tr), d, s0, s1, e.r0, e.r1)
                 audLine()
                 if let from { out.append("* FROM CLIP NAME: \(clipName(from))") }
                 out.append("* TO CLIP NAME: \(clipName(c))")
             } else {
-                line(reel(c), ch, "C", nil, s0, s1, e.r0, e.r1, source: srcFormat(c))
+                line(reel(c), ch, "C", nil, s0, s1, e.r0, e.r1)
                 audLine()
                 out.append("* FROM CLIP NAME: \(clipName(c))")
             }
-            describe(c, s0: s0)
+            describe(c, s0: s0, t0: e.t0, frames: e.r1 - e.r0)
             if let h = e.hint { out.append("* " + h.text) }
             if picture {
                 if let cdl = c.cdl {
@@ -2352,7 +2376,7 @@ extension Project {
             if let (tr, d) = e.out {
                 event += 1
                 let fs = src(c, sourceTime(c, at: e.r1, sound: !picture))
-                line(reel(c), ch, "C", nil, fs, fs, e.r1, e.r1, source: srcFormat(c))
+                line(reel(c), ch, "C", nil, fs, fs, e.r1, e.r1)
                 line("BL", ch, code(tr), d, 0, d, e.r1, e.r1 + d)
                 audLine()
                 out.append("* FROM CLIP NAME: \(clipName(c))")
@@ -2464,9 +2488,28 @@ extension Project {
         flushMarkers(before: nil)
 
         // Sound, on lanes of channels: AA (1 and 2), A (1), A2 (2), and 3 and 4 (NONE with an AUD line).
-        struct Lane { var label: String; var aud: [Int]; var channels: [Int] }
+        struct Lane: Equatable { var label: String; var aud: [Int]; var channels: [Int] }
         let aa = Lane(label: "AA", aud: [], channels: [1, 2]), a1 = Lane(label: "A", aud: [], channels: [1]), a2 = Lane(label: "A2", aud: [], channels: [2])
         let ch3 = Lane(label: "NONE", aud: [3], channels: [3]), ch4 = Lane(label: "NONE", aud: [4], channels: [4])
+        let ch34 = Lane(label: "NONE", aud: [3, 4], channels: [3, 4])
+        /// The lane of the source channels a clip is routed to, when CMX has one.
+        func routed(_ c: Clip) -> Lane? {
+            guard let r = c.channels else { return nil }
+            switch r.form {
+            case .single(1): return a1
+            case .single(2): return a2
+            case .single(3): return ch3
+            case .single(4): return ch4
+            case .pair(1, 2): return aa
+            case .pair(3, 4): return ch34
+            default: return nil
+            }
+        }
+        /// A chain's lane: the one its clips are all routed to, else `fallback`.
+        func lane(_ chain: [Event], _ fallback: Lane) -> Lane {
+            guard let first = chain.first.flatMap({ routed($0.clip) }), chain.allSatisfy({ routed($0.clip) == first }) else { return fallback }
+            return first
+        }
         let audioTracks = Array(tracks.filter { $0.kind == .audio }.prefix(2))
         let hasProduction = !production.isEmpty
         var sources: [(events: [Event], lane: Lane)] = []
@@ -2494,7 +2537,8 @@ extension Project {
         var waiting: [(chain: [Event], lane: Lane)] = []
         for s in sources {
             for chain in chains(s.events) {
-                if free(s.lane, chain) { take(s.lane, chain); placed.append((s.lane, chain)) } else { waiting.append((chain, s.lane)) }
+                let own = lane(chain, s.lane)
+                if free(own, chain) { take(own, chain); placed.append((own, chain)) } else { waiting.append((chain, own)) }
             }
         }
         for (chain, own) in waiting {
@@ -2520,7 +2564,7 @@ extension Project {
                 placed.append((own, [e]))
             }
         }
-        for lane in [aa, a1, a2, ch3, ch4] {
+        for lane in [aa, a1, a2, ch3, ch4, ch34] {
             let mine = placed.filter { $0.lane.label == lane.label && $0.lane.aud == lane.aud }.flatMap(\.events).sorted { $0.r0 < $1.r0 }
             for e in mine { write(e, lane.label, aud: lane.aud, picture: false) }
         }

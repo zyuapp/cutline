@@ -31,6 +31,38 @@ public struct SourceSegment: Equatable, Sendable {
         self.sourceIn = sourceIn
         self.sourceOut = sourceOut
     }
+
+    /// The segment with handles around the words it plays (those whose middle is inside it): it starts at least
+    /// `before` ahead of the first word and ends at least `after` past the last, never reaching into the words either
+    /// side or outside `0...duration`, and lasts whole frames of `fps`, rounded out so the last word is never cut.
+    public func withHandles(_ t: Transcript, before: Seconds, after: Seconds, fps: Double, duration: Seconds) -> SourceSegment {
+        let words = t.words
+        guard let first = words.firstIndex(where: { ($0.start + $0.end) / 2 >= sourceIn && ($0.start + $0.end) / 2 < sourceOut }),
+              let last = words.lastIndex(where: { ($0.start + $0.end) / 2 >= sourceIn && ($0.start + $0.end) / 2 < sourceOut }) else { return self }
+        let floor = first > 0 ? words[first - 1].end : 0
+        let ceiling = last + 1 < words.count ? words[last + 1].start : duration
+        var s = self
+        s.sourceIn = max(0, min(sourceIn, max(floor, words[first].start - before)))
+        s.sourceOut = max(sourceOut, words[last].end, min(ceiling, words[last].end + after))
+        guard fps > 0 else { return s }
+        let frame = 1 / fps
+        var frames = ((s.sourceOut - s.sourceIn) * fps - 1e-6).rounded(.up)
+        if s.sourceIn + frames * frame > min(ceiling, duration) + 1e-6 {
+            // Rounding out would reach the next word or past the media: the fewest frames that still hold the last word.
+            frames = max(((words[last].end - s.sourceIn) * fps - 1e-6).rounded(.up), ((min(ceiling, duration) - s.sourceIn) * fps + 1e-6).rounded(.down))
+        }
+        s.sourceOut = s.sourceIn + max(1, frames) * frame
+        return s
+    }
+}
+
+extension Transcript {
+    /// Gaps of at least `minimum` between spoken words, in source time; `skippingFillers` reads across filler words,
+    /// so a pause broken by an "um" is one pause. Sound under a gap (music, ambience) doesn't hide it.
+    public func pauses(atLeast minimum: Seconds, skippingFillers: Bool = false) -> [TimeRange] {
+        let spoken = words.filter { !(skippingFillers && $0.isFiller) }
+        return zip(spoken, spoken.dropFirst()).compactMap { a, b in b.start - a.end >= minimum ? TimeRange(a.end, b.start) : nil }
+    }
 }
 
 let eps: Seconds = 1e-6
@@ -186,21 +218,56 @@ extension Project {
         return created
     }
 
-    /// Removes clips. With `ripple`, later clips on the same track close the gap.
-    public mutating func deleteClips(_ ids: [String], ripple: Bool) throws {
+    /// Removes clips. With `ripple`, later clips on the same track close the gap. A neighbour's split edit made of its
+    /// own sound (an L cut running under a deleted clip, a J cut starting under one) is kept: into the gap, or with
+    /// `ripple` against the clip that now touches it, whose sound yields. Sound that stopped short only for a deleted
+    /// clip plays to its picture edge again. Returns how surviving clips' sound edges moved.
+    @discardableResult
+    public mutating func deleteClips(_ ids: [String], ripple: Bool) throws -> [String] {
         for id in ids where locateClip(id) == nil { throw EditError("No clip \(id)") }
         let ids = Array(Set(ids + ids.flatMap { linked($0) }))
         let doomed = ids.compactMap { clip($0) }.sorted { $0.start > $1.start }
+        let before = Dictionary(tracks.flatMap(\.clips).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for clip in doomed {
             guard let loc = locateClip(clip.id) else { continue }
-            tracks[loc.track].clips.remove(at: loc.clip)
-            isolateSound(trackIndex: loc.track, around: TimeRange(clip.start, clip.end))
+            let t = loc.track
+            tracks[t].clips.remove(at: loc.clip)
+            isolateSound(trackIndex: t, around: TimeRange(clip.start, clip.end), keepingOwnSound: true)
             if ripple {
-                for i in tracks[loc.track].clips.indices where tracks[loc.track].clips[i].start >= clip.end - eps {
-                    tracks[loc.track].clips[i].start = canvas.snap(tracks[loc.track].clips[i].start - clip.duration)
+                for i in tracks[t].clips.indices where tracks[t].clips[i].start >= clip.end - eps {
+                    tracks[t].clips[i].start = canvas.snap(tracks[t].clips[i].start - clip.duration)
                 }
+                rejoinSound(trackIndex: t, at: clip.start)
             }
         }
+        var notes: [String] = []
+        for c in tracks.flatMap(\.clips) {
+            guard let o = before[c.id], hasSound(c) else { continue }
+            if abs(o.audioLead - c.audioLead) > eps { notes.append("\(c.id) sound start: \(Self.soundEdge(o.audioLead, lead: true)) → \(Self.soundEdge(c.audioLead, lead: true))") }
+            if abs(o.audioLag - c.audioLag) > eps { notes.append("\(c.id) sound end: \(Self.soundEdge(o.audioLag, lead: false)) → \(Self.soundEdge(c.audioLag, lead: false))") }
+        }
+        return notes
+    }
+
+    static func soundEdge(_ x: Seconds, lead: Bool) -> String {
+        if abs(x) < eps { return "at the picture cut" }
+        if lead { return x > 0 ? "\(fmt2(x))s before its picture (J cut)" : "\(fmt2(-x))s after its picture starts" }
+        return x > 0 ? "\(fmt2(x))s past its picture (L cut)" : "\(fmt2(-x))s before its picture ends"
+    }
+
+    /// After a ripple closed a gap at `time` on track `t`: a split edit the clip ending or starting there brought keeps
+    /// its length against the clip now touching it, whose sound yields, so the two sounds don't play over each other.
+    mutating func rejoinSound(trackIndex t: Int, at time: Seconds) {
+        let tol = canvas.frameDuration / 2
+        let clips = tracks[t].clips
+        guard let a = clips.first(where: { abs($0.end - time) < tol && hasSound($0) }),
+              let b = clips.first(where: { abs($0.start - time) < tol && hasSound($0) }) else { return }
+        let offset = a.audioLag > eps ? -a.audioLag : b.audioLead > eps ? b.audioLead : 0
+        guard offset != 0 else { return }
+        if (try? splitEdit(left: a.id, right: b.id, offset: offset, subframe: true)) != nil { return }
+        guard let l = locateClip(a.id), let r = locateClip(b.id) else { return }
+        tracks[t].clips[l.clip].limitSound(to: b.start)
+        tracks[t].clips[r.clip].limitSound(from: b.start)
     }
 
     /// Removes a timeline range from the given tracks (all when nil). With `ripple`,
@@ -352,10 +419,11 @@ extension Project {
     /// sound of clips after it starts at its end, so nothing is heard inside it. A clip touching `r` whose sound stopped
     /// short of its picture edge for a split edit with a clip that is now gone plays to that edge again, unless another
     /// clip's sound still covers it.
-    mutating func isolateSound(trackIndex t: Int, around r: TimeRange) {
+    /// `keepingOwnSound` leaves the sound clips beside `r` play into it, for a deleted clip whose place is now a gap.
+    mutating func isolateSound(trackIndex t: Int, around r: TimeRange, keepingOwnSound: Bool = false) {
         let tol = canvas.frameDuration / 2
         var clips = tracks[t].clips
-        for i in clips.indices where hasSound(clips[i]) {
+        for i in clips.indices where hasSound(clips[i]) && !keepingOwnSound {
             if clips[i].end <= r.start + eps {
                 clips[i].limitSound(to: r.start)
             } else if clips[i].start >= r.end - eps {

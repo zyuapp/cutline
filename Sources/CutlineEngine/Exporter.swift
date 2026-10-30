@@ -179,6 +179,7 @@ public enum Exporter {
         let weave = options.interlaced == .progressive ? nil : options.interlaced
         if weave != nil {
             guard options.preset.isProRes else { throw EditError("Interlaced output needs a ProRes preset (prores_hq for broadcast); VideoToolbox's H.264 and HEVC encoders are progressive only") }
+            if let why = FieldOrder.interlacedRateProblem(fps: canvas.fps) { throw EditError(why) }
             guard leader == nil else { throw EditError("Interlaced output can't carry a leader yet; export the leader as a separate progressive file") }
             let fields = built.videoComposition.mutableCopy() as! AVMutableVideoComposition
             fields.frameDuration = CMTimeMultiplyByRatio(built.videoComposition.frameDuration, multiplier: 1, divisor: 2)

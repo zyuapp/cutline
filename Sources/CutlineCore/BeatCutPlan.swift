@@ -32,7 +32,8 @@ public struct BeatFootage: Equatable, Sendable {
 ///
 /// Each shot takes the footage with the best score: ranked quality, plus (when the music's energy is known)
 /// how well the footage's ranked motion matches the ranked energy of that stretch of music, minus penalties for
-/// showing a moment already used, for the media used just before, and for media used more than the others.
+/// the media used just before and for media used more than the others. No shot shows source time an earlier shot
+/// showed while any unshown moment is long enough; after that, the moment shown longest ago comes back.
 public enum BeatCutPlan {
     public struct Segment: Sendable {
         public var need: Seconds
@@ -50,12 +51,20 @@ public enum BeatCutPlan {
         public var sourceIn: Seconds
     }
 
+    /// A shot that shows again a moment shown before, once every moment was used.
+    public struct Reuse: Equatable, Sendable {
+        public var segment: Int
+        public var footage: Int
+        public var sourceIn: Seconds
+    }
+
     public struct Plan: Sendable {
         public var picks: [Pick?]
         /// Shots that show source time an earlier shot already showed.
         public var repeats: Int
         public var scored: Bool
         public var energyMatched: Bool
+        public var reused: [Reuse] = []
     }
 
     /// Ranks in 0…1 (ties share the mean rank); nil entries stay nil.
@@ -105,29 +114,44 @@ public enum BeatCutPlan {
             return (middle, false)
         }
 
+        /// Moments shown so far and the shot that last showed each.
+        var shown: [(footage: Int, start: Seconds, last: Int)] = []
+        var reused: [Reuse] = []
         for (si, seg) in segments.enumerated() {
             let low = mediaUses.values.min() ?? 0
-            var best: (score: Double, index: Int, start: Seconds, fresh: Bool)?
+            var best: (score: Double, index: Int, start: Seconds)?
             for (i, f) in footage.enumerated() where f.range.duration >= seg.need - 1e-6 {
                 let w = window(f, need: seg.need)
+                guard w.fresh else { continue }
                 var score = (quality[i] ?? 0.5)
                 if let m = motion[i], let e = music[si] { score += 0.8 * (1 - abs(m - e)) }
-                if !w.fresh { score -= 2 }
                 if mediaIds.count > 1, previous == f.mediaId { score -= 0.35 }
                 score -= 0.25 * Double((mediaUses[f.mediaId] ?? 0) - low)
                 score -= 0.1 * Double(footageUses[i])
-                if best.map({ score > $0.score + 1e-9 }) ?? true { best = (score, i, w.start, w.fresh) }
+                if best.map({ score > $0.score + 1e-9 }) ?? true { best = (score, i, w.start) }
+            }
+            if best == nil {
+                // Every moment long enough has been shown: show again the one shown longest ago.
+                if let k = shown.indices.filter({ footage[shown[$0].footage].range.duration >= seg.need - 1e-6 }).min(by: { shown[$0].last < shown[$1].last }) {
+                    let f = footage[shown[k].footage]
+                    let start = min(max(shown[k].start, f.range.start), f.range.end - seg.need)
+                    best = (0, shown[k].footage, start)
+                    shown[k].last = si
+                    repeats += 1
+                    reused.append(Reuse(segment: si, footage: shown[k].footage, sourceIn: start))
+                }
+            } else {
+                shown.append((best!.index, best!.start, si))
             }
             guard let best else { picks.append(nil); continue }
             let f = footage[best.index]
-            if !best.fresh { repeats += 1 }
             used[f.mediaId, default: []].append(TimeRange(best.start, best.start + seg.need))
             mediaUses[f.mediaId, default: 0] += 1
             footageUses[best.index] += 1
             previous = f.mediaId
             picks.append(Pick(footage: best.index, sourceIn: best.start))
         }
-        return Plan(picks: picks, repeats: repeats, scored: scored, energyMatched: matched && scored)
+        return Plan(picks: picks, repeats: repeats, scored: scored, energyMatched: matched && scored, reused: reused)
     }
 }
 

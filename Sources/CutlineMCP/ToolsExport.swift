@@ -52,7 +52,8 @@ extension Toolbox {
             "image_format": Schema.string("For stills and image sequences, default png", values: Delivery.StillFormat.allCases.map(\.rawValue)),
             "times": Schema.numbers("For stills: timeline times"),
             "trim": Schema.bool("For archive: copy only the used parts of each file plus 1 s handles"),
-            "variants": ["type": "array", "description": "Render several versions in one call: [{name, ops: [{tool, args}], and any export argument such as platform, path, start, end}]. Each variant applies its ops (any tools, e.g. recipe reframe, text edits, a different hook), exports, then the project returns to how it was.", "items": ["type": "object"]],
+            "variants": ["type": "array", "description": "Render several versions in one call: [{name, ops: [{tool, args}], and any export argument such as platform, path, start, end}]. The call's own arguments render the base version first (base:false skips it); then each variant applies its ops (any tools, e.g. recipe reframe, text edits, a different hook) to the base arguments, exports, and the project returns to how it was. The report lists every file written.", "items": ["type": "object"]],
+            "base": Schema.bool("With variants: also render the call's own export (default true)"),
         ])) { [unowned self] args in
             let b = try session.requireBundle()
             if let variants = args.raw["variants"]?.array, !variants.isEmpty {
@@ -134,6 +135,7 @@ extension Toolbox {
             if container == .mxf, url.pathExtension.lowercased() != "mxf" { throw EditError("container mxf needs a path ending .mxf") }
             let fields = try args.enumValue("interlaced", FieldOrder.self)
             if preset.needsFFmpeg, let why = FFmpegDelivery.check(p, preset: preset, container: url.pathExtension.lowercased(), fields: fields) { throw EditError(why) }
+            if fields == .tff || fields == .bff, let why = FieldOrder.interlacedRateProblem(fps: p.canvas.fps) { throw EditError(why) }
             if preset.isDNxHR, fields == .tff, let tier = FFmpegDelivery.interlacedDNxHD(preset, fps: p.canvas.fps) {
                 report.append("ffmpeg's DNxHR is progressive only, so this interlaced master is \(tier.name) 1080i (\(preset.title)'s interlaced tier, \(tier.tenBit ? "10" : "8")-bit, top field first).")
             }
@@ -382,6 +384,18 @@ extension Toolbox {
         guard let exporter = tools["export"] else { throw EditError("export is unavailable") }
         var report: [String] = []
         defer { _ = try? b.checkout(start) }
+        var folders = [b.exportsURL]
+        for v in [JSON.object(base.raw)] + variants {
+            if let path = v["path"]?.string { folders.append(session.resolve(path).deletingLastPathComponent()) }
+        }
+        let before = Toolbox.fileDates(in: folders)
+        let shared = base.raw.filter { $0.key != "variants" && $0.key != "base" }
+        if base.bool("base", default: true) {
+            installResolvers(try? session.project())
+            let r = try await exporter.run(Args(.object(shared)))
+            if r.isError { throw EditError("Base export: \(r.plainText)") }
+            report.append("base: " + r.plainText.replacingOccurrences(of: "\n", with: "\n  "))
+        }
         for (i, v) in variants.enumerated() {
             guard case .object(var o) = v else { throw EditError("variants[\(i)] must be an object") }
             let name = o["name"]?.string ?? "variant\(i + 1)"
@@ -399,13 +413,27 @@ extension Toolbox {
                 let ext = (o["preset"]?.string ?? base.optString("preset")).flatMap(ExportPreset.init(rawValue:))?.fileExtension ?? o["container"]?.string ?? base.optString("container") ?? "mp4"
                 o["path"] = .string(b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + "-" + Toolbox.safeName(name)).appendingPathExtension(ext).path)
             }
-            for (k, val) in base.raw where k != "variants" && o[k] == nil { o[k] = val }
+            for (k, val) in shared where o[k] == nil { o[k] = val }
             installResolvers(try? session.project())
             let r = try await exporter.run(Args(.object(o)))
             report.append("\(name): " + r.plainText.replacingOccurrences(of: "\n", with: "\n  "))
             _ = try b.checkout(start)
         }
+        let written = Toolbox.fileDates(in: folders).filter { before[$0.key] != $0.value }.keys.sorted()
+        report.append("Files written (\(written.count)):" + written.map { "\n  " + $0 }.joined())
         return .text(report.joined(separator: "\n") + "\nThe project is back at \(start).")
+    }
+
+    /// Modification dates of the files directly in `folders`, by path.
+    static func fileDates(in folders: [URL]) -> [String: Date] {
+        var out: [String: Date] = [:]
+        for dir in Set(folders.map(\.standardizedFileURL)) {
+            for url in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey])) ?? [] {
+                guard let v = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]), v.isRegularFile == true else { continue }
+                out[dir.appendingPathComponent(url.lastPathComponent).path] = v.contentModificationDate ?? .distantPast
+            }
+        }
+        return out
     }
 }
 

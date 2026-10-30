@@ -250,7 +250,13 @@ extension Project {
         let byMedia = Dictionary(grouping: placed) { $0.mediaId ?? "" }.mapValues(\.count)
         if byMedia.count > 1 { note += " Shots per media: " + byMedia.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ") + "." }
         if plan.scored { note += plan.energyMatched ? " Picked by quality, with motion following the music's energy (louder passages get busier shots)." : " Picked by quality." }
-        if plan.repeats > 0 { note += " \(plan.repeats) shot(s) reuse a moment already shown; add media or sources to avoid repeats." }
+        if plan.repeats > 0 {
+            let list = plan.reused.prefix(6).map { r -> String in
+                let need = spans[r.segment].duration
+                return "\(footage[r.footage].mediaId) \(fmt2(r.sourceIn))–\(fmt2(r.sourceIn + need))s at \(fmt2(spans[r.segment].start))s"
+            }
+            note += " Every moment was used, so \(plan.repeats) shot(s) show again the moment shown longest ago (" + list.joined(separator: "; ") + (plan.reused.count > 6 ? "; …" : "") + "); add media or sources to avoid repeats."
+        }
         let framed = placed.filter { $0.transform.x != 0 || $0.transform.y != 0 }.count
         if framed > 0 { note += " \(framed) shot(s) framed to keep faces or the subject in view." }
         return note

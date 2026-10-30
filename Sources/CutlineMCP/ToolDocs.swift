@@ -48,6 +48,9 @@ extension Toolbox {
             "paths": "Files or folders", "relink": "Find missing media inside paths instead", "analyze": "Default true", "language": "Default en-US",
             "fps": "",
         ]),
+        "media_relink": ToolBrief(text: "Relink all offline media from a folder (recursive) by file name and/or reel + timecode coverage; reports matches and misses.", args: [
+            "folder": "", "match": "name, reel_tc or both (default)",
+        ]),
         "media_analyze": ToolBrief(text: "Run analysis: transcript, scenes, beats, speakers, shots (faces, saliency, shot size), sounds. Read it with analysis_read.", args: [
             "media_id": "Id, ids or \"all\"",
             "features": "Default all the media allows",
@@ -114,10 +117,10 @@ extension Toolbox {
         ]),
         "assemble": ToolBrief(text: "Lay source segments end to end on one track, in order: a rough cut from media_transcript.", args: [
             "segments": "[{media_id, start, end}] in source time or word anchors", "segments[].media_id": "", "segments[].start": "", "segments[].end": "",
-            "track": "Default V1", "at": "Default the track end", "replace": "Clear the track first", "fit": "",
+            "track": "Default V1", "at": "Default the track end", "replace": "Clear the track first", "fit": "", "pad": "Word handles [before, after] s, default [0.08, 0.12]",
         ]),
         "cut_silences": ToolBrief(text: "Remove pauses over min_pause (keeping `keep`) and filler words, rippling all tracks.", args: [
-            "media_id": "Default every transcribed media", "min_pause": "Default 0.5", "keep": "Default 0.2", "fillers": "Default true",
+            "media_id": "Default every transcribed media", "min_pause": "Default 0.5", "keep": "Default 0.2", "fillers": "Default true", "by": "speech (word gaps, default with a transcript) or level",
         ]),
         "track_add": ToolBrief(text: "Add a track; later video tracks draw on top.", args: ["kind": "", "name": "", "position": "Index from the bottom"]),
         "track_update": ToolBrief(text: "Rename, mute, hide, set volume, role, bus output or sends of, or remove a track.", args: [
@@ -193,7 +196,7 @@ extension Toolbox {
             "timecode_start": "\"hh:mm:ss:ff\" of the program", "subtitles": "Soft subtitles from the transcripts, default none", "subtitle_formats": "srt, vtt, ttml, imsc, ebu-tt-d",
             "subtitle_position": "", "subtitle_speakers": "Color speakers in TTML", "closed_captions": "CEA-608 plus .scc",
             "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml (+ .notes.txt)", "render_graphics": "Bake generators", "bake_luts": "Grades as .cube", "trim": "For archive: used parts only",
-            "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported, then undone",
+            "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported after the base, then undone", "base": "With variants: render this export too, default true",
             "sdr_from_hdr": "true or {method, target_nits}",
         ]),
         "timeline_measure": ToolBrief(text: "Measure the export: sound (LUFS, peaks), picture (exposure, clipping, cast per shot, flashes; nits if HDR), text (contrast, title-safe), scopes, compare (shot color continuity).", args: [

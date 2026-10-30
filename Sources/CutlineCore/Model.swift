@@ -248,6 +248,19 @@ public enum FieldOrder: String, Codable, Sendable, CaseIterable {
     case tff
     /// Interlaced, bottom field first.
     case bff
+
+    /// Why an interlaced master can't be woven from a canvas at `fps`, or nil. Broadcast interlace is 25 frames
+    /// (1080i50) or 29.97 frames (1080i59.94) a second, each frame two fields rendered at twice the canvas rate.
+    public static func interlacedRateProblem(fps: Double) -> String? {
+        if abs(fps - 25) < 0.01 || abs(fps - 30000.0 / 1001) < 0.01 { return nil }
+        let rate = String(format: "%g", (fps * 1000).rounded() / 1000)
+        if abs(fps - 50) < 0.01 || abs(fps - 60000.0 / 1001) < 0.01 {
+            let pal = abs(fps - 50) < 0.01
+            return "Interlaced masters are woven from a 25 or 29.97 fps canvas; this \(rate)p canvas's interlaced equivalent is 1080i\(pal ? "50" : "59.94"), a \(pal ? "25" : "29.97") fps canvas. canvas_set fps:\(pal ? "25" : "29.97") before exporting interlaced, or export \(rate)p progressive."
+        }
+        let fields = String(format: "%g", (fps * 2000).rounded() / 1000)
+        return "Interlaced output is 1080i50 (25 fps canvas) or 1080i59.94 (29.97 fps canvas); this \(rate) fps canvas would make \(fields) fields a second, which broadcast chains don't take. canvas_set fps:25 or 29.97 before exporting interlaced, or export progressive."
+    }
 }
 
 /// A labeled source range of a media file, like Final Cut's keywords and ratings.

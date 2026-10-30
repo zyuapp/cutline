@@ -242,7 +242,7 @@ public enum MediaIngest {
     }
 
     /// The media as ffprobe sees it, before its mezzanine exists.
-    static func placeholder(_ url: URL, id: String, info: ProbeInfo) -> MediaAsset {
+    public static func placeholder(_ url: URL, id: String, info: ProbeInfo) -> MediaAsset {
         let v = info.video
         var m = MediaAsset(id: id, path: url.path, name: MediaProbe.displayName(url), duration: info.duration, width: v?.width ?? 0, height: v?.height ?? 0,
                            fps: v?.frameRate ?? 0, hasVideo: v != nil, hasAudio: !info.audio.isEmpty)
