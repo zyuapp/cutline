@@ -126,6 +126,21 @@ extension Project {
         transitions.compactMap { try? window($0) }
     }
 
+    /// Where a transition's sound crossfade sits. Across a cut it is placed on the sound cut, where the outgoing
+    /// sound ends and the incoming one begins (midway if they overlap), which a split edit moves off the picture cut.
+    /// `tail` and `head` are how far the sounds must run past their pictures' edges; negative when they stop short.
+    public func audioWindow(_ tr: Transition) throws -> TransitionWindow {
+        let w = try window(tr)
+        guard let f = tr.from, let t = tr.to, let a = clip(f), let b = clip(t) else { return w }
+        let cut = (a.audioRange.end + b.audioRange.start) / 2, d = tr.duration
+        let (s, e): (Seconds, Seconds) = switch tr.align {
+        case .center: (cut - d / 2, cut + d / 2)
+        case .start: (cut, cut + d)
+        case .end: (cut - d, cut)
+        }
+        return TransitionWindow(transition: tr, trackId: w.trackId, start: s, end: e, tail: e - a.end, head: b.start - s)
+    }
+
     /// Checks a transition against the clips: adjacency, enough media in the handles, and no
     /// overlap with other transitions on the same clips.
     public func checkTransition(_ tr: Transition) throws {
@@ -133,26 +148,41 @@ extension Project {
             throw EditError("Unknown transition \(tr.type). Types: \(TransitionCatalog.all.map(\.id).joined(separator: ", "))")
         }
         let w = try window(tr)
-        if let id = tr.from, let c = clip(id) {
-            guard c.kind != .adjustment else { throw EditError("Adjustment clips don't take transitions; animate their mix instead") }
+        for id in [tr.from, tr.to].compactMap({ $0 }) where clip(id)?.kind == .adjustment {
+            throw EditError("Adjustment clips don't take transitions; animate their mix instead")
+        }
+        let pictureChecked = tr.hasVideo || tr.from == nil || tr.to == nil
+        if pictureChecked, let id = tr.from, let c = clip(id) {
             if w.tail > 0, let avail = handle(c, after: true), avail + 1e-3 < w.tail {
                 throw EditError("\(id) has \(fmt2(avail))s of media after its out point but the transition needs \(fmt2(w.tail))s. Use a shorter duration, align:\"end\", or trim \(id) shorter first")
             }
             if w.start < c.start - 1e-6 { throw EditError("The transition is longer than \(id)") }
         }
-        if let id = tr.to, let c = clip(id) {
-            guard c.kind != .adjustment else { throw EditError("Adjustment clips don't take transitions; animate their mix instead") }
+        if pictureChecked, let id = tr.to, let c = clip(id) {
             if w.head > 0, let avail = handle(c, after: false), avail + 1e-3 < w.head {
                 throw EditError("\(id) has \(fmt2(avail))s of media before its in point but the transition needs \(fmt2(w.head))s. Use a shorter duration, align:\"start\", or trim \(id)'s start later first")
             }
             if w.end > c.end + 1e-6 { throw EditError("The transition is longer than \(id)") }
         }
-        if tr.hasAudio, tr.from != nil, tr.to != nil, let a = clip(tr.from!), let b = clip(tr.to!), a.audioLag > 0 || b.audioLead > 0 {
-            throw EditError("\(a.id)|\(b.id) is a split edit; use part:\"video\" or remove the J/L cut")
+        var aw: TransitionWindow?
+        if tr.hasAudio, let f = tr.from, let t = tr.to, let a = clip(f), let b = clip(t) {
+            let sw = try audioWindow(tr)
+            aw = sw
+            if sw.tail > 1e-6, let avail = handle(a, after: true), avail + 1e-3 < sw.tail {
+                throw EditError("\(f)'s sound needs \(fmt2(sw.tail))s of media past its picture's end for the crossfade but has \(fmt2(avail))s. Use a shorter duration or align:\"end\"")
+            }
+            if sw.head > 1e-6, let avail = handle(b, after: false), avail + 1e-3 < sw.head {
+                throw EditError("\(t)'s sound needs \(fmt2(sw.head))s of media before its picture's start for the crossfade but has \(fmt2(avail))s. Use a shorter duration or align:\"start\"")
+            }
+            if sw.start < a.audioRange.start - 1e-6 { throw EditError("The crossfade is longer than \(f)'s sound") }
+            if sw.end > b.audioRange.end + 1e-6 { throw EditError("The crossfade is longer than \(t)'s sound") }
         }
-        for other in transitionWindows where other.transition.id != tr.id && other.trackId == w.trackId {
-            if other.start < w.end - 1e-6 && w.start < other.end - 1e-6 {
-                throw EditError("Overlaps transition \(other.transition.id) (\(fmt2(other.start))–\(fmt2(other.end))s); shorten one of them")
+        for other in transitions where other.id != tr.id {
+            if tr.hasVideo, other.hasVideo, let ow = try? window(other), ow.trackId == w.trackId, ow.start < w.end - 1e-6, w.start < ow.end - 1e-6 {
+                throw EditError("Overlaps transition \(other.id) (\(fmt2(ow.start))–\(fmt2(ow.end))s); shorten one of them")
+            }
+            if let aw, other.hasAudio, let ow = try? audioWindow(other), ow.trackId == aw.trackId, ow.start < aw.end - 1e-6, aw.start < ow.end - 1e-6 {
+                throw EditError("Its crossfade overlaps transition \(other.id)'s (\(fmt2(ow.start))–\(fmt2(ow.end))s); shorten one of them")
             }
         }
     }
@@ -184,11 +214,11 @@ extension Project {
     }
 
     /// The project with audio crossfades written into the clips' sound: the outgoing clip's sound
-    /// runs on and fades out across the window while the incoming one fades in. Idempotent.
+    /// runs on (or stops) to the end of the crossfade and fades out across it while the incoming one fades in. Idempotent.
     public func resolvingAudioTransitions() -> Project {
         var p = self
         for (i, tr) in transitions.enumerated() where tr.hasAudio {
-            guard let w = try? window(tr) else { continue }
+            guard let w = try? audioWindow(tr) else { continue }
             if let id = tr.from, let loc = p.locateClip(id) {
                 var c = p.tracks[loc.track].clips[loc.clip]
                 c.audioLag = max(c.audioLag, w.tail)

@@ -271,16 +271,40 @@ public enum AudioDSP {
         return x.map { vDSP.multiply(g, $0) }
     }
 
+    /// Routes a clip's channels to stereo: one side on both, a half-level sum on both, or the sides swapped.
+    /// Mono input counts as both sides.
+    public static func route(_ x: [[Float]], _ routing: ChannelRouting) -> [[Float]] {
+        guard let l = x.first else { return x }
+        let r = x.count > 1 ? x[1] : l
+        switch routing {
+        case .stereo: return [l, r]
+        case .left: return [l, l]
+        case .right: return [r, r]
+        case .monoMix:
+            let m = vDSP.multiply(0.5, vDSP.add(l, r))
+            return [m, m]
+        case .swap: return [r, l]
+        }
+    }
+
     // MARK: - Effects and files
 
-    /// Renders one `ProAudioCatalog` effect, blended with the input by `effect.mix`; nil for other types.
+    /// Whether `apply` renders this effect type.
+    static func handles(_ type: String) -> Bool { ProAudioCatalog.type(type) != nil || type == AudioStems.channelMapType }
+
+    /// Renders one `ProAudioCatalog` effect (or a clip stem's channel routing), blended with the input by `effect.mix`;
+    /// nil for other types.
     public static func apply(_ e: Effect, to x: [[Float]], sampleRate: Double) -> [[Float]]? {
         func p(_ name: String) -> Double { e.params[name]?.number ?? ProAudioCatalog.type(e.type)?.spec(name)?.defaultValue.number ?? 0 }
+        if e.type == AudioStems.channelMapType {
+            return route(x, ChannelRouting(rawValue: e.params["channels"]?.string ?? "") ?? .stereo)
+        }
         let wet: [[Float]]
         switch e.type {
         case "audio.denoise": wet = denoise(x, sampleRate: sampleRate, reduction: p("reduction"), sensitivity: p("sensitivity"))
         case "audio.deess": wet = deEss(x, sampleRate: sampleRate, frequency: p("frequency"), threshold: p("threshold"), reduction: p("reduction"))
         case "audio.dehum": wet = deHum(x, sampleRate: sampleRate, fundamental: p("fundamental"), harmonics: Int(p("harmonics").rounded()))
+        case "audio.declick": wet = deClick(x, sampleRate: sampleRate, sensitivity: p("sensitivity"))
         case "audio.pan": wet = pan(x, pan: p("pan"))
         case "audio.width": wet = stereoWidth(x, width: p("width"))
         default: return nil

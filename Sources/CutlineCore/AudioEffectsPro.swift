@@ -19,7 +19,7 @@ public enum ProAudioCatalog {
             EffectCatalog.db("reduction", 12, 0, 40, "How far the noise floor is lowered; 6–12 is natural, above 20 can sound processed"),
             EffectCatalog.num("sensitivity", 0.5, 0, 1, "", "How much counts as noise; higher removes more but can thin quiet speech"),
         ]),
-        EffectType(id: "audio.deess", category: "audio", summary: "De-esser: tames harsh s, sh and t sounds by turning down only the highs while they are loud", params: [
+        EffectType(id: "audio.deess", category: "audio", summary: "De-esser: tames sibilance, the harsh s, sh and t sounds, by turning down only the highs while they are loud", params: [
             EffectCatalog.num("frequency", 6000, 4000, 10000, "Hz", "Where sibilance starts; 5000–7000 for most voices"),
             EffectCatalog.db("threshold", -30, -60, 0, "Sibilance level where reduction starts"),
             EffectCatalog.db("reduction", 8, 0, 24, "Most the highs are turned down"),
@@ -27,6 +27,9 @@ public enum ProAudioCatalog {
         EffectType(id: "audio.dehum", category: "audio", summary: "Removes mains hum and its harmonics with narrow notches", params: [
             EffectCatalog.num("fundamental", 0, 0, 1000, "Hz", "Hum frequency: 50 (Europe, Asia, Africa), 60 (Americas); 0 detects it"),
             EffectCatalog.num("harmonics", 4, 1, 16, "", "How many multiples of the fundamental to notch"),
+        ]),
+        EffectType(id: "audio.declick", category: "audio", summary: "Removes clicks, pops and crackle (mouth clicks, cable ticks, vinyl) by bridging short impulses", params: [
+            EffectCatalog.num("sensitivity", 0.5, 0, 1, "", "How readily a spike counts as a click; higher catches quieter clicks but can soften sharp consonants"),
         ]),
         EffectType(id: "audio.pan", category: "audio", summary: "Places the sound left or right with a constant-power law", params: [
             EffectCatalog.num("pan", 0, -1, 1, "", "-1 hard left, 0 center (unchanged), 1 hard right"),

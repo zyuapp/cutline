@@ -23,12 +23,13 @@ public final class AudioStems: @unchecked Sendable {
         var speedCurve: Curve?
         var reverse: Bool
         var fx: [Effect]
+        var channels: ChannelRouting?
     }
 
     func sound(of track: Track, in project: Project? = nil) -> [ClipSound] {
         let clips = project.map { p in track.clips.flatMap { $0.kind == .sequence ? p.expanded($0).map(\.clip) : [$0] } } ?? track.clips
         return clips.filter { $0.kind == .media }.map {
-            ClipSound(id: $0.id, media: $0.mediaId ?? "", start: $0.start, duration: $0.duration, sourceIn: $0.sourceIn, speed: $0.speed, volume: $0.volume, fadeIn: $0.audioFadeIn, fadeOut: $0.audioFadeOut, lead: $0.audioLead, lag: $0.audioLag, volumeCurve: $0.anim["audio.volume"], speedCurve: $0.anim["time.speed"], reverse: $0.reverse, fx: $0.effects.filter { EffectCatalog.isAudio($0.type) })
+            ClipSound(id: $0.id, media: $0.mediaId ?? "", start: $0.start, duration: $0.duration, sourceIn: $0.sourceIn, speed: $0.speed, volume: $0.volume, fadeIn: $0.audioFadeIn, fadeOut: $0.audioFadeOut, lead: $0.audioLead, lag: $0.audioLag, volumeCurve: $0.anim["audio.volume"], speedCurve: $0.anim["time.speed"], reverse: $0.reverse, fx: $0.effects.filter { EffectCatalog.isAudio($0.type) }, channels: $0.channels)
         }
     }
 
@@ -93,11 +94,24 @@ public final class AudioStems: @unchecked Sendable {
         project.master.effects.contains { EffectCatalog.isAudio($0.type) && $0.enabled }
     }
 
-    /// A clip alone on a track whose effects are the clip's audio effects, for rendering its processed sound.
+    /// The internal effect that routes a clip's channels ahead of its audio effects in a clip stem.
+    static let channelMapType = "audio.channel_map"
+
+    /// Clips whose sound plays from a rendered clip stem: those with audio effects or channel routing.
+    static func needsClipStem(_ clip: Clip) -> Bool {
+        (clip.channels ?? .stereo) != .stereo || clip.effects.contains { EffectCatalog.isAudio($0.type) && $0.enabled }
+    }
+
+    /// A clip alone on a track whose effects are its channel routing and audio effects, for rendering its processed sound.
     static func solo(_ clip: Clip, in project: Project) -> (Project, Track) {
         var dry = clip
         dry.effects.removeAll { EffectCatalog.isAudio($0.type) }
-        let track = Track(id: "clip-\(clip.id)", kind: .audio, name: clip.id, effects: clip.effects.filter { EffectCatalog.isAudio($0.type) }, clips: [dry])
+        dry.channels = nil
+        var fx = clip.effects.filter { EffectCatalog.isAudio($0.type) }
+        if let routing = clip.channels, routing != .stereo {
+            fx.insert(Effect(id: "channels", type: channelMapType, params: ["channels": .string(routing.rawValue)]), at: 0)
+        }
+        let track = Track(id: "clip-\(clip.id)", kind: .audio, name: clip.id, effects: fx, clips: [dry])
         var p = project
         p.tracks = [track]
         p.transitions = []
@@ -112,7 +126,7 @@ public final class AudioStems: @unchecked Sendable {
         var done: [String] = []
         let resolved = project.resolvingAudioTransitions()
         for track in resolved.tracks {
-            for clip in track.clips.flatMap({ $0.kind == .sequence ? resolved.expanded($0).map(\.clip) : [$0] }) where clip.kind == .media && clip.effects.contains(where: { EffectCatalog.isAudio($0.type) && $0.enabled }) {
+            for clip in track.clips.flatMap({ $0.kind == .sequence ? resolved.expanded($0).map(\.clip) : [$0] }) where clip.kind == .media && Self.needsClipStem(clip) {
                 let (solo, soloTrack) = Self.solo(clip, in: resolved)
                 guard cachedStem(for: soloTrack, in: solo) == nil else { continue }
                 try await render(soloTrack, in: solo, transcripts: transcripts, library: library)
@@ -207,15 +221,32 @@ enum AudioIO {
         let start = range?.start ?? 0
         reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 48_000), end: CMTime(seconds: end, preferredTimescale: 48_000))
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline's audio") }
-        while let sample = output.copyNextSampleBuffer() {
-            guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
-            var length = 0
-            var ptr: UnsafeMutablePointer<CChar>?
-            guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
-            let frames = length / (MemoryLayout<Float>.size * 2)
-            try ptr.withMemoryRebound(to: Float.self, capacity: frames * 2) { try body($0, frames) }
+        try await withoutActuallyEscaping(body) { body in
+            try await offPool {
+                while let sample = output.copyNextSampleBuffer() {
+                    guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
+                    var length = 0
+                    var ptr: UnsafeMutablePointer<CChar>?
+                    guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
+                    let frames = length / (MemoryLayout<Float>.size * 2)
+                    try ptr.withMemoryRebound(to: Float.self, capacity: frames * 2) { try body($0, frames) }
+                }
+            }
         }
         if reader.status == .failed { throw reader.error ?? EditError("Audio read failed") }
+    }
+
+    /// Runs a blocking reader loop on its own thread: `copyNextSampleBuffer` waits on Core Media's mixer threads,
+    /// and enough concurrent readers parked on Swift's cooperative pool starve it into a deadlock.
+    /// The loop is released before this returns, so callers may pass closures made with `withoutActuallyEscaping`.
+    static func offPool(_ loop: @escaping () throws -> Void) async throws {
+        final class Box: @unchecked Sendable { var loop: (() throws -> Void)? }
+        let box = Box()
+        box.loop = loop
+        try await runBlocking { _ in
+            defer { box.loop = nil }
+            try box.loop?()
+        }
     }
 
     /// Writes a timeline's mixed sound to a float CAF file and returns its length in frames.
@@ -271,7 +302,7 @@ enum AudioChain {
                     continue
                 }
                 var run: [Effect] = []
-                while i < effects.count, ProAudioCatalog.type(effects[i].type) == nil {
+                while i < effects.count, !AudioDSP.handles(effects[i].type) {
                     run.append(effects[i])
                     i += 1
                 }

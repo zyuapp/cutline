@@ -41,6 +41,7 @@ extension Clip {
         ParamSpec("audio.fade_out", .number, .number(0), min: 0, unit: "seconds", animatable: false, "Audio fade-out"),
         ParamSpec("audio.lead", .number, .number(0), min: -30, max: 30, unit: "seconds", animatable: false, "J cut: sound starts this long before the picture (negative: later)"),
         ParamSpec("audio.lag", .number, .number(0), min: -30, max: 30, unit: "seconds", animatable: false, "L cut: sound continues this long after the picture (negative: ends earlier)"),
+        ParamSpec("audio.channels", .choice(ChannelRouting.allCases.map(\.rawValue)), .string("stereo"), animatable: false, "Which recorded channels play: stereo as recorded, left or right alone on both sides (pick the lav or the boom of a two-mic file), mono_mix sums them, swap exchanges them"),
     ] + Clip.surroundSpecs
 
     /// Used when the master layout is 5.1 or 7.1.
@@ -163,6 +164,7 @@ extension Clip {
         case "time.interpolate": return .string(interpolate ?? "none")
         case "audio.lead": return .number(audioLead)
         case "audio.lag": return .number(audioLag)
+        case "audio.channels": return .string((channels ?? .stereo).rawValue)
         case "audio.pan_x": return .number((surround ?? .standard).x)
         case "audio.pan_y": return .number((surround ?? .standard).y)
         case "audio.center": return .number((surround ?? .standard).center)
@@ -254,6 +256,9 @@ extension Clip {
         case "time.interpolate": interpolate = v.string == "none" ? nil : v.string
         case "audio.lead": audioLead = n
         case "audio.lag": audioLag = n
+        case "audio.channels":
+            let routing = ChannelRouting(rawValue: v.string ?? "") ?? .stereo
+            channels = routing == .stereo ? nil : routing
         case "audio.pan_x", "audio.pan_y", "audio.center", "audio.lfe":
             var s = surround ?? .standard
             switch path {

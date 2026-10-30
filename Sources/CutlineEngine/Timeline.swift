@@ -165,9 +165,9 @@ public enum TimelineBuilder {
                 guard stemURL == nil, masterStem == nil, let a = audio, let ar = audioRange, clip.volume > 0 || clip.anim["audio.volume"] != nil else { continue }
                 let span = clip.audioRange
                 guard span.duration > 0.01 else { continue }
-                // Clips with their own audio effects play a processed copy of their sound.
+                // Clips with their own audio effects or channel routing play a processed copy of their sound.
                 var clipStem: AVAssetTrack?
-                if clip.effects.contains(where: { EffectCatalog.isAudio($0.type) && $0.enabled }) {
+                if AudioStems.needsClipStem(clip) {
                     let (solo, soloTrack) = AudioStems.solo(clip, in: project)
                     if let url = stems?.cachedStem(for: soloTrack, in: solo) {
                         let asset = AVURLAsset(url: url)

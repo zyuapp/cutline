@@ -28,7 +28,7 @@ extension Toolbox {
     ]
 
     func registerEditTools() {
-        addEdit(EditTool(name: "clip_add", description: "Put media, a solid color, or an adjustment layer on the timeline. Default track: V1 for video and images, A1 for audio-only files; \"new\" makes a new layer on top. Without start the clip is appended after the track's last clip. An adjustment layer has no picture: effects on it (effect_add) apply to every layer below it for its duration.", schema: Schema.object([
+        addEdit(EditTool(name: "clip_add", description: "Put media, a solid color, or an adjustment layer on the timeline. Default track: V1 for video and images, A1 for audio-only files; \"new\" makes a new layer on top. Without start the clip is appended after the track's last clip. An adjustment layer has no picture: effects on it (effect_add) apply to every layer below it for its duration. Retiming sound past ±10% (fit to fill or speed) is reported as a warning; to fill time with ambience, room tone or a music bed, pass loop:true, which repeats the source range instead of stretching it.", schema: Schema.object([
             "media_id": Schema.string("Media to place"),
             "color": Schema.string("Hex color for a solid color clip"),
             "adjustment": Schema.bool("Make an adjustment layer"),
@@ -42,10 +42,15 @@ extension Toolbox {
             "source_out": Schema.time("Source end (seconds or word anchor such as \"talk.w40.end\")"),
             "duration": Schema.time("Timeline duration; images, solids and adjustment layers default to 5"),
             "speed": Schema.number("Playback speed, 1 = normal. With source_in, source_out and a duration or end, speed is computed to fit (fit to fill)"),
+            "loop": Schema.bool("Sound only (audio-only media, or any media on an audio track): repeat source_in–source_out end to end to fill duration or end, as several clips, instead of retiming"),
+            "allow_stretch": Schema.bool("Allow slowing audio-only media below 0.25×, which is refused by default"),
             "name": Schema.string("Label shown in the preview timeline"),
         ].merging(Toolbox.setProp) { a, _ in a }), label: { a, p in a.optString("media_id").map { id in "Add " + (p.mediaAsset(id)?.name ?? id) } ?? (a.bool("adjustment", default: false) ? "Add adjustment layer" : "Add a color clip") }) { p, args in
             var clip: Clip
             var defaultTrack = "V1"
+            var warning: String?
+            var loopSource: TimeRange?
+            var loopLength: Seconds = 0
             let start = try args.optTime("start")
             let end = try args.optTime("end")
             let span = start.flatMap { s in end.map { $0 - s } }
@@ -56,6 +61,14 @@ extension Toolbox {
                 var dur: Seconds
                 if m.isImage {
                     dur = try span ?? args.optTime("duration") ?? 5
+                } else if args.bool("loop", default: false) {
+                    guard m.hasAudio else { throw EditError("\(mid) has no sound to loop") }
+                    guard let fill = try span ?? args.optTime("duration"), fill > 0 else { throw EditError("loop needs the length to fill: duration, or start and end") }
+                    let sOut = try args.optSourceTime("source_out") ?? m.duration
+                    guard sOut > sIn else { throw EditError("source_out must be after source_in") }
+                    loopSource = TimeRange(sIn, sOut)
+                    loopLength = fill
+                    dur = min(fill, (sOut - sIn) / speed)
                 } else if let sOut = try args.optSourceTime("source_out"), args.optDouble("speed") == nil, let fill = try span ?? args.optTime("duration") {
                     // Fit to fill: the source range is retimed to the requested length.
                     guard fill > 0, sOut > sIn else { throw EditError("source_out must be after source_in") }
@@ -67,6 +80,10 @@ extension Toolbox {
                     dur = d
                 } else {
                     dur = (m.duration - sIn) / speed
+                }
+                if !m.isImage {
+                    try Clip.checkAudioStretch(speed: speed, media: m, allow: args.bool("allow_stretch", default: false))
+                    warning = Clip.retimeWarning(speed: speed, hasAudio: m.hasAudio)
                 }
                 clip = Clip(id: Project.newClipId(), kind: .media, name: args.optString("name") ?? m.name, mediaId: mid, start: 0, duration: dur, sourceIn: m.isImage ? 0 : sIn, speed: speed)
                 if !m.hasVideo { defaultTrack = p.tracks.first { $0.kind == .audio }?.id ?? "A1" }
@@ -96,8 +113,25 @@ extension Toolbox {
             }
             let mode = try args.enumValue("mode", PlaceMode.self) ?? (start == nil ? .append : .place)
             clip.start = start ?? 0
+            if let loopSource, let ti = p.trackIndex(trackId) {
+                let m = p.mediaAsset(clip.mediaId!)!
+                guard p.tracks[ti].kind == .audio || !m.hasVideo else { throw EditError("loop repeats sound only: put it on an audio track (track: \"A1\" or \"new\"), or use recipe room_tone") }
+                guard mode != .insert else { throw EditError("loop places with mode place, append or overwrite") }
+                let at = mode == .append ? p.tracks[ti].end : clip.start
+                let pieces = try p.loopPieces(start: at, duration: loopLength, source: loopSource, speed: clip.speed)
+                var ids: [String] = []
+                for piece in pieces {
+                    var c = clip
+                    c.id = Project.newClipId()
+                    c.start = piece.start
+                    c.duration = piece.duration
+                    c.sourceIn = piece.sourceIn
+                    ids.append(try p.addClip(c, trackId: trackId, mode: mode == .append ? .place : mode).id)
+                }
+                return "Added \(ids.count) clip(s) on \(trackId) at \(fmt(pieces.first?.start ?? at))–\(fmt(pieces.last.map { $0.start + $0.duration } ?? at)), looping \(clip.mediaId!) \(fmt2(loopSource.start))–\(fmt2(loopSource.end))s: \(ids.joined(separator: ", "))"
+            }
             let placed = try p.addClip(clip, trackId: trackId, mode: mode)
-            return "Added \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))"
+            return "Added \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))" + (warning.map { ". " + $0 } ?? "")
         })
 
         addEdit(EditTool(name: "text_add", description: "Add a title, lower third, label or call-out. Goes on a text layer above the video (created as needed, a new one if the range is busy).", schema: Schema.object(Toolbox.textProps.merging([
@@ -151,7 +185,8 @@ extension Toolbox {
             "duration": Schema.time("New timeline duration; trims the tail"),
             "source_in": Schema.time("New source start (seconds or word anchor); trims the head, start stays"),
             "source_out": Schema.time("New source end (seconds or word anchor)"),
-            "speed": Schema.number("Playback speed; keeps the source range"),
+            "speed": Schema.number("Playback speed; keeps the source range. Sound past ±10% is reported as a warning"),
+            "allow_stretch": Schema.bool("Allow slowing audio-only media below 0.25×, which is refused by default"),
             "track": Schema.string("Move to this track (overwrites what is there)"),
             "name": Schema.string("Label"),
             "text": Schema.string("New words for a title clip"),
@@ -180,10 +215,15 @@ extension Toolbox {
                 // Synced angles keep the same moment; other media keep the source time where possible.
                 if try args.optSourceTime("source_in") == nil { c.sourceIn = m.isImage ? 0 : synced ?? min(c.sourceIn, max(0, m.duration - c.duration * c.speed)) }
             }
+            var warning: String?
             if let v = args.optDouble("speed") {
                 let src = c.duration * c.speed
                 c.speed = v
                 c.duration = src / v
+                if let m = c.mediaId.flatMap({ p.mediaAsset($0) }), c.kind == .media, !m.isImage {
+                    try Clip.checkAudioStretch(speed: v, media: m, allow: args.bool("allow_stretch", default: false))
+                    warning = Clip.retimeWarning(speed: v, hasAudio: m.hasAudio)
+                }
             }
             let sIn = try args.optSourceTime("source_in"), sOut = try args.optSourceTime("source_out")
             if sIn != nil || sOut != nil {
@@ -216,7 +256,7 @@ extension Toolbox {
             }
             try p.replaceClip(c, ripple: args.bool("ripple", default: false))
             let now = p.clip(id)!
-            return "Updated \(id): \(Describe.clip(now, p))"
+            return "Updated \(id): \(Describe.clip(now, p))" + (warning.map { ". " + $0 } ?? "")
         })
 
         addEdit(EditTool(name: "clip_split", description: "Split at a timeline time: one clip (clip_id) or every clip under that time on the given tracks (default all).", schema: Schema.object([

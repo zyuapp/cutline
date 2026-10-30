@@ -172,7 +172,7 @@ public enum SurroundMix {
                 var mono = false
                 if clip.kind == .media {
                     guard let media = clip.mediaId.flatMap({ resolved.mediaAsset($0) }), media.hasAudio, !media.isImage else { continue }
-                    mono = try await channelCount(media, library: library) == 1
+                    mono = try await channelCount(media, library: library) == 1 || clip.channels?.isMono == true
                 }
                 var t = track
                 t.clips = [clip]
@@ -357,17 +357,21 @@ extension AudioIO {
         let start = CMTime(seconds: range.start, preferredTimescale: 48_000)
         reader.timeRange = CMTimeRange(start: start, end: CMTime(seconds: range.end, preferredTimescale: 48_000))
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline's audio") }
-        var next: Int64 = 0
-        while let sample = output.copyNextSampleBuffer() {
-            guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
-            var length = 0
-            var ptr: UnsafeMutablePointer<CChar>?
-            guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
-            let frames = length / (MemoryLayout<Float>.size * 2)
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-            let at = pts.isValid ? Int64(((pts - start).seconds * AudioStems.sampleRate).rounded()) : next
-            try ptr.withMemoryRebound(to: Float.self, capacity: frames * 2) { try body($0, frames, at) }
-            next = at + Int64(frames)
+        try await withoutActuallyEscaping(body) { body in
+            try await offPool {
+                var next: Int64 = 0
+                while let sample = output.copyNextSampleBuffer() {
+                    guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
+                    var length = 0
+                    var ptr: UnsafeMutablePointer<CChar>?
+                    guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
+                    let frames = length / (MemoryLayout<Float>.size * 2)
+                    let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                    let at = pts.isValid ? Int64(((pts - start).seconds * AudioStems.sampleRate).rounded()) : next
+                    try ptr.withMemoryRebound(to: Float.self, capacity: frames * 2) { try body($0, frames, at) }
+                    next = at + Int64(frames)
+                }
+            }
         }
         if reader.status == .failed { throw reader.error ?? EditError("Audio read failed") }
     }

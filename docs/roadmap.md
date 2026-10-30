@@ -95,6 +95,7 @@ Goal: an editor coming from Final Cut Pro, Premiere or Resolve can bring their t
     - Repair: denoise, de-ess, de-hum, de-click.
     - Mixing: pan and stereo width, track fader automation, audio roles with stem delivery.
     - Third-party Audio Unit plug-ins.
+    - Dialogue: rolling sound trims, crossfades on the sound cut of split edits, room tone (`recipe room_tone`, `fill_gaps`), looped beds (`clip_add loop`), per-clip channel routing (`audio.channels`) to pick the lav or the boom.
   - **Editing:** linked picture and sound, replace edits, fit to fill, dual-system sound sync by waveform.
   - **Organizing:** marker kinds and colors, keyword ranges and favorite/reject ratings on footage, source timecode and reels.
   - **Media management:** background proxies for preview, relinking, archiving with trimmed media.
