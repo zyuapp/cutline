@@ -102,7 +102,7 @@ func exportWritesTimecodeTrackAtProjectStart(_ preset: ExportPreset) async throw
 }
 
 @Test func unavailableCodecsExplainThemselves() {
-    #expect(ExportPreset.unavailable("dnxhr_hqx")?.contains("no system encoder") == true)
+    #expect(ExportPreset.unavailable("dnxhr_hqx", ffmpeg: false)?.contains("no system encoder") == true)
     #expect(ExportPreset.unavailable("prores_hq") == nil)
     #expect(ExportPreset.allCases.filter(\.isProRes).count == 6)
 }

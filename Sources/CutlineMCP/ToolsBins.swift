@@ -3,11 +3,13 @@ import Foundation
 
 extension Toolbox {
     func registerBinTools() {
-        addEdit(EditTool(name: "media_organize", description: "Organize the media library like an editor's bins: put media in a bin (folders with \"/\", e.g. \"Interviews/Day 1\"), set metadata columns (scene, take, camera, angle, notes or any name), or rename. Browse with media_list.", schema: Schema.object([
+        addEdit(EditTool(name: "media_organize", description: "Organize the media library like an editor's bins: put media in a bin (folders with \"/\", e.g. \"Interviews/Day 1\"), set metadata columns (scene, take, camera, angle, notes or any name), rename, or set how interlaced media is shown. Browse with media_list.", schema: Schema.object([
             "media_ids": Schema.strings("Media to change"),
             "bin": Schema.string("Bin path; empty string takes them out of any bin"),
             "metadata": ["type": "object", "additionalProperties": ["type": "string"], "description": "Columns to set, e.g. {\"scene\": \"12A\", \"take\": \"3\", \"camera\": \"A\"}; empty string removes a column"],
             "name": Schema.string("New display name (one media id only)"),
+            "deinterlace": Schema.string("Interlaced media: auto (default, deinterlace when interlaced) or off to keep the woven fields", values: ["auto", "off"]),
+            "field_order": Schema.string("Override the detected scan: progressive, tff (top field first) or bff", values: FieldOrder.allCases.map(\.rawValue)),
         ], required: ["media_ids"]), label: { a, _ in a.optString("bin").map { "Move to bin \($0)" } ?? "Edit media metadata" }) { p, args in
             let ids = args.strings("media_ids") ?? []
             guard !ids.isEmpty else { throw EditError("Pass media_ids") }
@@ -27,6 +29,8 @@ extension Toolbox {
                     p.media[i].metadata = m.isEmpty ? nil : m
                 }
                 if let name = args.optString("name"), !name.isEmpty { p.media[i].name = name }
+                if let d = args.optString("deinterlace") { p.media[i].deinterlace = d == "off" ? false : nil }
+                if let f = try args.enumValue("field_order", FieldOrder.self) { p.media[i].fieldOrder = f }
             }
             return "Updated \(ids.joined(separator: ", "))"
         })

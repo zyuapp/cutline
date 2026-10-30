@@ -5,13 +5,13 @@ import Foundation
 
 extension Toolbox {
     func registerMediaTools() {
-        add(Tool(name: "media_import", description: "Add media files (video, audio, images) to the project, or relink missing ones. By default each file is analyzed: word-level transcript (on-device speech recognition), pauses from audio levels, and scene cuts. Media is referenced in place, not copied. Returns media ids to use in edits.", schema: Schema.object([
+        add(Tool(name: "media_import", description: "Add media files (video, audio, images) to the project, or relink missing ones. By default each file is analyzed: word-level transcript (on-device speech recognition), pauses from audio levels, and scene cuts. Media is referenced in place, not copied. Each file is checked to decode; files macOS can't play (MXF, DNxHR, XDCAM, MPEG-2…) are transcoded with ffmpeg to a ProRes 422 HQ mezzanine in the project cache (timecode, frame rate, field order and every audio channel kept; long files in the background) while interchange exports keep naming the original. Interlaced media is detected and deinterlaced. A file that can't be imported is listed with its codec and the fix; the others still import. Returns the path → media id mapping to use in edits.", schema: Schema.object([
             "paths": Schema.strings("Files or folders to import; folders import every media file inside"),
             "analyze": Schema.bool("Run analysis, default true"),
             "language": Schema.string("Speech language, default en-US"),
             "relink": Schema.bool("Instead of importing, find missing media inside paths (folders searched recursively) and point the project at them"),
         ], required: ["paths"])) { [unowned self] args in
-            let b = try session.requireBundle()
+            _ = try session.requireBundle()
             guard let paths = args.strings("paths"), !paths.isEmpty else { throw EditError("paths is empty") }
             if args.bool("relink", default: false) {
                 var found: [(String, String)] = []
@@ -19,55 +19,10 @@ extension Toolbox {
                     found = p.relinkAll(searchRoots: paths.map { session.resolve($0) }) { FileManager.default.fileExists(atPath: $0) }
                 }
                 let still = p.missingMedia { FileManager.default.fileExists(atPath: $0) }
-                return .text((found.isEmpty ? "Nothing relinked." : "Relinked " + found.map { "\($0.0) → \($0.1)" }.joined(separator: ", ")) + (still.isEmpty ? "" : "\nStill missing: " + still.map(\.id).joined(separator: ", ")) + "\n" + footer(p))
+                let transcodes = try await transcodeRelinked(found.map(\.0))
+                return .text((found.isEmpty ? "Nothing relinked." : "Relinked " + found.map { "\($0.0) → \($0.1)" }.joined(separator: ", ")) + (still.isEmpty ? "" : "\nStill missing: " + still.map(\.id).joined(separator: ", ")) + transcodes.map { "\n" + $0 }.joined() + "\n" + footer(try session.project()))
             }
-            var files: [URL] = []
-            for path in paths {
-                let url = session.resolve(path)
-                var isDir: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { throw EditError("Not found: \(url.path)") }
-                if isDir.boolValue {
-                    let items = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
-                    files += items.filter { Toolbox.mediaExtensions.contains($0.pathExtension.lowercased()) }.sorted { $0.path < $1.path }
-                } else {
-                    files.append(url)
-                }
-            }
-            var project = try b.loadProject()
-            var imported: [MediaAsset] = []
-            var lines: [String] = []
-            for url in files {
-                if let existing = project.media.first(where: { $0.path == url.path }) {
-                    lines.append("\(existing.id): already imported")
-                    continue
-                }
-                let id = Toolbox.mediaId(for: url, existing: Set(project.media.map(\.id)))
-                var m = try await MediaProbe.probe(url, id: id)
-                if m.hasVideo, !m.isImage { m.log = await ColorManagement.detectLog(AVURLAsset(url: url)) }
-                project.media.append(m)
-                imported.append(m)
-            }
-            if !imported.isEmpty {
-                try session.edit("Import \(imported.map(\.name).joined(separator: ", "))") { $0.media += imported }
-            }
-            let analyze = args.bool("analyze", default: true)
-            for m in imported {
-                var line = "\(m.id): \(m.isImage ? "image" : fmt2(m.duration) + "s") \(m.hasVideo ? "\(m.width)×\(m.height)" : "audio only")"
-                if analyze {
-                    let (now, later) = Session.defaultFeatures(m)
-                    let language = args.optString("language") ?? "en-US"
-                    let notes = try await session.analyze(m, features: now, language: language, explicit: false)
-                    if !notes.isEmpty { line += " — " + notes }
-                    if !later.isEmpty {
-                        let job = session.jobs.enqueue(m.id, later, bundle: try session.requireBundle().url) { [session] progress in
-                            try await session.analyze(m, features: later, language: language, explicit: false, progress: progress)
-                        }
-                        line += " — \(later.map(\.rawValue).joined(separator: " and ")) analyzing in the background (\(job))"
-                    }
-                }
-                lines.append(line)
-            }
-            return .text(lines.joined(separator: "\n") + "\nNext: media_transcript to read speech, media_frames to look at footage.")
+            return try await importMedia(paths, args: args)
         })
 
         add(Tool(name: "media_analyze", description: "Analyze media (import already runs the defaults). Features: transcript (words, pauses), scenes (cuts), beats (tempo, beats, downbeats; anchors <media>.b12, beat:12), speakers (who speaks when, word emphasis), shots (per-shot descriptions, shot size, people, on-screen text, faces, saliency, aesthetics; anchors <media>.s3), sounds (laughter, applause, music, etc.). Read results with analysis_read. Long analysis can run in the background; analysis_read and project_status show progress.", schema: Schema.object([
@@ -319,7 +274,7 @@ extension Toolbox {
         return (Double(full) / n, Double(partial) / n)
     }
 
-    static let mediaExtensions: Set<String> = Set(["mov", "mp4", "m4v", "mkv", "avi", "mp3", "m4a", "wav", "aif", "aiff", "caf", "aac", "flac"]).union(MediaProbe.imageExtensions)
+    static let mediaExtensions: Set<String> = Set(["mov", "mp4", "m4v", "mkv", "avi", "mxf", "mts", "m2ts", "mpg", "mpeg", "m2v", "webm", "mp3", "m4a", "wav", "aif", "aiff", "caf", "aac", "flac"]).union(MediaProbe.imageExtensions)
 
     static func mediaId(for url: URL, existing: Set<String>) -> String {
         let base = url.deletingPathExtension().lastPathComponent.lowercased()

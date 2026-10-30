@@ -25,7 +25,7 @@ public struct Platform: Sendable {
     /// Accepted export presets; nil accepts any.
     public var presets: [String]?
 
-    static let masterPresets = ["prores_hq", "prores", "prores4444", "prores4444xq"]
+    static let masterPresets = ["prores_hq", "prores", "prores4444", "prores4444xq", "dnxhr_hq", "dnxhr_hqx", "xdcam_hd422"]
 
     public static let all: [Platform] = [
         Platform(id: "youtube", name: "YouTube", aspects: [16.0 / 9], maxDuration: nil, loudness: -14, safe: CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9), preset: "h264", notes: "Chapters from markers go in the description; the first must be at 0:00"),

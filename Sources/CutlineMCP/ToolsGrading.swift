@@ -80,9 +80,15 @@ extension Toolbox {
             report.append(made.line)
             if let w = made.warning { warnings.append(w) }
         }
-        let made = files, strength = plan.strength
+        return try applyMatch(files, report: report, warnings: warnings, plan: plan, current: current, dry: dry)
+    }
+
+    /// The edit half of match_color, kept out of the async function: the debug build's task allocator
+    /// aborted when the edit ran inline there.
+    func applyMatch(_ made: [String: URL], report: [String], warnings: [String], plan: MatchPlan, current: Project, dry: Bool) throws -> ToolResult {
+        let refId = plan.ref.id, strength = plan.strength
         let refText = plan.refAt.map { "\(refId) at \(fmt2($0))s" } ?? refId
-        let result = try runEdit("Match \(made.count) shot(s) to \(Toolbox.clipName(refId, current))", dry: dry) { p in
+        return try runEdit("Match \(made.count) shot(s) to \(Toolbox.clipName(refId, current))", dry: dry) { p in
             for (id, url) in made {
                 guard let loc = p.locateClip(id) else { continue }
                 p.tracks[loc.track].clips[loc.clip].effects.removeAll { $0.id == "match" }
@@ -91,8 +97,6 @@ extension Toolbox {
             return (["Matched to \(refText) at strength \(fmt2(strength)):"] + report.map { "  " + $0 } + warnings).joined(separator: "\n")
                 + "\nTune with param_set fx.match.mix; check continuity with timeline_measure what:[\"compare\"] reference:\(refId)."
         }
-        // Returned through a local: returning the call directly trips the async task allocator in debug builds.
-        return result
     }
 
     /// Writes one shot's match LUT and describes it.

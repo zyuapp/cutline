@@ -137,10 +137,13 @@ public final class RenderScene: @unchecked Sendable {
                 img = still
             } else if let pb = source(clip.id) {
                 let orientation = orientations[clip.id] ?? orientations[mid] ?? .up
-                if let media = project.mediaAsset(mid), let log = media.log {
-                    img = ColorManagement.applyInput(ColorManagement.rawImage(pb), log: log, target: project.canvas.colorSpace, tone: clip.inputTone ?? .aces, exposure: Float(clip.inputExposure ?? 0), recordedIn: media.signalRange ?? .video).oriented(orientation)
+                let media = project.mediaAsset(mid)
+                // Proxies are scaled, so their fields are already mixed.
+                let fields = media.flatMap { $0.deinterlaces && CVPixelBufferGetHeight(pb) == $0.height ? $0.fieldOrder : nil }
+                if let media, let log = media.log {
+                    img = ColorManagement.applyInput(Deinterlace.apply(ColorManagement.rawImage(pb), order: fields), log: log, target: project.canvas.colorSpace, tone: clip.inputTone ?? .aces, exposure: Float(clip.inputExposure ?? 0), recordedIn: media.signalRange ?? .video).oriented(orientation)
                 } else {
-                    img = CIImage(cvPixelBuffer: pb).oriented(orientation)
+                    img = Deinterlace.apply(CIImage(cvPixelBuffer: pb), order: fields).oriented(orientation)
                 }
                 opaque = true
             }

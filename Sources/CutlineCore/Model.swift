@@ -179,6 +179,14 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     public var bin: String?
     /// Free-form columns such as scene, take, camera, angle, notes.
     public var metadata: [String: String]?
+    /// The camera file when `path` is a mezzanine transcode of it. Interchange and conform name this file.
+    public var originalPath: String?
+    /// What the import transcode did, e.g. "mpeg2video 4:2:2 in MXF → ProRes 422 HQ".
+    public var transcoded: String?
+    /// Scan of the picture; nil is unknown (treated as progressive).
+    public var fieldOrder: FieldOrder?
+    /// false shows interlaced frames woven; nil or true deinterlaces them.
+    public var deinterlace: Bool?
 
     public init(id: String, path: String, name: String, duration: Seconds, width: Int, height: Int, fps: Double, hasVideo: Bool, hasAudio: Bool, isImage: Bool = false) {
         self.id = id
@@ -194,6 +202,24 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     }
 
     public var url: URL { URL(fileURLWithPath: path) }
+    /// The file an online conform should use: the original when `path` is a mezzanine.
+    public var conformPath: String { originalPath ?? path }
+    public var conformURL: URL { URL(fileURLWithPath: conformPath) }
+    public var isInterlaced: Bool { fieldOrder == .tff || fieldOrder == .bff }
+    /// Imported, but its mezzanine is still being made; `path` is the undecodable original until then.
+    public var isTranscoding: Bool { transcoded?.hasPrefix(MediaAsset.pendingTranscode) == true }
+    public static let pendingTranscode = "pending: "
+    /// Whether the compositor deinterlaces this media's frames.
+    public var deinterlaces: Bool { isInterlaced && deinterlace != false }
+}
+
+/// How a video's two fields are ordered.
+public enum FieldOrder: String, Codable, Sendable, CaseIterable {
+    case progressive
+    /// Interlaced, top field first.
+    case tff
+    /// Interlaced, bottom field first.
+    case bff
 }
 
 /// A labeled source range of a media file, like Final Cut's keywords and ratings.

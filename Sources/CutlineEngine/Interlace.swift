@@ -1,16 +1,12 @@
 import AVFoundation
+import CutlineCore
 import CoreMedia
 import CoreVideo
 import VideoToolbox
 
-public enum FieldOrder: String, Codable, Sendable, CaseIterable {
-    /// Top field first: the first field in time is lines 0, 2, 4… (HD 1080i).
-    case tff
-    /// Bottom field first (DV and most SD).
-    case bff
-
+extension FieldOrder {
     var fieldDetail: CFString {
-        self == .tff ? kCVImageBufferFieldDetailSpatialFirstLineEarly : kCVImageBufferFieldDetailSpatialFirstLineLate
+        self == .bff ? kCVImageBufferFieldDetailSpatialFirstLineLate : kCVImageBufferFieldDetailSpatialFirstLineEarly
     }
 }
 

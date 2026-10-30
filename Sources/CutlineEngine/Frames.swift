@@ -48,15 +48,27 @@ public enum Frames {
         gen.appliesPreferredTrackTransform = true
         gen.requestedTimeToleranceBefore = CMTime(value: 1, timescale: 30)
         gen.requestedTimeToleranceAfter = CMTime(value: 1, timescale: 30)
-        gen.maximumSize = maxSize
+        // Interlaced frames are deinterlaced at full size, then scaled.
+        let fields = media.deinterlaces ? media.fieldOrder : nil
+        gen.maximumSize = fields == nil ? maxSize : .zero
         var out: [LabeledFrame] = []
         for t in times {
             let clamped = min(max(0, t), max(0, media.duration - 0.05))
-            let (img, _) = try await gen.image(at: CMTime(seconds: clamped, preferredTimescale: 600))
+            var (img, _) = try await gen.image(at: CMTime(seconds: clamped, preferredTimescale: 600))
+            if let fields, let clean = deinterlaced(img, order: fields, maxSize: maxSize) { img = clean }
             out.append(LabeledFrame(time: clamped, label: timecode(clamped), image: img))
         }
         return out
     }
+
+    static func deinterlaced(_ img: CGImage, order: FieldOrder, maxSize: CGSize) -> CGImage? {
+        var ci = Deinterlace.apply(CIImage(cgImage: img), order: order)
+        let s = min(1, maxSize.width > 0 ? maxSize.width / ci.extent.width : 1, maxSize.height > 0 ? maxSize.height / ci.extent.height : 1)
+        if s < 1 { ci = ci.transformed(by: CGAffineTransform(scaleX: s, y: s), highQualityDownsample: true) }
+        return deinterlaceContext.createCGImage(ci, from: ci.extent.integral)
+    }
+
+    static let deinterlaceContext = CIContext()
 
     /// Draws labeled boxes (fractions of the frame, top-left origin) over an image.
     public static func annotate(_ image: CGImage, boxes: [(NormRect, CGColor, String?)]) -> CGImage {

@@ -7,10 +7,10 @@ extension Toolbox {
     func registerExportTools() {
         add(Tool(name: "export", description: "Render the timeline, or check it against a platform first. platform (youtube, youtube_shorts, tiktok, instagram_reels, instagram_feed, x, linkedin, broadcast_eu, broadcast_us, broadcast) picks codec and checks shape, length, loudness, true peak and that text clears the app's UI; broadcast targets also check frame size, frame rate and mastering codec. .mov files carry a QuickTime timecode track starting at the canvas start timecode (01:00:00:00 unless canvas_set timecode_start); MP4 can't carry one. leader:true prepends bars and tone, a slate and a 2-pop so the program starts on the hour. Writes subtitles (embedded track and/or .srt/.vtt), chapters from markers (embedded and a YouTube description list), and interchange files for finishing in other editors (otio for DaVinci Resolve/Premiere via OTIO, fcpxml for Final Cut Pro). Defaults to <project>/exports/<name>.mp4 with HEVC. Blocks until done.", schema: Schema.object([
             "path": Schema.string("Output file path"),
-            "preset": Schema.string("hevc (default, small and sharp), hevc_10bit (Main 10), h264 (most compatible, 8-bit only), prores (422), prores_hq (broadcast master), prores_lt, prores_proxy (offline), prores4444 (with alpha), prores4444xq. ProRes writes .mov. DNxHR/DNxHD, XDCAM and 10-bit H.264 aren't available: macOS has no system encoder for them", values: ExportPreset.allCases.map(\.rawValue)),
+            "preset": Schema.string("hevc (default, small and sharp), hevc_10bit (Main 10), h264 (most compatible, 8-bit only), prores (422), prores_hq (broadcast master), prores_lt, prores_proxy (offline), prores4444 (with alpha), prores4444xq. ProRes writes .mov. With ffmpeg installed: dnxhr_hq, dnxhr_hqx (10-bit), dnxhr_sq, dnxhr_lb (.mov, or container mxf for MXF OP1a) and xdcam_hd422 (MPEG-2 4:2:2 50 Mb/s long GOP, 1920×1080, eight 24-bit PCM channels, MXF OP1a); these render a ProRes intermediate that ffmpeg encodes, keeping timecode, audio channels and color tags. 10-bit H.264 isn't available", values: ExportPreset.allCases.map(\.rawValue)),
             "platform": Schema.string("Delivery target; sets the preset and runs its checks", values: Platform.all.map(\.id)),
             "bitrate_mbps": Schema.number("Video bitrate in megabits per second; default high quality for the size"),
-            "container": Schema.string("File format for HEVC and H.264: mp4 (default) or mov (QuickTime, carries a timecode track); ProRes is always mov. A path ending .mov also picks mov", values: ["mp4", "mov"]),
+            "container": Schema.string("File format for HEVC and H.264: mp4 (default) or mov (QuickTime, carries a timecode track); ProRes is always mov. DNxHR: mov (default) or mxf (OP1a, one track per audio channel); XDCAM is always mxf. A path ending .mov or .mxf also picks it", values: ["mp4", "mov", "mxf"]),
             "timecode_start": Schema.string("Timecode of the first program frame, \"hh:mm:ss:ff\"; default the canvas start timecode (01:00:00:00 unless set with canvas_set)"),
             "leader": ["type": ["boolean", "object"], "description": "Broadcast leader before the program: true, or {bars, slate, black, pop, version}. SMPTE color bars with 1 kHz tone at −20 dBFS (bars seconds, default 10), a slate with title, date, duration, loudness, audio layout and version (slate seconds, default 10), then black (default 10) with a 2-pop 2 s before the program (pop, default true). The timecode track starts earlier so the program starts at timecode_start (bars at 00:59:30:00 by default)",
                        "properties": [
@@ -23,7 +23,7 @@ extension Toolbox {
             "start": Schema.time("Export from this timeline time"),
             "end": Schema.time("Export until this timeline time"),
             "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (.srt and .vtt) or both", values: ["none", "embed", "sidecar", "both"]),
-            "interlaced": Schema.string("Interlaced master (1080i broadcast): tff (HD) or bff; renders at the field rate and weaves. ProRes presets only", values: FieldOrder.allCases.map(\.rawValue)),
+            "interlaced": Schema.string("Interlaced master (1080i broadcast): tff (HD) or bff; renders at the field rate and weaves. ProRes presets only", values: ["tff", "bff"]),
             "closed_captions": Schema.bool("Embed CEA-608 closed captions (broadcast, Apple TV, platform ingest) and write an .scc file beside the video, from the transcripts"),
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
             "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video"),
@@ -90,11 +90,16 @@ extension Toolbox {
             let built = try await session.timeline()
             let p = built.scene.project
             let container = try args.enumValue("container", Container.self)
-            let ext = preset.isProRes ? "mov" : container?.rawValue ?? preset.fileExtension
+            if container == .mxf, !preset.isDNxHR, preset != .xdcam_hd422 { throw EditError("container mxf is for the DNxHR and XDCAM presets") }
+            let ext = preset.isProRes ? "mov" : preset == .xdcam_hd422 ? "mxf" : container?.rawValue ?? preset.fileExtension
             var url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + (platform.map { "-" + $0.id } ?? "")).appendingPathExtension(ext)
             if url.pathExtension.isEmpty { url.appendPathExtension(ext) }
             if preset.isProRes, url.pathExtension.lowercased() != "mov" { url = url.deletingPathExtension().appendingPathExtension("mov"); report.append("ProRes is QuickTime, so the file is \(url.lastPathComponent).") }
+            if preset == .xdcam_hd422, url.pathExtension.lowercased() != "mxf" { url = url.deletingPathExtension().appendingPathExtension("mxf"); report.append("XDCAM HD422 is MXF, so the file is \(url.lastPathComponent).") }
+            if preset.isDNxHR, !["mov", "mxf"].contains(url.pathExtension.lowercased()) { url = url.deletingPathExtension().appendingPathExtension(ext); report.append("DNxHR goes in QuickTime or MXF, so the file is \(url.lastPathComponent).") }
             if container == .mov, url.pathExtension.lowercased() != "mov" { throw EditError("container mov needs a path ending .mov") }
+            if container == .mxf, url.pathExtension.lowercased() != "mxf" { throw EditError("container mxf needs a path ending .mxf") }
+            if preset.needsFFmpeg, let why = FFmpegDelivery.check(p, preset: preset, container: url.pathExtension.lowercased()) { throw EditError(why) }
             let base = url.deletingPathExtension()
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let transcripts = b.transcripts(for: p)
@@ -177,10 +182,20 @@ extension Toolbox {
                 let start = tcFormat.string((tcFormat.frames(programTC) ?? 0) - l.frames(tcFormat))
                 report.append("Leader: \(l.barsSeconds)s bars and 1 kHz tone at −20 dBFS from \(start), \(l.slateSeconds)s slate, \(l.blackSeconds)s black" + (l.pop && l.blackSeconds >= 2 ? " with a 2-pop" : "") + "; program at \(programTC)")
             }
+            if preset.needsFFmpeg, !options.subtitles.isEmpty || !options.closedCaptions.isEmpty || !options.chapters.isEmpty {
+                report.append("\(preset.title) files carry no subtitle, caption or chapter tracks; use the sidecar files.")
+                options.subtitles = []
+                options.closedCaptions = []
+                options.chapters = []
+            }
             try await Exporter.export(built, to: url, options: options) { fraction in
                 DistributedNotificationCenter.default().postNotificationName(PreviewControl.notification, object: nil, userInfo: ["action": "export", "state": "progress", "progress": fraction, "project": project], deliverImmediately: true)
             }
             try? session.sendPreview(["action": "export", "state": "finished", "path": url.path])
+            if preset.needsFFmpeg {
+                report.insert(try await Toolbox.describeFFmpegExport(url, preset: preset, took: Date().timeIntervalSince(started)), at: 0)
+                return .text(report.joined(separator: "\n"))
+            }
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
             let check = try await MediaProbe.probe(url, id: "export")
             if args.bool("reveal", default: false) {
@@ -200,7 +215,29 @@ extension Toolbox {
 }
 
 extension Toolbox {
-    enum Container: String { case mp4, mov }
+    enum Container: String { case mp4, mov, mxf }
+
+    /// What ffprobe reads back from a DNxHR or XDCAM export.
+    static func describeFFmpegExport(_ url: URL, preset: ExportPreset, took: Seconds) async throws -> String {
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        let mb = String(format: "%.1f", Double(size) / 1_048_576)
+        guard let ffprobe = FFmpeg.tools()?.ffprobe else { return "Exported \(url.path) (\(preset.title), \(mb) MB); ffprobe isn't installed to check it" }
+        let info = try await FFmpeg.probe(url, ffprobe: ffprobe)
+        let mbps = info.duration > 0 ? Double(size) * 8 / info.duration / 1_000_000 : 0
+        var lines = ["Exported \(url.path)"]
+        if let v = info.video {
+            let wrapper = info.formatName.lowercased() == "mxf" ? "MXF OP1a" : "QuickTime"
+            lines.append("\(v.width)×\(v.height) \(Describe.fmtFps((v.frameRate * 1000).rounded() / 1000))fps, \(fmt2(info.duration))s, \(mb) MB (\(fmt1(mbps)) Mb/s), \(preset.title): \(v.codec) \(v.profile ?? "") \(v.pixelFormat ?? "") in \(wrapper), took \(fmt1(took))s")
+        }
+        let a = info.audio
+        if let first = a.first {
+            lines.append("Audio: \(info.audioChannels) channel\(info.audioChannels == 1 ? "" : "s") in \(a.count) track\(a.count == 1 ? "" : "s"), \(first.codec) \(first.sampleRate / 1000) kHz \(first.bitsPerSample)-bit")
+        } else {
+            lines.append("No audio")
+        }
+        lines.append(info.timecode.map { "Timecode starts at \($0)" } ?? "No timecode")
+        return lines.joined(separator: "\n")
+    }
 
     /// The `leader` argument: true, false, or {bars, slate, black, pop, version}.
     func leaderSpec(_ j: JSON?) throws -> Leader? {

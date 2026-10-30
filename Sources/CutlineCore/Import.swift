@@ -2040,7 +2040,7 @@ extension Project {
 
         func aud(_ n: Int?) { if let n { out.append("AUD  \(n)") } }
         func describe(_ c: Clip, s0: Int) {
-            if let path = c.mediaId.flatMap(mediaAsset)?.path, !path.isEmpty { out.append("* SOURCE FILE: \(path)") }
+            if let path = c.mediaId.flatMap(mediaAsset)?.conformPath, !path.isEmpty { out.append("* SOURCE FILE: \(path)") }
             if abs(c.speed - 1) > 1e-9 || c.reverse {
                 let v = c.speed * canvas.fps * (c.reverse ? -1 : 1)
                 out.append("M2   \(pad(reel(c), 8))       \(String(format: "%05.1f", v))                \(tc(s0))")
@@ -2768,9 +2768,9 @@ extension Project {
             let id = "file-\(m.id)"
             if described.contains(id) { return XMLElem("file", [("id", id)]) }
             described.insert(id)
-            var kids = [leaf("name", (m.path as NSString).lastPathComponent.isEmpty ? m.name : (m.path as NSString).lastPathComponent)]
-            if m.path.hasPrefix("/") {
-                kids.append(leaf("pathurl", URL(fileURLWithPath: m.path).absoluteString.replacingOccurrences(of: "file:///", with: "file://localhost/")))
+            var kids = [leaf("name", (m.conformPath as NSString).lastPathComponent.isEmpty ? m.name : (m.conformPath as NSString).lastPathComponent)]
+            if m.conformPath.hasPrefix("/") {
+                kids.append(leaf("pathurl", m.conformURL.absoluteString.replacingOccurrences(of: "file:///", with: "file://localhost/")))
             }
             kids += [rate(), leaf("duration", "\(m.isImage ? 1 : f(m.duration))")]
             kids.append(timecode(f(m.timecodeStart ?? 0)))
