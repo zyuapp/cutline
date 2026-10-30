@@ -548,8 +548,29 @@ public enum ColorPipeline {
         let range = recordedIn
         return { c in
             let lin = SIMD3(log.toLinear(c.x, recordedIn: range), log.toLinear(c.y, recordedIn: range), log.toLinear(c.z, recordedIn: range))
-            return encode(m * lin)
+            return encode(compressGamut(m * lin))
         }
+    }
+
+    /// ACES Reference Gamut Compression: pulls colors outside the target gamut (negative components after the
+    /// camera-to-target matrix) back inside smoothly instead of clipping them, keeping in-gamut colors untouched.
+    public static func compressGamut(_ c: SIMD3<Float>) -> SIMD3<Float> {
+        let ach = max(c.x, max(c.y, c.z))
+        guard ach > 1e-6 else { return c }
+        let threshold = SIMD3<Float>(0.815, 0.803, 0.880)
+        let limit = SIMD3<Float>(1.147, 1.264, 1.312)
+        let power: Float = 1.2
+        var out = c
+        for i in 0..<3 {
+            let d = (ach - c[i]) / ach
+            guard d > threshold[i] else { continue }
+            let t = threshold[i], l = limit[i]
+            let scale = (l - t) / pow(pow((1 - t) / (l - t), -power) - 1, 1 / power)
+            let x = (d - t) / scale
+            let compressed = t + scale * x / pow(1 + pow(x, power), 1 / power)
+            out[i] = ach - compressed * ach
+        }
+        return out
     }
 
     /// One display encoding to another. With `.none` and no exposure, SDR-to-SDR and HDR-to-HDR conversions keep

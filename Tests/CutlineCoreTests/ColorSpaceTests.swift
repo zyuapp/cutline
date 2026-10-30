@@ -172,3 +172,11 @@ private let midGrey: [LogProfile: Float] = [
     #expect(near(Transfer.pqDecode(sdrWhite.y), 203, 1))
     #expect(WorkingSpace.rec2020_pq.isHDR && !WorkingSpace.p3.isHDR)
 }
+
+@Test func gamutCompressionPullsNegativesInWithoutTouchingInGamut() {
+    let inside = SIMD3<Float>(0.5, 0.4, 0.3)
+    #expect(ColorPipeline.compressGamut(inside) == inside)
+    let outside = ColorPipeline.compressGamut(SIMD3<Float>(0.8, 0.2, -0.3))
+    #expect(outside.z > -0.3 && outside.z >= -0.01)
+    #expect(outside.x == 0.8)
+}

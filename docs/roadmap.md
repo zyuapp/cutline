@@ -102,7 +102,7 @@ Goal: an editor coming from Final Cut Pro, Premiere or Resolve can bring their t
 - **Still open:**
   - **Audio formats:** surround (5.1/7.1) and multichannel audio.
   - **Captions:** embedded CEA-608/708 closed captions.
-  - **Color:** gamut compression for wide camera gamuts, and full ACES output transforms.
+  - **Color:** full ACES output transforms (gamut compression is done).
   - **Interchange:** AAF.
   - **Validation:** checking every import against real Final Cut, Premiere and Resolve projects, and the perception features against real footage with people.
 
