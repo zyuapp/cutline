@@ -28,6 +28,7 @@ extension Toolbox {
             "color_space": Schema.string("Output color: rec709 (SDR, default), p3 (Display P3), rec2020_hlg or rec2020_pq (HDR, exports as 10-bit HEVC)", values: WorkingSpace.allCases.map(\.rawValue)),
             "timecode_start": Schema.string("Timecode of the first timeline frame in exports, \"hh:mm:ss:ff\" (drop frame at 29.97 and 59.94); default 01:00:00:00"),
             "drop_frame": Schema.bool("Timecode in exported EDL, FCPXML and XML: drop frame (default at 29.97 and 59.94) or false for non-drop"),
+            "master_peak_nits": Schema.number("PQ timelines: soft-clip highlights to this peak in cd/m² (e.g. 1000 for a 1000-nit master): each channel above 75% of it rolls off smoothly (saturated highlights drift toward white), in preview and export; it also becomes the default HDR10 mastering peak. 0 turns it off"),
         ]
 
         add(Tool(name: "project_create", description: "Create a new Cutline project (a .cutline folder holding the timeline, history, comments and analysis), open it in this session and, by default, in the preview app the human watches.", schema: Schema.object(canvasProps.merging([
@@ -93,6 +94,9 @@ extension Toolbox {
             let old = p.canvas.fps
             try Toolbox.applyCanvas(&p.canvas, args)
             var lines = ["Canvas is \(p.canvas.width)×\(p.canvas.height) @\(Describe.fmtFps(p.canvas.fps))fps"]
+            if args.has("master_peak_nits") {
+                lines.append(p.canvas.masterPeakNits.map { p.canvas.colorSpace == .rec2020_pq ? "Highlights roll off from \(Int($0 * 0.75)) to a \(Int($0)) cd/m² peak; check with timeline_measure picture" : "master_peak_nits \(Int($0)) is kept but only acts on rec2020_pq canvases" } ?? "Highlight roll-off off")
+            }
             if abs(old - p.canvas.fps) > 1e-3 {
                 lines.append(p.conformFrameRate(from: old, mode: mode).summary)
             }
@@ -193,6 +197,10 @@ extension Toolbox {
         if let cs = try args.enumValue("color_space", WorkingSpace.self) { c.colorSpace = cs }
         guard c.fps >= 1, c.fps <= 240 else { throw EditError("fps must be between 1 and 240") }
         if let df = args.optBool("drop_frame") { c.dropFrame = df }
+        if let peak = args.optDouble("master_peak_nits") {
+            guard peak == 0 || (100...10_000).contains(peak) else { throw EditError("master_peak_nits is 100…10000 cd/m², or 0 to turn the roll-off off") }
+            c.masterPeakNits = peak == 0 ? nil : peak
+        }
         if let tc = args.optString("timecode_start") {
             let format = c.timecodeFormat
             guard let frames = format.frames(tc) else { throw EditError("timecode_start is hh:mm:ss:ff, e.g. 01:00:00:00, with frames below \(format.nominal)") }

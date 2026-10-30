@@ -102,6 +102,14 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
     public var timecodeStart: String?
     /// Timecode counting for interchange; nil is drop frame at 29.97 and 59.94 fps.
     public var dropFrame: Bool?
+    /// PQ canvases: highlights roll off smoothly so the program never exceeds this many cd/m² (`PeakRolloff`).
+    public var masterPeakNits: Double?
+
+    /// The roll-off the compositor applies to the PQ output, or nil.
+    public var peakRolloff: PeakRolloff? {
+        guard colorSpace == .rec2020_pq, let p = masterPeakNits, p > 0, p < 10_000 else { return nil }
+        return PeakRolloff(peakNits: p)
+    }
 
     public init(width: Int = 1920, height: Int = 1080, fps: Double = 30, background: RGBA = .black, colorSpace: WorkingSpace = .rec709, timecodeStart: String? = nil) {
         self.width = width
@@ -112,7 +120,7 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
         self.timecodeStart = timecodeStart
     }
 
-    enum CodingKeys: String, CodingKey { case width, height, fps, background, colorSpace, timecodeStart, dropFrame }
+    enum CodingKeys: String, CodingKey { case width, height, fps, background, colorSpace, timecodeStart, dropFrame, masterPeakNits }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -123,6 +131,7 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
         colorSpace = try c.decodeIfPresent(WorkingSpace.self, forKey: .colorSpace) ?? .rec709
         timecodeStart = try c.decodeIfPresent(String.self, forKey: .timecodeStart)
         dropFrame = try c.decodeIfPresent(Bool.self, forKey: .dropFrame)
+        masterPeakNits = try c.decodeIfPresent(Double.self, forKey: .masterPeakNits)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -134,6 +143,7 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
         if colorSpace != .rec709 { try c.encode(colorSpace, forKey: .colorSpace) }
         try c.encodeIfPresent(timecodeStart, forKey: .timecodeStart)
         try c.encodeIfPresent(dropFrame, forKey: .dropFrame)
+        try c.encodeIfPresent(masterPeakNits, forKey: .masterPeakNits)
     }
 
     public func snap(_ t: Seconds) -> Seconds {

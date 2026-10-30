@@ -149,7 +149,12 @@ extension Toolbox {
             let size = CGSize(width: 768, height: 432)
             if let img = Scopes.render(image, kind: kind, size: size, context: ctx, space: space) { cells.append(LabeledFrame(time: t, label: name, image: img)) }
         }
-        var lines = ["Scopes at \(fmt2(t))s (code values 0–1):"]
+        var lines = ["Scopes at \(fmt2(t))s (code values 0–1" + (space.isHDR ? " of the SDR preview; nits below are the HDR signal" : "") + "):"]
+        if space.isHDR {
+            let hdr = try await HDRScopes.frame(built, at: t)
+            if let img = HDRScopes.waveform(hdr, space: space, size: CGSize(width: 768, height: 432)) { cells.insert(LabeledFrame(time: t, label: "Waveform (cd/m²)", image: img), at: 1) }
+            lines += Toolbox.describeLight(HDRScopes.light(hdr.rgb, space: space), indent: "  ")
+        }
         if let s = Scopes.stats(image, context: ctx, space: space, background: p.canvas.background) {
             func ch(_ c: Scopes.ChannelStats) -> String { "\(fmt2(c.low))–\(fmt2(c.high)) median \(fmt2(c.median))" }
             if s.picture < 0.98 { lines.append("  Numbers cover the picture only (\(Int((s.picture * 100).rounded()))% of the frame); letterbox, pillarbox or background bars are left out") }
@@ -207,6 +212,7 @@ extension Toolbox {
             }
             previous = cur
         }
+        if p.canvas.colorSpace.isHDR { lines += try await measureLight(built, p, range: range, shots: bounds) }
         if !r.black.isEmpty { lines.append("Black: " + r.black.map { "\(fmt2($0.start))–\(fmt2($0.end))" }.joined(separator: ", ")) }
         if !r.flashFrames.isEmpty { lines.append("Flash frames (1–2 frames that jump in brightness): " + r.flashFrames.map { fmt2($0) }.joined(separator: ", ")) }
         if !r.flashes.isEmpty { lines.append("Warning: more than 3 flashes per second at " + r.flashes.map { "\(fmt2($0.start))–\(fmt2($0.end))" }.joined(separator: ", ") + " (photosensitive seizure risk, WCAG 2.3.1)") }

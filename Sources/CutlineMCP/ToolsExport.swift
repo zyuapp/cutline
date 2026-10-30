@@ -18,6 +18,7 @@ extension Toolbox {
                         "max_cll": Schema.integer("MaxCLL in cd/m²; default measured"),
                         "max_fall": Schema.integer("MaxFALL in cd/m²; default measured"),
                     ]],
+            "sdr_from_hdr": ["type": ["boolean", "object"], "description": "From an HDR (PQ or HLG) timeline, render a Rec. 709 SDR version instead of the HDR master (file name gets -sdr): true for defaults, or {method, target_nits, source_nits}. method bt2390 (default: BT.2390 EETF, a soft knee that keeps midtones and compresses highlights), reinhard (gentler, rolls off earlier) or clip (hard clip at SDR white). HDR reference white (203 cd/m²) lands on SDR white target_nits (default 100); highlights up to source_nits (default the canvas master_peak_nits, else 1000) fold into the SDR range; colors outside Rec. 709 are gamut-compressed. Render the HDR master and the SDR version in one call with variants"],
             "container": Schema.string("File format for HEVC and H.264: mp4 (default) or mov (QuickTime, carries a timecode track); ProRes is always mov. DNxHR: mov (default) or mxf (OP1a, one track per audio channel); XDCAM is always mxf. A path ending .mov or .mxf also picks it", values: ["mp4", "mov", "mxf"]),
             "timecode_start": Schema.string("Timecode of the first program frame, \"hh:mm:ss:ff\"; default the canvas start timecode (01:00:00:00 unless set with canvas_set)"),
             "leader": ["type": ["boolean", "object"], "description": "Broadcast leader before the program: true, or {bars, slate, black, pop, version}. SMPTE color bars with 1 kHz tone at −20 dBFS (bars seconds, default 10), a slate with title, date, duration, loudness, audio layout and version (slate seconds, default 10), then black (default 10) with a 2-pop 2 s before the program (pop, default true). The timecode track starts earlier so the program starts at timecode_start (bars at 00:59:30:00 by default)",
@@ -113,12 +114,18 @@ extension Toolbox {
                 }
                 return .text("Wrote \(target.path) (timeline \(p.currentTimelineName), \(p.tracks.flatMap(\.clips).count) clips, \(fmt2(p.duration))s); no video rendered.")
             }
-            let built = try await session.timeline()
+            var built = try await session.timeline()
             let p = built.scene.project
+            let trim = try Toolbox.sdrTrim(args.raw["sdr_from_hdr"], p)
+            if let trim {
+                guard !preset.needsFFmpeg else { throw EditError("sdr_from_hdr renders through AVFoundation; use an hevc, h264 or prores preset") }
+                built = built.sdrVersion(trim) ?? built
+                report.append("SDR version of the \(p.canvas.colorSpace.rawValue) timeline: Rec. 709, \(trim.method.rawValue) tone mapping, HDR reference white (203 cd/m²) at SDR white \(Toolbox.nits(trim.targetNits)) cd/m², highlights up to \(Toolbox.nits(trim.sourcePeakNits)) cd/m² compressed into it.")
+            }
             let container = try args.enumValue("container", Container.self)
             if container == .mxf, !preset.isDNxHR, preset != .xdcam_hd422 { throw EditError("container mxf is for the DNxHR and XDCAM presets") }
             let ext = preset.isProRes ? "mov" : preset == .xdcam_hd422 ? "mxf" : container?.rawValue ?? preset.fileExtension
-            var url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + (platform.map { "-" + $0.id } ?? "")).appendingPathExtension(ext)
+            var url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + (platform.map { "-" + $0.id } ?? "") + (trim == nil ? "" : "-sdr")).appendingPathExtension(ext)
             if url.pathExtension.isEmpty { url.appendPathExtension(ext) }
             if preset.isProRes, url.pathExtension.lowercased() != "mov" { url = url.deletingPathExtension().appendingPathExtension("mov"); report.append("ProRes is QuickTime, so the file is \(url.lastPathComponent).") }
             if preset == .xdcam_hd422, url.pathExtension.lowercased() != "mxf" { url = url.deletingPathExtension().appendingPathExtension("mxf"); report.append("XDCAM HD422 is MXF, so the file is \(url.lastPathComponent).") }

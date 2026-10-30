@@ -164,7 +164,7 @@ public enum Exporter {
 
         let size = built.videoComposition.renderSize
         let canvas = built.scene.project.canvas
-        let space = canvas.colorSpace
+        let space = built.outputSpace
         let tc = canvas.timecodeFormat
         let leader = options.leader
         let leaderFrames = leader?.frames(tc) ?? 0
@@ -266,7 +266,7 @@ public enum Exporter {
             compression[AVVideoProfileLevelKey] = options.preset == .h264 ? AVVideoProfileLevelH264HighAutoLevel : (space.isHDR || options.preset == .hevc_10bit ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel) as String
         }
         if space == .rec2020_pq, options.preset.codec == .hevc {
-            var meta = options.hdr ?? HDRMetadata()
+            var meta = options.hdr ?? HDRMetadata(maxLuminance: canvas.peakRolloff?.peakNits ?? 1000)
             if meta.maxCLL == nil || meta.maxFALL == nil {
                 let levels = try await HDRMetadata.measure(built, range: range)
                 meta.maxCLL = meta.maxCLL ?? Int(levels.maxCLL.rounded())
