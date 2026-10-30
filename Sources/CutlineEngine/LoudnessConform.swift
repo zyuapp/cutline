@@ -15,36 +15,42 @@ public struct LoudnessConform: Sendable {
 
     public var summary: String {
         func f(_ v: Double) -> String { v.isFinite && v > -150 ? String(format: "%.1f", v) : "silent" }
-        var s = "Loudness target \(f(target)) LUFS / \(f(ceiling)) dBTP: mix measured \(f(before.integrated)) LUFS, \(f(before.truePeakDb)) dBTP"
+        let gated = before.dialogue != nil
+        let unit = gated ? "LUFS dialogue-gated" : "LUFS"
+        var s = "Loudness target \(f(target)) \(unit) / \(f(ceiling)) dBTP: mix measured \(f(before.gatedIntegrated)) \(unit), \(f(before.truePeakDb)) dBTP"
         guard before.integrated.isFinite else { return s + "; silent, left as it is" }
         s += String(format: "; applied %+.1f dB", gainDb)
         if limitedDb > 0.05 { s += String(format: ", limiter up to %.1f dB", limitedDb) }
-        return s + "; delivered \(f(after.integrated)) LUFS, \(f(after.truePeakDb)) dBTP"
+        return s + "; delivered \(f(after.gatedIntegrated)) \(unit)" + (gated ? " (\(f(after.integrated)) LUFS overall)" : "") + ", \(f(after.truePeakDb)) dBTP"
     }
 
     /// Gains `frames` of `source` (48 kHz float in `layout`) to `target` LUFS with a look-ahead true-peak limiter at
     /// `ceiling` dBTP, writing a float CAF of exactly that many frames. Limiting costs loudness, so the gain is
-    /// re-measured and corrected up to three times.
-    public static func run(_ source: URL, layout: AudioLayout, frames: Range<Int64>, target: Double, ceiling: Double, to url: URL) async throws -> LoudnessConform {
-        try await runBlocking { _ in try conform(source, layout: layout, frames: frames, target: target, ceiling: ceiling, to: url) }
+    /// re-measured and corrected up to three times. With `dialogue` (spans in source-file time) the target is
+    /// dialogue-gated: met by the loudness of the blocks where dialogue plays.
+    public static func run(_ source: URL, layout: AudioLayout, frames: Range<Int64>, target: Double, ceiling: Double, dialogue: [TimeRange]? = nil, to url: URL) async throws -> LoudnessConform {
+        try await runBlocking { _ in try conform(source, layout: layout, frames: frames, target: target, ceiling: ceiling, dialogue: dialogue, to: url) }
     }
 
-    static func conform(_ source: URL, layout: AudioLayout, frames: Range<Int64>, target: Double, ceiling: Double, to url: URL) throws -> LoudnessConform {
+    static func conform(_ source: URL, layout: AudioLayout, frames: Range<Int64>, target: Double, ceiling: Double, dialogue: [TimeRange]? = nil, to url: URL) throws -> LoudnessConform {
         let rate = AudioStems.sampleRate
-        let before = try LoudnessMeter.measure(file: source, layout: layout, range: TimeRange(Double(frames.lowerBound) / rate, Double(frames.upperBound) / rate))
+        let before = try LoudnessMeter.measure(file: source, layout: layout, range: TimeRange(Double(frames.lowerBound) / rate, Double(frames.upperBound) / rate), dialogue: dialogue)
+        // The written file starts at the first conformed frame.
+        let origin = Double(frames.lowerBound) / rate
+        let gate = dialogue.map { $0.map { TimeRange($0.start - origin, $0.end - origin) } }
         guard before.integrated.isFinite else {
             try pass(source, layout: layout, frames: frames, gain: 1, ceiling: nil, to: url)
             return LoudnessConform(target: target, ceiling: ceiling, before: before, after: before, gainDb: 0, limitedDb: 0)
         }
-        var gainDb = min(40, max(-60, target - before.integrated))
+        var gainDb = min(40, max(-60, target - before.gatedIntegrated))
         // The limiter holds sample-and-interpolated peaks a little under the ceiling.
         var limit = ceiling - 0.2
         var result = (after: before, limited: 0.0)
         var applied = gainDb
         for _ in 0..<4 {
             applied = gainDb
-            result = try pass(source, layout: layout, frames: frames, gain: pow(10, gainDb / 20), ceiling: pow(10, limit / 20), to: url)
-            let off = target - result.after.integrated
+            result = try pass(source, layout: layout, frames: frames, gain: pow(10, gainDb / 20), ceiling: pow(10, limit / 20), gate: gate, to: url)
+            let off = target - result.after.gatedIntegrated
             let over = result.after.truePeakDb - ceiling
             if abs(off) <= 0.2 && over <= 0.05 { break }
             if over > 0.05 { limit -= over + 0.05 }
@@ -55,7 +61,7 @@ public struct LoudnessConform: Sendable {
 
     /// One gain-and-limit pass, measuring what it writes.
     @discardableResult
-    static func pass(_ source: URL, layout: AudioLayout, frames: Range<Int64>, gain: Double, ceiling: Double?, to url: URL) throws -> (after: LoudnessReport, limited: Double) {
+    static func pass(_ source: URL, layout: AudioLayout, frames: Range<Int64>, gain: Double, ceiling: Double?, gate: [TimeRange]? = nil, to url: URL) throws -> (after: LoudnessReport, limited: Double) {
         let n = layout.channelCount
         try? FileManager.default.removeItem(at: url)
         let settings = layout == .stereo ? AudioIO.format.settings : layout.floatFileSettings
@@ -79,7 +85,7 @@ public struct LoudnessConform: Sendable {
         }
         if limiter != nil { try emit(limiter!.flush()) }
         output.close()
-        return (acc.report(), limiter.map { -20 * log10(Double(max($0.minGain, 1e-6))) } ?? 0)
+        return (acc.report(gate: gate), limiter.map { -20 * log10(Double(max($0.minGain, 1e-6))) } ?? 0)
     }
 }
 

@@ -463,6 +463,13 @@ public struct LoudnessReport: Sendable {
     /// Inter-sample peak from 4× oversampling (BS.1770-4 Annex 2).
     public var truePeakDb: Double
     public var duration: Seconds
+    /// Integrated loudness of only the blocks where dialogue plays, when measured with a dialogue gate.
+    public var dialogue: Double? = nil
+    /// Seconds of dialogue the gate kept.
+    public var dialogueSeconds: Seconds = 0
+
+    /// What a dialogue-gated target is met by: the dialogue-gated loudness when measured so, else integrated.
+    public var gatedIntegrated: Double { dialogue ?? integrated }
 
     public var summary: String {
         func f(_ v: Double) -> String { v.isFinite && v > -150 ? String(format: "%.1f", v) : "silent" }
@@ -492,15 +499,16 @@ public enum LoudnessMeter {
     }
 
     /// Measures the timeline's mix; a mono or surround timeline is measured in its layout with BS.1770 channel weights.
-    public static func measure(_ built: BuiltTimeline, range: TimeRange? = nil) async throws -> LoudnessReport {
-        if let url = built.surround, built.layout != .stereo { return try measure(file: url, layout: built.layout, range: range) }
+    /// With `dialogue` (timeline spans), `LoudnessReport.dialogue` is the integrated loudness of the blocks inside them.
+    public static func measure(_ built: BuiltTimeline, range: TimeRange? = nil, dialogue: [TimeRange]? = nil) async throws -> LoudnessReport {
+        if let url = built.surround, built.layout != .stereo { return try measure(file: url, layout: built.layout, range: range, dialogue: dialogue) }
         var acc = Accumulator()
         try await AudioIO.read(built, range: range) { samples, n in acc.feed(samples, n) }
-        return acc.report()
+        return acc.report(gate: dialogue, origin: range?.start ?? 0)
     }
 
-    /// Measures a 48 kHz file whose channels are in `layout`'s order.
-    public static func measure(file url: URL, layout: AudioLayout, range: TimeRange? = nil) throws -> LoudnessReport {
+    /// Measures a 48 kHz file whose channels are in `layout`'s order; `dialogue` spans are in file time.
+    public static func measure(file url: URL, layout: AudioLayout, range: TimeRange? = nil, dialogue: [TimeRange]? = nil) throws -> LoudnessReport {
         let file = try AVAudioFile(forReading: url)
         guard Int(file.processingFormat.channelCount) == layout.channelCount else { throw EditError("\(url.lastPathComponent) has \(file.processingFormat.channelCount) channels, not \(layout.title)") }
         let rate = AudioStems.sampleRate
@@ -515,7 +523,7 @@ public enum LoudnessMeter {
             for c in 0..<n { for i in 0..<frames { interleaved[i * n + c] = x[c][i] } }
             interleaved.withUnsafeBufferPointer { acc.feed($0.baseAddress!, frames) }
         }
-        return acc.report()
+        return acc.report(gate: dialogue, origin: Double(from) / rate)
     }
 
     /// Consumes interleaved float at 48 kHz, stereo unless made for another layout.
@@ -583,20 +591,36 @@ public enum LoudnessMeter {
             frames += n
         }
 
-        func report() -> LoudnessReport {
+        /// With `gate` (seconds; `origin` is the time of the first frame fed), also the integrated loudness of the
+        /// 400 ms blocks centred inside the gate's spans.
+        func report(gate: [TimeRange]? = nil, origin: Seconds = 0) -> LoudnessReport {
             func loudness(_ z: Double) -> Double { -0.691 + 10 * log10(max(z, 1e-20)) }
             func windows(_ size: Int) -> [Double] {
                 guard hopEnergy.count >= size else { return hopEnergy.isEmpty ? [] : [hopEnergy.reduce(0, +) / Double(hopEnergy.count)] }
                 return (0...(hopEnergy.count - size)).map { i in hopEnergy[i..<(i + size)].reduce(0, +) / Double(size) }
             }
-            let momentary = windows(4)
-            let shortTerm = windows(30)
-            let gated = momentary.filter { loudness($0) > -70 }
-            var integrated = -Double.infinity
-            if !gated.isEmpty {
+            func integratedLoudness(_ blocks: [Double]) -> Double {
+                let gated = blocks.filter { loudness($0) > -70 }
+                guard !gated.isEmpty else { return -.infinity }
                 let relative = loudness(gated.reduce(0, +) / Double(gated.count)) - 10
                 let final = gated.filter { loudness($0) > relative }
-                if !final.isEmpty { integrated = loudness(final.reduce(0, +) / Double(final.count)) }
+                return final.isEmpty ? -.infinity : loudness(final.reduce(0, +) / Double(final.count))
+            }
+            let momentary = windows(4)
+            let shortTerm = windows(30)
+            let integrated = integratedLoudness(momentary)
+            var dialogue: Double?
+            var dialogueSeconds = 0.0
+            if let gate {
+                let length = Double(frames) / AudioStems.sampleRate
+                let spans = TimeRange.merged(gate.map { TimeRange($0.start - origin, $0.end - origin) })
+                let kept = momentary.indices.filter { i in
+                    let s = Double(i) * 0.1
+                    return spans.contains { $0.start <= s + 1e-6 && s + 0.4 <= $0.end + 1e-6 }
+                }
+                dialogueSeconds = spans.reduce(0) { $0 + max(0, min($1.end, length) - max($1.start, 0)) }
+                let value = integratedLoudness(kept.map { momentary[$0] })
+                if value.isFinite { dialogue = value }
             }
             var lra = 0.0
             let stAbove = shortTerm.filter { loudness($0) > -70 }
@@ -614,7 +638,9 @@ public enum LoudnessMeter {
                 range: lra,
                 peakDb: 20 * log10(Double(max(peak, 1e-10))),
                 truePeakDb: 20 * log10(max(truePeak, Double(peak), 1e-10)),
-                duration: Double(frames) / AudioStems.sampleRate
+                duration: Double(frames) / AudioStems.sampleRate,
+                dialogue: dialogue,
+                dialogueSeconds: dialogueSeconds
             )
         }
     }

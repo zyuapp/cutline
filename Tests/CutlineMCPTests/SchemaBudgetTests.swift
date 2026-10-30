@@ -54,5 +54,6 @@ private let budget = 40_000
     #expect(effect?["inputSchema"]?["properties"]?["type"]?["enum"] == nil)
     #expect(effect?["inputSchema"]?["properties"]?["dry_run"]?["description"] == nil)
     let export = box.definitions.first { $0["name"]?.string == "export" }
-    #expect(export?["inputSchema"]?["properties"]?["preset"]?["enum"]?.array?.count == ExportPreset.allCases.count)
+    #expect(ExportPreset.allCases.count > Toolbox.listedEnumLimit && export?["inputSchema"]?["properties"]?["preset"]?["enum"] == nil)
+    #expect(export?["inputSchema"]?["properties"]?["platform"]?["enum"]?.array?.count == Platform.all.count)
 }

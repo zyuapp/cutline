@@ -5,9 +5,9 @@ import Foundation
 
 extension Toolbox {
     func registerExportTools() {
-        add(Tool(name: "export", description: "Render the timeline, or check it against a platform first. platform (youtube, youtube_shorts, tiktok, instagram_reels, instagram_feed, x, linkedin, broadcast_eu, broadcast_us, broadcast) picks codec and checks shape, length, loudness, true peak and that text clears the app's UI; broadcast targets also check frame size, frame rate and mastering codec. .mov files carry a QuickTime timecode track starting at the canvas start timecode (01:00:00:00 unless canvas_set timecode_start); MP4 can't carry one. leader:true prepends bars and tone, a slate and a 2-pop so the program starts on the hour. Writes subtitles (embedded track and/or .srt/.vtt), chapters from markers (embedded and a YouTube description list), and interchange files for finishing in other editors (otio for DaVinci Resolve/Premiere via OTIO, fcpxml for Final Cut Pro). Defaults to <project>/exports/<name>.mp4 with HEVC. Blocks until done.", schema: Schema.object([
+        add(Tool(name: "export", description: "Render the timeline, or check it against a platform first. platform (youtube, youtube_shorts, tiktok, instagram_reels, instagram_feed, x, linkedin, broadcast_eu, broadcast_us, broadcast, netflix_master, broadcast_uk_dpp) picks codec and checks shape, length, loudness, true peak and that text clears the app's UI; broadcast and mastering targets also check frame size, frame rate, mastering codec, audio track layout, timed text and start timecode (netflix_master measures loudness dialogue-gated and writes an IMSC 1.1 sidecar). .mov files carry a QuickTime timecode track starting at the canvas start timecode (01:00:00:00 unless canvas_set timecode_start); MP4 can't carry one. leader:true prepends bars and tone, a slate and a 2-pop so the program starts on the hour. Writes subtitles (embedded track and/or .srt/.vtt), chapters from markers (embedded and a YouTube description list), and interchange files for finishing in other editors (otio for DaVinci Resolve/Premiere via OTIO, fcpxml for Final Cut Pro). Defaults to <project>/exports/<name>.mp4 with HEVC. Blocks until done.", schema: Schema.object([
             "path": Schema.string("Output file path"),
-            "preset": Schema.string("hevc (default, small and sharp), hevc_10bit (Main 10), h264 (most compatible, 8-bit only), prores (422), prores_hq (broadcast master), prores_lt, prores_proxy (offline), prores4444 (with alpha), prores4444xq. ProRes writes .mov. With ffmpeg installed: dnxhr_hq, dnxhr_hqx (10-bit), dnxhr_sq, dnxhr_lb (.mov, or container mxf for MXF OP1a) and xdcam_hd422 (MPEG-2 4:2:2 50 Mb/s long GOP, 1920×1080, eight 24-bit PCM channels, MXF OP1a); these render a ProRes intermediate that ffmpeg encodes, keeping timecode, audio channels and color tags. 10-bit H.264 isn't available", values: ExportPreset.allCases.map(\.rawValue)),
+            "preset": Schema.string("hevc (default, small and sharp), hevc_10bit (Main 10), h264 (most compatible, 8-bit only), prores (422), prores_hq (broadcast master), prores_lt, prores_proxy (offline), prores4444 (with alpha), prores4444xq, hevc_422_10bit (HEVC Main 4:2:2 10 via VideoToolbox, .mov). ProRes writes .mov. With ffmpeg installed: dnxhr_hq, dnxhr_hqx (10-bit), dnxhr_sq, dnxhr_lb (.mov, or container mxf for MXF OP1a), xdcam_hd422 (MPEG-2 4:2:2 50 Mb/s long GOP, 1920×1080, eight 24-bit PCM channels, MXF OP1a), h264_10bit (High 10 4:2:0, .mov/.mp4), h264_422_10bit (High 4:2:2 10-bit long GOP, 50 Mb/s default: the XAVC Long GOP picture, .mov/.mxf/.mp4), avc_intra_class100 (AVC-Intra 100, 1920×1080, MXF; UK DPP), xavc_intra_class100 (x264's Sony-flavor AVC-Intra 100, MXF) and av1 (AV1 Main 10 via SVT-AV1, .mp4); these render a ProRes intermediate that ffmpeg encodes, keeping timecode, audio tracks and color tags. IMF isn't made", values: ExportPreset.allCases.map(\.rawValue)),
             "platform": Schema.string("Delivery target; sets the preset and runs its checks", values: Platform.all.map(\.id)),
             "bitrate_mbps": Schema.number("Video bitrate in megabits per second; default high quality for the size (HDR HEVC: 20 Mb/s at 1080p30, scaled with size and frame rate)"),
             "hdr": ["type": "object", "description": "HDR10 static metadata for PQ (canvas color_space rec2020_pq) HEVC exports, always written: mastering display (SMPTE ST 2086) and content light levels. Defaults: P3-D65 1000 cd/m² mastering display, MaxCLL and MaxFALL measured from the render (one extra render pass)",
@@ -20,6 +20,8 @@ extension Toolbox {
                     ]],
             "sdr_from_hdr": ["type": ["boolean", "object"], "description": "From an HDR (PQ or HLG) timeline, render a Rec. 709 SDR version instead of the HDR master (file name gets -sdr): true for defaults, or {method, target_nits, source_nits}. method bt2390 (default: BT.2390 EETF, a soft knee that keeps midtones and compresses highlights), reinhard (gentler, rolls off earlier) or clip (hard clip at SDR white). HDR reference white (203 cd/m²) lands on SDR white target_nits (default 100); highlights up to source_nits (default the canvas master_peak_nits, else 1000) fold into the SDR range; colors outside Rec. 709 are gamut-compressed. Render the HDR master and the SDR version in one call with variants"],
             "container": Schema.string("File format for HEVC and H.264: mp4 (default) or mov (QuickTime, carries a timecode track); ProRes is always mov. DNxHR: mov (default) or mxf (OP1a, one track per audio channel); XDCAM is always mxf. A path ending .mov or .mxf also picks it", values: ["mp4", "mov", "mxf"]),
+            "audio_tracks": ["type": ["string", "array"], "items": ["type": ["string", "object"]], "description": .string("Audio track layout of a .mov or MXF master instead of the one mix track. A preset (\(AudioTrackSpec.presets.map { "\($0.name) = \($0.layout)" }.joined(separator: "; "))), a list \"mix,me,dia,mus,fx,amb\" of content[@layout], or [{content, layout, name}]. content: mix (master mix, loudness-conformed), me (all but dialogue), dia, mus, fx, amb (roles; fx also takes roles no other track carries, amb is effects whose role or track name says ambience/atmos/BG), bus:<id> (a bus feeding the master), role:<name>, silence, tone (1 kHz −20 dBFS). layout: mono, stereo, 5.1, 7.1 (mix and me default stereo, others mono). Stems are pre-master and unconformed, so they sum to the mix. MXF writes every channel as a mono track (no track names: see <name>.tracks.txt); QuickTime names each track. Platforms netflix_master and broadcast_uk_dpp pick one; \"none\" turns it off")],
+            "audio_tracks_as": Schema.string("QuickTime: one track per entry (tracks, default) or every channel in one discrete multichannel track (channels)", values: AudioTrackSpec.Packing.allCases.map(\.rawValue)),
             "timecode_start": Schema.string("Timecode of the first program frame, \"hh:mm:ss:ff\"; default the canvas start timecode (01:00:00:00 unless set with canvas_set)"),
             "leader": ["type": ["boolean", "object"], "description": "Broadcast leader before the program: true, or {bars, slate, black, pop, version}. SMPTE color bars with 1 kHz tone at −20 dBFS (bars seconds, default 10), a slate with title, date, duration, loudness, audio layout and version (slate seconds, default 10), then black (default 10) with a 2-pop 2 s before the program (pop, default true). The timecode track starts earlier so the program starts at timecode_start (bars at 00:59:30:00 by default)",
                        "properties": [
@@ -72,6 +74,8 @@ extension Toolbox {
             guard p0.duration > 0 else { throw EditError("The timeline is empty") }
             var range: TimeRange?
             if args.has("start") || args.has("end") { range = TimeRange(try args.optTime("start") ?? 0, try args.optTime("end") ?? p0.duration) }
+            let audioSpecs = try audioTrackSpecs(args, platform: platform)
+            let dialogueGate = platform?.dialogueGated == true ? await dialogueSpans(p0) : nil
 
             var report: [String] = []
             // Report lines that go before the export summary: the platform check when it found issues.
@@ -79,16 +83,21 @@ extension Toolbox {
             var loudness: LoudnessReport?
             if let platform {
                 var warnings = platform.check(p0, preset: args.has("preset") ? preset.rawValue : nil)
-                let mix = try await LoudnessMeter.measure(try await session.timeline(for: p0), range: range)
+                let mix = try await LoudnessMeter.measure(try await session.timeline(for: p0), range: range, dialogue: dialogueGate)
                 loudness = mix
-                if range == nil { session.measuredMix[try session.stems().masterKey(for: p0)] = mix }
+                if range == nil, dialogueGate == nil { session.measuredMix[try session.stems().masterKey(for: p0)] = mix }
                 // With a master loudness target, export conforms the mix, so the target is what gets checked.
-                let delivered = p0.master.loudnessTarget ?? mix.integrated
+                let delivered = p0.master.loudnessTarget ?? mix.gatedIntegrated
                 let peak = p0.master.loudnessTarget == nil ? mix.truePeakDb : min(mix.truePeakDb, p0.master.ceiling)
+                let gated = mix.dialogue != nil ? " dialogue-gated" : ""
                 if delivered.isFinite, abs(delivered - platform.loudness) > platform.loudnessTolerance {
-                    warnings.append((p0.master.loudnessTarget == nil ? "Loudness is \(fmt1(mix.integrated)) LUFS" : "The master loudness target is \(fmt1(delivered)) LUFS") + "; \(platform.name) needs \(fmt1(platform.loudness)) ±\(fmt1(platform.loudnessTolerance)). Run recipe loudness_normalize target_lufs:\(Int(platform.loudness)).")
+                    warnings.append((p0.master.loudnessTarget == nil ? "Loudness is \(fmt1(mix.gatedIntegrated)) LUFS\(gated)" : "The master loudness target is \(fmt1(delivered)) LUFS") + "; \(platform.name) needs \(fmt1(platform.loudness)) ±\(fmt1(platform.loudnessTolerance))\(platform.dialogueGated ? " dialogue-gated" : ""). Run recipe loudness_normalize target_lufs:\(Int(platform.loudness)).")
                 }
                 if peak > platform.truePeak + 0.1 { warnings.append("True peak \(fmt1(peak)) dBTP is above \(fmt1(platform.truePeak)); add a limiter (recipe loudness_normalize ceiling_db:\(fmt1(platform.truePeak - 0.5))).") }
+                warnings += platform.deliveryCheck(p0, audioTracks: audioSpecs, subtitleFormats: Toolbox.sidecarFormats(args, platform: platform), timecodeStart: args.optString("timecode_start"))
+                if let dialogueGate {
+                    report.append(mix.dialogue == nil ? "Dialogue-gated loudness: no dialogue found (no transcribed speech or dialogue-role clips), so the whole program was measured." : "Dialogue-gated loudness \(fmt1(mix.gatedIntegrated)) LUFS over \(fmt1(mix.dialogueSeconds))s of dialogue in \(dialogueGate.count) span(s); \(fmt1(mix.integrated)) LUFS overall.")
+                }
                 let text = try await measureText(p0, range: range, platform: platform)
                 warnings += text.filter { $0.contains("outside") || $0.contains("hard to read") }.map { $0.trimmingCharacters(in: .whitespaces) }
                 let checkOnly = args.bool("check_only", default: false)
@@ -123,13 +132,15 @@ extension Toolbox {
                 report.append("SDR version of the \(p.canvas.colorSpace.rawValue) timeline: Rec. 709, \(trim.method.rawValue) tone mapping, HDR reference white (203 cd/m²) at SDR white \(Toolbox.nits(trim.targetNits)) cd/m², highlights up to \(Toolbox.nits(trim.sourcePeakNits)) cd/m² compressed into it.")
             }
             let container = try args.enumValue("container", Container.self)
-            if container == .mxf, !preset.isDNxHR, preset != .xdcam_hd422 { throw EditError("container mxf is for the DNxHR and XDCAM presets") }
-            let ext = preset.isProRes ? "mov" : preset == .xdcam_hd422 ? "mxf" : container?.rawValue ?? preset.fileExtension
+            if let c = container, !preset.containers.contains(c.rawValue), !preset.isProRes { throw EditError("container \(c.rawValue) isn't for \(preset.rawValue); it goes in \(preset.containers.joined(separator: " or "))") }
+            let ext = preset.isProRes ? "mov" : container?.rawValue ?? preset.fileExtension
             var url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + (platform.map { "-" + $0.id } ?? "") + (trim == nil ? "" : "-sdr")).appendingPathExtension(ext)
             if url.pathExtension.isEmpty { url.appendPathExtension(ext) }
             if preset.isProRes, url.pathExtension.lowercased() != "mov" { url = url.deletingPathExtension().appendingPathExtension("mov"); report.append("ProRes is QuickTime, so the file is \(url.lastPathComponent).") }
-            if preset == .xdcam_hd422, url.pathExtension.lowercased() != "mxf" { url = url.deletingPathExtension().appendingPathExtension("mxf"); report.append("XDCAM HD422 is MXF, so the file is \(url.lastPathComponent).") }
-            if preset.isDNxHR, !["mov", "mxf"].contains(url.pathExtension.lowercased()) { url = url.deletingPathExtension().appendingPathExtension(ext); report.append("DNxHR goes in QuickTime or MXF, so the file is \(url.lastPathComponent).") }
+            if preset.needsFFmpeg, !preset.containers.contains(url.pathExtension.lowercased()) {
+                url = url.deletingPathExtension().appendingPathExtension(ext)
+                report.append("\(preset.title) goes in \(preset.containers.joined(separator: " or ")), so the file is \(url.lastPathComponent).")
+            }
             if container == .mov, url.pathExtension.lowercased() != "mov" { throw EditError("container mov needs a path ending .mov") }
             if container == .mxf, url.pathExtension.lowercased() != "mxf" { throw EditError("container mxf needs a path ending .mxf") }
             let fields = try args.enumValue("interlaced", FieldOrder.self)
@@ -137,6 +148,7 @@ extension Toolbox {
             if preset.isDNxHR, fields == .tff, let tier = FFmpegDelivery.interlacedDNxHD(preset, fps: p.canvas.fps) {
                 report.append("ffmpeg's DNxHR is progressive only, so this interlaced master is \(tier.name) 1080i (\(preset.title)'s interlaced tier, \(tier.tenBit ? "10" : "8")-bit, top field first).")
             }
+            if !audioSpecs.isEmpty, !preset.needsFFmpeg, url.pathExtension.lowercased() != "mov" { throw EditError("An audio track layout needs a QuickTime master: export with container:\"mov\" (MP4 carries the mix only)") }
             let base = url.deletingPathExtension()
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let transcripts = b.transcripts(for: p)
@@ -145,7 +157,7 @@ extension Toolbox {
                 report += try await analysisWarnings(spoken.sorted().map { AnalysisNeed(mediaId: $0, feature: .speakers, without: "its subtitle lines aren't colored or named by speaker") }, wait: 0)
             }
 
-            let subs = args.optString("subtitles") ?? "none"
+            let subs = args.optString("subtitles") ?? platform?.subtitleFormat ?? "none"
             var cues: [TimedText] = []
             if subs != "none" {
                 cues = p.subtitleCues(transcripts: transcripts).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
@@ -155,7 +167,7 @@ extension Toolbox {
                 if subs != "embed" {
                     // Zero is the file's first frame, so a leader delays them.
                     let lead = try leaderSpec(args.raw["leader"]).map { p.canvas.timecodeFormat.seconds($0.frames(p.canvas.timecodeFormat)) } ?? 0
-                    report += try writeSubtitleSidecars(p, args, transcripts: transcripts, range: range, base: base, bundle: b, offset: lead)
+                    report += try writeSubtitleSidecars(p, args, transcripts: transcripts, range: range, base: base, bundle: b, offset: lead, mode: subs)
                 }
             }
             var closed: [TimedText] = []
@@ -194,6 +206,7 @@ extension Toolbox {
             options.interlaced = fields
             if options.interlaced != nil { report.append("Interlaced \(options.interlaced!.rawValue == "tff" ? "top" : "bottom") field first at \(fmt2(p.canvas.fps * 2)) fields/s") }
             options.closedCaptions = closed
+            try await applyAudioTracks(&options, specs: audioSpecs, project: p, args: args, dialogue: dialogueGate)
             if let o = args.raw["hdr"]?.object {
                 var meta = HDRMetadata()
                 if let m = o["mastering"]?.string {
@@ -227,7 +240,7 @@ extension Toolbox {
                     .init("Program start", programTC),
                     .init("Duration", tcFormat.string(tcFormat.frameCount(length))),
                     .init("Picture", "\(p.canvas.width)×\(p.canvas.height) \(Describe.fmtFps(p.canvas.fps))p \(preset.title)"),
-                    .init("Audio", "\(p.master.layout.title), 48 kHz" + (preset.isProRes ? " 24-bit PCM" : "")),
+                    .init("Audio", audioSpecs.isEmpty ? "\(p.master.layout.title), 48 kHz" + (preset.isProRes ? " 24-bit PCM" : "") : AudioTrackSpec.describe(audioSpecs)),
                     .init("Loudness", p.master.loudnessTarget.map { "\(fmt1($0)) LUFS integrated, ≤ \(fmt1(p.master.ceiling)) dBTP true peak" } ?? (mix.integrated.isFinite ? "\(fmt1(mix.integrated)) LUFS integrated, \(fmt1(mix.truePeakDb)) dBTP true peak" : "silent")),
                 ] + (platform.map { [.init("Delivery", $0.name)] } ?? [])
                 options.leader = l
@@ -256,7 +269,8 @@ extension Toolbox {
                 throw EditError("Export failed, nothing was left at \(url.path): \(error.localizedDescription)")
             }
             if let conform { report.append(conform.summary) }
-            if range == nil, let conform { session.measuredMix[try session.stems().masterKey(for: p)] = conform.before }
+            report += try audioTracksSummary(options, url: url, base: base)
+            if range == nil, audioSpecs.isEmpty, dialogueGate == nil, let conform { session.measuredMix[try session.stems().masterKey(for: p)] = conform.before }
             try? session.sendPreview(["action": "export", "state": "finished", "path": url.path])
             if preset.needsFFmpeg {
                 report.insert(try await Toolbox.describeFFmpegExport(url, preset: preset, took: Date().timeIntervalSince(started)), at: lead)
@@ -469,8 +483,8 @@ extension Toolbox {
 
 extension Toolbox {
     /// Writes the subtitle sidecars an export asks for; returns report lines.
-    func writeSubtitleSidecars(_ p: Project, _ args: Args, transcripts: [String: Transcript], range: TimeRange?, base: URL, bundle b: ProjectBundle, offset: Seconds = 0) throws -> [String] {
-        let subs = args.optString("subtitles") ?? "sidecar"
+    func writeSubtitleSidecars(_ p: Project, _ args: Args, transcripts: [String: Transcript], range: TimeRange?, base: URL, bundle b: ProjectBundle, offset: Seconds = 0, mode: String? = nil) throws -> [String] {
+        let subs = mode ?? args.optString("subtitles") ?? "sidecar"
         let formats = TimedTextFormat(rawValue: subs).map { [$0.rawValue] } ?? args.strings("subtitle_formats") ?? ["srt", "vtt"]
         var options = TimedTextOptions()
         if let pos = args.optString("subtitle_position") { options.position = pos }

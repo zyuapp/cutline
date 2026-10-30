@@ -119,6 +119,55 @@ public enum FFmpeg {
         var stdoutText: String { lock.withLock { String(decoding: stdout, as: UTF8.self) } }
     }
 
+    /// The encoders an ffmpeg build has, with the pixel formats of the ones asked about.
+    public struct Encoders: Sendable {
+        public var names: Set<String>
+        public var pixelFormats: [String: Set<String>]
+
+        public init(names: Set<String>, pixelFormats: [String: Set<String>] = [:]) {
+            self.names = names
+            self.pixelFormats = pixelFormats
+        }
+    }
+
+    final class EncoderCache: @unchecked Sendable {
+        let lock = NSLock()
+        var names: [String: Set<String>] = [:]
+        var formats: [String: Set<String>] = [:]
+    }
+
+    static let encoderCache = EncoderCache()
+
+    /// `ffmpeg -encoders`, and `-h encoder=` for each of `pixelFormatsOf` the build has; cached per binary.
+    public static func encoders(_ tool: URL, pixelFormatsOf: [String] = []) async throws -> Encoders {
+        let cache = encoderCache
+        var names = cache.lock.withLock { cache.names[tool.path] }
+        if names == nil {
+            let text = try await run(tool, ["-hide_banner", "-encoders"], stall: 30)
+            let parsed = Set(text.split(separator: "\n").compactMap { line -> String? in
+                let cols = line.split(separator: " ", omittingEmptySubsequences: true)
+                guard cols.count >= 2, cols[0].count == 6, cols[0].first.map({ "VAS".contains($0) }) == true else { return nil }
+                return String(cols[1])
+            })
+            cache.lock.withLock { cache.names[tool.path] = parsed }
+            names = parsed
+        }
+        var out = Encoders(names: names ?? [])
+        for e in pixelFormatsOf where out.names.contains(e) {
+            let key = tool.path + "|" + e
+            if let f = cache.lock.withLock({ cache.formats[key] }) {
+                out.pixelFormats[e] = f
+                continue
+            }
+            let help = try await run(tool, ["-hide_banner", "-h", "encoder=\(e)"], stall: 30)
+            guard let line = help.split(separator: "\n").first(where: { $0.contains("Supported pixel formats:") }) else { continue }
+            let f = Set(line.split(separator: ":", maxSplits: 1).last?.split(separator: " ").map(String.init) ?? [])
+            cache.lock.withLock { cache.formats[key] = f }
+            out.pixelFormats[e] = f
+        }
+        return out
+    }
+
     /// ffprobe's view of a file's container and streams.
     public static func probe(_ url: URL, ffprobe: URL) async throws -> ProbeInfo {
         let json = try await run(ffprobe, ["-v", "error", "-show_format", "-show_streams", "-of", "json", url.path], stall: 60)

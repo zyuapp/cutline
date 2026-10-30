@@ -8,6 +8,8 @@ public enum ExportPreset: String, CaseIterable, Sendable {
     case hevc
     /// HEVC Main 10, for banding-free gradients and HDR.
     case hevc_10bit
+    /// HEVC Main 4:2:2 10 through VideoToolbox (Apple silicon): a 10-bit 4:2:2 mezzanine.
+    case hevc_422_10bit
     case h264
     /// ProRes 422.
     case prores
@@ -24,20 +26,49 @@ public enum ExportPreset: String, CaseIterable, Sendable {
     case dnxhr_lb
     /// Sony XDCAM HD422 through ffmpeg: MPEG-2 4:2:2 50 Mb/s long GOP, 1920×1080, eight 24-bit PCM channels in MXF OP1a.
     case xdcam_hd422
+    /// H.264 High 10 (4:2:0 10-bit) through ffmpeg's libx264.
+    case h264_10bit
+    /// H.264 High 4:2:2 10-bit long GOP through libx264: the XAVC Long GOP picture format (50 Mb/s at HD by default),
+    /// not Sony's own MXF profile.
+    case h264_422_10bit
+    /// AVC-Intra Class 100 (libx264, Panasonic flavor): High 4:2:2 Intra 10-bit, 1920×1080, fixed frame size, MXF OP1a.
+    /// The UK DPP HD codec.
+    case avc_intra_class100
+    /// XAVC Intra Class 100 picture (libx264's Sony flavor of AVC-Intra 100) in ffmpeg's generic MXF OP1a.
+    case xavc_intra_class100
+    /// AV1 Main 10-bit 4:2:0 through SVT-AV1 (or libaom), MP4.
+    case av1
 
     public var fileType: AVFileType { isProRes ? .mov : .mp4 }
     /// QuickTime for ProRes or a .mov path (MP4 can't carry a timecode track), MP4 otherwise.
     public func fileType(for url: URL) -> AVFileType { isProRes || url.pathExtension.lowercased() == "mov" ? .mov : .mp4 }
-    public var fileExtension: String { isProRes || isDNxHR ? "mov" : self == .xdcam_hd422 ? "mxf" : "mp4" }
+    public var fileExtension: String { containers[0] }
+    /// File formats the preset is written in, the default first.
+    public var containers: [String] {
+        switch self {
+        case _ where isProRes: ["mov"]
+        case .dnxhr_hq, .dnxhr_hqx, .dnxhr_sq, .dnxhr_lb: ["mov", "mxf"]
+        case .xdcam_hd422: ["mxf"]
+        case .hevc_422_10bit, .h264_10bit: ["mov", "mp4"]
+        case .h264_422_10bit: ["mov", "mxf", "mp4"]
+        case .avc_intra_class100, .xavc_intra_class100: ["mxf", "mov"]
+        case .av1: ["mp4"]
+        default: ["mp4", "mov"]
+        }
+    }
     public var isProRes: Bool { rawValue.hasPrefix("prores") }
     public var isDNxHR: Bool { rawValue.hasPrefix("dnxhr") }
     /// Rendered as a ProRes intermediate and encoded by ffmpeg.
-    public var needsFFmpeg: Bool { isDNxHR || self == .xdcam_hd422 }
+    public var needsFFmpeg: Bool { isDNxHR || self == .xdcam_hd422 || isX264 || self == .av1 }
+    /// Encoded by ffmpeg's libx264.
+    public var isX264: Bool { [.h264_10bit, .h264_422_10bit, .avc_intra_class100, .xavc_intra_class100].contains(self) }
+    public var isAVCIntra: Bool { self == .avc_intra_class100 || self == .xavc_intra_class100 }
 
     public var title: String {
         switch self {
         case .hevc: "HEVC"
         case .hevc_10bit: "HEVC Main 10"
+        case .hevc_422_10bit: "HEVC Main 4:2:2 10"
         case .h264: "H.264"
         case .prores: "Apple ProRes 422"
         case .prores_hq: "Apple ProRes 422 HQ"
@@ -50,6 +81,11 @@ public enum ExportPreset: String, CaseIterable, Sendable {
         case .dnxhr_sq: "Avid DNxHR SQ"
         case .dnxhr_lb: "Avid DNxHR LB"
         case .xdcam_hd422: "Sony XDCAM HD422"
+        case .h264_10bit: "H.264 High 10"
+        case .h264_422_10bit: "H.264 High 4:2:2 10-bit (XAVC Long GOP picture)"
+        case .avc_intra_class100: "AVC-Intra Class 100"
+        case .xavc_intra_class100: "XAVC Intra Class 100 (x264 Sony flavor)"
+        case .av1: "AV1 Main 10"
         }
     }
 
@@ -60,14 +96,19 @@ public enum ExportPreset: String, CaseIterable, Sendable {
             return ffmpeg ? nil : FFmpegDelivery.missing(p)
         }
         if n.hasPrefix("dnx") { return "\(name) isn't a preset. DNxHR presets: dnxhr_hq, dnxhr_hqx (10-bit), dnxhr_sq, dnxhr_lb." }
-        if n.hasPrefix("h264_10") || n == "h264_422" { return "10-bit H.264 isn't available: VideoToolbox only encodes 8-bit H.264. Use hevc_10bit or a ProRes preset." }
+        if n.hasPrefix("h264_10") || n.hasPrefix("h264_422") { return "\(name) isn't a preset; 10-bit H.264 is h264_10bit (High 10) or h264_422_10bit (High 4:2:2), encoded by ffmpeg." }
+        if n.hasPrefix("xavc") { return "\(name) isn't a preset; use xavc_intra_class100 (MXF) or h264_422_10bit (XAVC Long GOP picture)." }
+        if n.hasPrefix("avc_intra") || n.hasPrefix("avci") { return "\(name) isn't a preset; use avc_intra_class100 (AVC-Intra 100 in MXF, the UK DPP codec)." }
+        if n.hasPrefix("av1") || n == "aom" || n == "svtav1" { return "\(name) isn't a preset; use av1." }
+        if n == "imf" || n.hasPrefix("imf_") { return "IMF packages aren't made: ffmpeg can't write the audio-only MXF track files IMF needs, nor JPEG 2000 in its IMF profiles. Deliver prores_hq or prores4444 with audio_tracks, or build the IMF in a mastering tool." }
+        if n.hasPrefix("hevc_422") { return "\(name) isn't a preset; use hevc_422_10bit." }
         if n.hasPrefix("xdcam") || n.hasPrefix("mpeg2") { return "\(name) isn't a preset; use xdcam_hd422 (MPEG-2 4:2:2 50 Mb/s in MXF OP1a)." }
         return nil
     }
 
     var codec: AVVideoCodecType {
         switch self {
-        case .hevc, .hevc_10bit: .hevc
+        case .hevc, .hevc_10bit, .hevc_422_10bit: .hevc
         case .h264: .h264
         case .prores: .proRes422
         case .prores_hq: .proRes422HQ
@@ -75,7 +116,7 @@ public enum ExportPreset: String, CaseIterable, Sendable {
         case .prores_proxy: .proRes422Proxy
         case .prores4444: .proRes4444
         case .prores4444xq: AVVideoCodecType(rawValue: "ap4x")
-        case .dnxhr_hq, .dnxhr_hqx, .dnxhr_sq, .dnxhr_lb, .xdcam_hd422: .proRes422HQ
+        case .dnxhr_hq, .dnxhr_hqx, .dnxhr_sq, .dnxhr_lb, .xdcam_hd422, .h264_10bit, .h264_422_10bit, .avc_intra_class100, .xavc_intra_class100, .av1: .proRes422HQ
         }
     }
 
@@ -85,6 +126,7 @@ public enum ExportPreset: String, CaseIterable, Sendable {
         switch self {
         case .hevc: return Int(pixels * 0.09)
         case .hevc_10bit: return Int(pixels * 0.11)
+        case .hevc_422_10bit: return Int(pixels * 0.4)
         case .h264: return Int(pixels * 0.14)
         default: return 0
         }
@@ -127,6 +169,14 @@ public struct ExportOptions: Sendable {
     /// HDR10 static metadata for PQ timelines; nil uses the defaults (P3-D65 1000 cd/m² mastering display) with
     /// MaxCLL and MaxFALL measured from the render.
     public var hdr: HDRMetadata?
+    /// The master's audio track layout (QuickTime or MXF): one track per job, or every channel in one track with
+    /// `audioPacking` channels. Empty writes the mix as one track.
+    public var audioTracks: [AudioTracks.Job] = []
+    public var audioPacking: AudioTrackSpec.Packing = .tracks
+    /// Receives each rendered track's loudness and conform.
+    public var audioTracksReport: AudioTracks.Report?
+    /// Dialogue spans (timeline time) a dialogue-gated master loudness target is measured over.
+    public var loudnessGate: [TimeRange]?
 
     public init(preset: ExportPreset = .hevc, bitrateMbps: Double? = nil, range: TimeRange? = nil, subtitles: [TimedText] = [], subtitleLanguage: String = "en", chapters: [TimedText] = [], closedCaptions: [TimedText] = [], audioKbps: Int = 256, timecodeStart: String? = nil, leader: Leader? = nil) {
         self.preset = preset
@@ -205,13 +255,23 @@ public enum Exporter {
         }
         let master = built.scene.project.master
         var conform: LoudnessConform?
-        if layout != .stereo {
+        let tracksDir = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-tracks-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tracksDir) }
+        var trackReaders: [(AVAssetReader, AVAssetReaderTrackOutput, AVAssetWriterInput)] = []
+        var trackGroups: [(url: URL, channels: Int, layout: Data?, name: String)] = []
+        if !options.audioTracks.isEmpty {
+            guard options.preset.fileType(for: url) == .mov else { throw EditError("An audio track layout needs a QuickTime (.mov) or MXF master; MP4 carries the mix only") }
+            let rendered = try await AudioTracks.render(options.audioTracks, mix: built, span: range, leader: leader, tc: tc, dialogue: options.loudnessGate, in: tracksDir)
+            options.audioTracksReport?.set(rendered)
+            conform = rendered.first { $0.spec.content == .mix }?.conform
+            trackGroups = try AudioTracks.writerTracks(rendered, packing: options.audioPacking, scratch: tracksDir.appendingPathComponent("packed.caf"))
+        } else if layout != .stereo {
             guard var source = built.surround else { throw EditError("The \(layout.title) mix isn't rendered yet; render the project's stems (AudioStems.renderMissing) before exporting") }
             var span = CMTimeRange(start: CMTime(seconds: range.start.seconds, preferredTimescale: 48_000), end: CMTime(seconds: range.end.seconds, preferredTimescale: 48_000))
             if let target = master.loudnessTarget {
                 let from = Int64((range.start.seconds * 48_000).rounded())
                 let count = Int64((range.duration.seconds * 48_000).rounded())
-                conform = try await LoudnessConform.run(source, layout: layout, frames: from..<(from + count), target: target, ceiling: master.ceiling, to: conformedFile)
+                conform = try await LoudnessConform.run(source, layout: layout, frames: from..<(from + count), target: target, ceiling: master.ceiling, dialogue: options.loudnessGate, to: conformedFile)
                 source = conformedFile
                 span = CMTimeRange(start: .zero, duration: CMTime(value: count, timescale: 48_000))
             }
@@ -233,7 +293,8 @@ public enum Exporter {
             let frames = try await AudioIO.mixdown(built, range: TimeRange(range.start.seconds, range.end.seconds), to: mixFile)
             var mixed = mixFile
             if let target = master.loudnessTarget {
-                conform = try await LoudnessConform.run(mixFile, layout: .stereo, frames: 0..<Int64(frames), target: target, ceiling: master.ceiling, to: conformedFile)
+                let gate = options.loudnessGate?.map { TimeRange($0.start - range.start.seconds, $0.end - range.start.seconds) }
+                conform = try await LoudnessConform.run(mixFile, layout: .stereo, frames: 0..<Int64(frames), target: target, ceiling: master.ceiling, dialogue: gate, to: conformedFile)
                 mixed = conformedFile
             }
             let mixAsset = AVURLAsset(url: mixed)
@@ -262,7 +323,7 @@ public enum Exporter {
             compression[AVVideoAverageBitRateKey] = bitrate
             compression[AVVideoMaxKeyFrameIntervalDurationKey] = 2
             compression[AVVideoAllowFrameReorderingKey] = true
-            compression[AVVideoProfileLevelKey] = options.preset == .h264 ? AVVideoProfileLevelH264HighAutoLevel : (space.isHDR || options.preset == .hevc_10bit ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel) as String
+            compression[AVVideoProfileLevelKey] = options.preset == .h264 ? AVVideoProfileLevelH264HighAutoLevel : (options.preset == .hevc_422_10bit ? kVTProfileLevel_HEVC_Main42210_AutoLevel : space.isHDR || options.preset == .hevc_10bit ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel) as String
         }
         if space == .rec2020_pq, options.preset.codec == .hevc {
             var meta = options.hdr ?? HDRMetadata(maxLuminance: canvas.peakRolloff?.peakNits ?? 1000)
@@ -283,13 +344,36 @@ public enum Exporter {
         if let order = weave {
             videoSettings[AVVideoCompressionPropertiesKey] = [kVTCompressionPropertyKey_FieldCount as String: 2, kVTCompressionPropertyKey_FieldDetail as String: order.fieldDetail as String]
         }
-        guard writer.canApply(outputSettings: videoSettings, forMediaType: .video) else { throw EditError("This Mac can't encode \(options.preset.title)") }
+        guard writer.canApply(outputSettings: videoSettings, forMediaType: .video) else { throw EditError("This Mac can't encode \(options.preset.title)" + (options.preset == .hevc_422_10bit ? ": its VideoToolbox has no HEVC 4:2:2 encoder. Use prores_hq, or h264_422_10bit with ffmpeg" : "")) }
         let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoIn.expectsMediaDataInRealTime = false
         writer.add(videoIn)
 
+        for g in trackGroups {
+            let asset = AVURLAsset(url: g.url)
+            guard let track = try await asset.loadTracks(withMediaType: .audio).first else { throw EditError("Rendering audio track \(g.name) failed") }
+            let r = try AVAssetReader(asset: asset)
+            var read: [String: Any] = [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: g.channels,
+                AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
+            ]
+            var write: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: g.channels, AVLinearPCMBitDepthKey: 24, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
+            if let l = g.layout {
+                read[AVChannelLayoutKey] = l
+                write[AVChannelLayoutKey] = l
+            }
+            let out = AVAssetReaderTrackOutput(track: track, outputSettings: read)
+            r.add(out)
+            guard writer.canApply(outputSettings: write, forMediaType: .audio) else { throw EditError("\(url.pathExtension) can't carry a \(g.channels)-channel audio track") }
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: write)
+            input.expectsMediaDataInRealTime = false
+            input.metadata = AudioTracks.nameMetadata(g.name)
+            writer.add(input)
+            trackReaders.append((r, out, input))
+        }
+
         var audioIn: AVAssetWriterInput?
-        if audioOut != nil || leader != nil {
+        if trackGroups.isEmpty, audioOut != nil || leader != nil {
             let settings = audioSettings(layout, preset: options.preset, kbps: options.audioKbps)
             guard writer.canApply(outputSettings: settings, forMediaType: .audio) else { throw EditError("\(options.preset.rawValue) can't carry \(layout.title) audio") }
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
@@ -352,6 +436,7 @@ public enum Exporter {
 
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline") }
         if let audioReader, !audioReader.startReading() { throw audioReader.error ?? EditError("Cannot read the mixed sound") }
+        for (r, _, _) in trackReaders where !r.startReading() { throw r.error ?? EditError("Cannot read a rendered audio track") }
         guard writer.startWriting() else { throw writer.error ?? EditError("Cannot write \(url.lastPathComponent)") }
         writer.startSession(atSourceTime: .zero)
 
@@ -361,6 +446,11 @@ public enum Exporter {
         async let audio: Void = {
             if let audioIn { try await pump(audioOut, into: audioIn, offset: audioStart, first: leaderAudio, report: nil) }
         }()
+        let readers = trackReaders
+        async let tracks: Void = withThrowingTaskGroup(of: Void.self) { group in
+            for (_, out, input) in readers { group.addTask { try await pump(out, into: input, offset: .zero, report: nil) } }
+            try await group.waitForAll()
+        }
         // Fed together so the writer can interleave every track while the video is being rendered.
         try await withThrowingTaskGroup(of: Void.self) { group in
             for (input, cues) in textInputs {
@@ -376,7 +466,7 @@ public enum Exporter {
             }
             try await group.waitForAll()
         }
-        _ = try await (video, audio)
+        _ = try await (video, audio, tracks)
 
         if reader.status == .failed {
             writer.cancelWriting()
