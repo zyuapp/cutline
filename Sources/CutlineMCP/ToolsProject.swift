@@ -26,6 +26,7 @@ extension Toolbox {
             "fps": Schema.number("Frame rate, default 30"),
             "background": Schema.string("Background color as hex, default #000000"),
             "color_space": Schema.string("Output color: rec709 (SDR, default), p3 (Display P3), rec2020_hlg or rec2020_pq (HDR, exports as 10-bit HEVC)", values: WorkingSpace.allCases.map(\.rawValue)),
+            "drop_frame": Schema.bool("Timecode in exported EDL, FCPXML and XML: drop frame (default at 29.97 and 59.94) or false for non-drop"),
         ]
 
         add(Tool(name: "project_create", description: "Create a new Cutline project (a .cutline folder holding the timeline, history, comments and analysis), open it in this session and, by default, in the preview app the human watches.", schema: Schema.object(canvasProps.merging([
@@ -180,6 +181,7 @@ extension Toolbox {
         if let f = args.optDouble("fps") { c.fps = f }
         if let bg = try args.color("background") { c.background = bg }
         if let cs = try args.enumValue("color_space", WorkingSpace.self) { c.colorSpace = cs }
+        if let df = args.optBool("drop_frame") { c.dropFrame = df }
         guard c.width >= 16, c.height >= 16, c.width <= 8192, c.height <= 8192 else { throw EditError("Canvas must be between 16 and 8192 pixels") }
         guard c.fps >= 1, c.fps <= 240 else { throw EditError("fps must be between 1 and 240") }
         c.width -= c.width % 2

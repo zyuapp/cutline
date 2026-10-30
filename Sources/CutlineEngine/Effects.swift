@@ -111,7 +111,7 @@ enum EffectRenderer {
             ])
         case "stylize.glitch":
             return TransitionRenderer.glitch(img, amount: Double(n("amount")), frame: Int((ctx.time * 30).rounded()), e)
-        case "color.grade", "color.curves", "color.hsl", "color.look", "color.lut":
+        case "color.grade", "color.curves", "color.hsl", "color.look", "color.lut", "color.cdl":
             guard let cube = ColorCubes.cube(type, v) else { return img }
             return img.applyingFilter("CIColorCubeWithColorSpace", parameters: [
                 "inputCubeDimension": cube.size, "inputCubeData": cube.data, "inputColorSpace": ctx.gradeSpace,
@@ -370,6 +370,8 @@ enum ColorCubes {
         case "color.look":
             guard let t = try? ColorMath.look(v("look").string ?? "teal_orange", amount: n("amount")) else { return nil }
             f = t
+        case "color.cdl":
+            f = CDL(effect: Effect(id: "", type: type, params: Dictionary(uniqueKeysWithValues: (EffectCatalog.type(type)?.params ?? []).map { ($0.name, v($0.name)) }))).transform
         case "color.lut":
             guard let path = text("file"), let s = try? String(contentsOfFile: path, encoding: .utf8), let lut = try? ColorMath.parseCube(s) else { return nil }
             if lut.domainMin == SIMD3(0, 0, 0) && lut.domainMax == SIMD3(1, 1, 1) {
