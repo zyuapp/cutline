@@ -82,6 +82,30 @@ All six phases are implemented.
 - **Phase 5, done.** Person and subject segmentation masks, chroma key, nested sequences (`sequence_nest`), and multicam sync by audio cross-correlation with `recipe multicam_switch` cutting to the speaker.
 - **Phase 6, done.** SRT/VTT sidecars and embedded subtitles, chapters (embedded and a YouTube list), platform presets with safe-zone, length and loudness checks, project forks and export variants, OTIO and FCPXML, quality checks after every edit, and `project_patch`.
 
+### Phase 7: professional parity
+
+Goal: an editor coming from Final Cut Pro, Premiere or Resolve can bring their timeline in and do the whole job.
+
+- **Done:**
+  - **Interchange:** import of FCPXML, OTIO and CMX 3600 EDL timelines; FCPXML, OTIO and EDL export, with transitions in all three; SRT and VTT import as titles.
+  - **Color:** working spaces Rec.709, Display P3, HLG and PQ, with HDR export as 10-bit HEVC; 14 camera log curves with ACES-style tone mapping; waveform, parade, vectorscope and histogram, with numbers.
+  - **Secondaries:** any effect can be limited to a window or an HSL qualifier; roto shape masks; track mattes.
+  - **Motion:** bezier keyframes, anchor points, 3D tilt with perspective, corner pin, motion blur.
+  - **Audio:**
+    - Repair: denoise, de-ess, de-hum, de-click.
+    - Mixing: pan and stereo width, track fader automation, audio roles with stem delivery.
+    - Third-party Audio Unit plug-ins.
+  - **Editing:** linked picture and sound, replace edits, fit to fill, dual-system sound sync by waveform.
+  - **Organizing:** marker kinds and colors, keyword ranges and favorite/reject ratings on footage, source timecode and reels.
+  - **Media management:** background proxies for preview, relinking, archiving with trimmed media.
+  - **Delivery:** stills, image sequences and GIFs.
+- **Still open:**
+  - **Audio formats:** surround (5.1/7.1) and multichannel audio.
+  - **Captions:** embedded CEA-608/708 closed captions.
+  - **Color:** gamut compression for wide camera gamuts, and full ACES output transforms.
+  - **Interchange:** AAF.
+  - **Validation:** checking every import against real Final Cut, Premiere and Resolve projects, and the perception features against real footage with people.
+
 ## Phases (about 1–2 weeks each)
 
 | # | Phase | What the agent can do afterwards | Key native APIs |
