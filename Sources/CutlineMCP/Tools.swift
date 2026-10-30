@@ -223,6 +223,8 @@ enum Describe {
             if let au = bundle.audioAnalysis(m.id) { a.append("\(au.silences.filter { $0.duration >= 0.5 }.count) pauses") }
             if let v = bundle.visualAnalysis(m.id), !v.sceneCuts.isEmpty { a.append("\(v.sceneCuts.count) scene cuts") }
             if let log = m.log { a.append("log \(log.rawValue)") }
+            if m.isInterlaced { a.append(Toolbox.interlaceNote(m)) }
+            if let t = m.transcoded { a.append(m.isTranscoding ? "transcoding from \(m.conformPath)" : "ProRes mezzanine of \(m.conformPath) (\(t))") }
             if let tc = m.timecodeStart { a.append("TC \(Project.timecodeString(tc, fps: m.fps > 0 ? m.fps : p.canvas.fps))" + (m.reel.map { " reel \($0)" } ?? "")) }
             if let tags = m.tags, !tags.isEmpty { a.append("tags " + tags.map { tag in tag.rating.map { "\(tag.label) (\($0))" } ?? tag.label }.joined(separator: ", ")) }
             let kind = m.isImage ? "image" : [m.hasVideo ? "video" : nil, m.hasAudio ? "audio" : nil].compactMap { $0 }.joined(separator: "+")

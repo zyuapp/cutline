@@ -140,7 +140,7 @@ extension Project {
                 return ["OTIO_SCHEMA": "MissingReference.1", "name": "", "available_range": NSNull(), "available_image_bounds": NSNull(), "metadata": [String: Any]()]
             }
             let available: Any = m.isImage ? NSNull() : range(0, Int((m.duration * grid.rate + 1e-6).rounded(.down)))
-            return ["OTIO_SCHEMA": "ExternalReference.1", "name": m.name, "target_url": m.url.absoluteString,
+            return ["OTIO_SCHEMA": "ExternalReference.1", "name": m.name, "target_url": m.conformURL.absoluteString,
                     "available_range": available, "available_image_bounds": NSNull(), "metadata": [String: Any]()]
         }
         /// `sound` is the clip as heard: from its audio source range over its audio range, with its level.
@@ -342,7 +342,7 @@ extension Project {
             }
             attrs.append(("hasAudio", m.hasAudio ? "1" : "0"))
             if m.hasAudio { attrs += [("audioSources", "1"), ("audioChannels", "2"), ("audioRate", "48000")] }
-            resources.append(XMLElem("asset", attrs, children: [XMLElem("media-rep", [("kind", "original-media"), ("src", m.url.absoluteString)])]))
+            resources.append(XMLElem("asset", attrs, children: [XMLElem("media-rep", [("kind", "original-media"), ("src", m.conformURL.absoluteString)])]))
         }
         let titleRef = "r_title"
         let dissolveRef = "r_dissolve"

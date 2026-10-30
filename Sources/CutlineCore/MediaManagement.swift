@@ -6,11 +6,14 @@ extension Project {
         media.filter { !exists($0.path) }
     }
 
-    /// Points a media item at another file. Returns false for an unknown id.
+    /// Points a media item at another file. Returns false for an unknown id. A transcoded item
+    /// forgets its mezzanine and points at the new file as its own original.
     @discardableResult
     public mutating func relink(mediaId: String, to path: String) -> Bool {
         guard let i = media.firstIndex(where: { $0.id == mediaId }) else { return false }
         media[i].path = path
+        media[i].originalPath = nil
+        media[i].transcoded = nil
         return true
     }
 
@@ -34,14 +37,14 @@ extension Project {
         }
         var out: [(String, String)] = []
         for m in missing {
-            let old = URL(fileURLWithPath: m.path)
+            let old = URL(fileURLWithPath: m.conformPath)
             var candidates = byName[old.lastPathComponent.lowercased()] ?? []
             if candidates.isEmpty {
                 candidates = (byStem[old.deletingPathExtension().lastPathComponent.lowercased()] ?? [])
                     .filter { Project.imageExtensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) == m.isImage }
             }
             guard let best = candidates.max(by: { a, b in
-                let sa = Project.sharedFolders(a, m.path), sb = Project.sharedFolders(b, m.path)
+                let sa = Project.sharedFolders(a, m.conformPath), sb = Project.sharedFolders(b, m.conformPath)
                 return sa != sb ? sa < sb : a.count > b.count
             }) else { continue }
             relink(mediaId: m.id, to: best)
@@ -239,7 +242,12 @@ public struct ConsolidatePlan: Equatable, Sendable {
             guard var m = project.mediaAsset(i.mediaId) else { return nil }
             m.id = i.newId
             m.path = directory.appendingPathComponent(i.fileName).path
-            if let r = i.range { m.duration = r.duration }
+            if let r = i.range {
+                m.duration = r.duration
+                // A trimmed copy of a mezzanine no longer lines up with the camera original.
+                m.originalPath = nil
+                m.transcoded = nil
+            }
             return m
         }
         guard trim else { return p }

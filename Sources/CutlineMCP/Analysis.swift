@@ -39,10 +39,15 @@ final class JobBoard: @unchecked Sendable {
 
     /// Queues work after every earlier job, one at a time.
     func enqueue(_ mediaId: String, _ features: [Feature], bundle: URL, language: String = "en-US", explicit: Bool = false, _ work: @escaping Work) -> String {
+        enqueue(mediaId, named: features.map(\.rawValue), bundle: bundle, language: language, explicit: explicit, work)
+    }
+
+    /// `enqueue` for work other than analysis features, such as "transcode".
+    func enqueue(_ mediaId: String, named features: [String], bundle: URL, language: String = "en-US", explicit: Bool = false, _ work: @escaping Work) -> String {
         let id = lock.withLock { () -> String in
             if bundleURL != bundle { list.removeAll(); bundleURL = bundle }
             let id = "job\((list.compactMap { Int($0.id.dropFirst(3)) }.max() ?? 0) + 1)"
-            list.append(Job(id: id, mediaId: mediaId, features: features.map(\.rawValue), status: "queued", progress: 0, language: language, explicit: explicit, pid: pid))
+            list.append(Job(id: id, mediaId: mediaId, features: features, status: "queued", progress: 0, language: language, explicit: explicit, pid: pid))
             return id
         }
         save()
@@ -134,6 +139,15 @@ extension Session {
         guard !claimed.isEmpty, let p = try? b.loadProject() else { return [] }
         var out: [String] = []
         for job in claimed {
+            if job.features == [Session.transcodeJob], let m = p.mediaAsset(job.mediaId) {
+                guard m.isTranscoding else {
+                    jobs.update(job.id) { $0.status = "done"; $0.progress = 1 }
+                    continue
+                }
+                jobs.resume(job, transcodeWork(m, info: nil, language: job.language ?? "en-US"))
+                out.append("\(job.id) \(job.mediaId) transcode")
+                continue
+            }
             let features = job.features.compactMap(Feature.init(rawValue:))
             guard let m = p.mediaAsset(job.mediaId), !features.isEmpty else {
                 jobs.update(job.id) { $0.status = "failed"; $0.message = "media \(job.mediaId) is no longer in the project" }

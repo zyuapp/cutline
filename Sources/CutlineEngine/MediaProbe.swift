@@ -38,14 +38,17 @@ public enum MediaProbe {
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         guard !videoTracks.isEmpty || !audioTracks.isEmpty else { throw EditError("\(url.lastPathComponent) has no audio or video") }
         var width = 0, height = 0, fps = 0.0
+        var fieldOrder: FieldOrder?
         if let v = videoTracks.first {
-            let (size, transform, rate) = try await v.load(.naturalSize, .preferredTransform, .nominalFrameRate)
+            let (size, transform, rate, formats) = try await v.load(.naturalSize, .preferredTransform, .nominalFrameRate, .formatDescriptions)
             let r = CGRect(origin: .zero, size: size).applying(transform)
             width = Int(abs(r.width).rounded())
             height = Int(abs(r.height).rounded())
             fps = Double(rate)
+            fieldOrder = formats.first.flatMap(Self.fieldOrder)
         }
         var media = MediaAsset(id: id, path: url.path, name: name, duration: duration, width: width, height: height, fps: fps, hasVideo: !videoTracks.isEmpty, hasAudio: !audioTracks.isEmpty)
+        media.fieldOrder = fieldOrder
         if let tc = try? await startTimecode(asset) {
             media.timecodeStart = tc.seconds
             media.reel = tc.reel
@@ -53,23 +56,35 @@ public enum MediaProbe {
         return media
     }
 
+    /// Field count and detail of a video format; nil when the file doesn't say.
+    public static func fieldOrder(_ fd: CMFormatDescription) -> FieldOrder? {
+        guard let count = CMFormatDescriptionGetExtension(fd, extensionKey: kCMFormatDescriptionExtension_FieldCount) as? Int else { return nil }
+        guard count == 2 else { return .progressive }
+        let detail = CMFormatDescriptionGetExtension(fd, extensionKey: kCMFormatDescriptionExtension_FieldDetail) as? String
+        let bottomFirst = [kCMFormatDescriptionFieldDetail_TemporalBottomFirst, kCMFormatDescriptionFieldDetail_SpatialFirstLineLate].map { $0 as String }
+        return detail.map(bottomFirst.contains) == true ? .bff : .tff
+    }
+
     /// The timecode of the first frame from a QuickTime timecode track, and its reel name.
     static func startTimecode(_ asset: AVAsset) async throws -> (seconds: Seconds, reel: String?)? {
         guard let track = try await asset.loadTracks(withMediaType: .timecode).first else { return nil }
-        let reader = try AVAssetReader(asset: asset)
-        let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
-        reader.add(out)
-        guard reader.startReading(), let sample = out.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(sample), let fd = CMSampleBufferGetFormatDescription(sample) else { return nil }
-        var raw = Data(count: CMBlockBufferGetDataLength(block))
-        raw.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
-        guard raw.count >= 4 else { return nil }
-        let frame = raw.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
-        let frameDuration = CMTimeCodeFormatDescriptionGetFrameDuration(fd)
-        let quanta = Int(CMTimeCodeFormatDescriptionGetFrameQuanta(fd))
-        guard frameDuration.seconds > 0, quanta > 0 else { return nil }
-        let frames = frame
-        let reel = (CMFormatDescriptionGetExtension(fd, extensionKey: kCMTimeCodeFormatDescriptionExtension_SourceReferenceName) as? [String: Any])?[kCMTimeCodeFormatDescriptionKey_Value as String] as? String
-        return (Double(frames) * frameDuration.seconds, reel)
+        // Reading blocks, so it runs off the cooperative pool.
+        return try await runBlocking { _ -> (seconds: Seconds, reel: String?)? in
+            let reader = try AVAssetReader(asset: asset)
+            let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            reader.add(out)
+            guard reader.startReading(), let sample = out.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(sample), let fd = CMSampleBufferGetFormatDescription(sample) else { return nil }
+            var raw = Data(count: CMBlockBufferGetDataLength(block))
+            raw.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
+            guard raw.count >= 4 else { return nil }
+            let frame = raw.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+            let frameDuration = CMTimeCodeFormatDescriptionGetFrameDuration(fd)
+            let quanta = Int(CMTimeCodeFormatDescriptionGetFrameQuanta(fd))
+            guard frameDuration.seconds > 0, quanta > 0 else { return nil }
+            let frames = frame
+            let reel = (CMFormatDescriptionGetExtension(fd, extensionKey: kCMTimeCodeFormatDescriptionExtension_SourceReferenceName) as? [String: Any])?[kCMTimeCodeFormatDescriptionKey_Value as String] as? String
+            return (Double(frames) * frameDuration.seconds, reel)
+        }
     }
 }
 
@@ -100,6 +115,9 @@ public final class MediaLibrary: @unchecked Sendable {
     }
 
     public func entry(for media: MediaAsset) async throws -> Entry {
+        if media.isTranscoding {
+            throw EditError("\(media.id) is still being transcoded from \(media.conformPath) to a playable ProRes file; wait for its job (analysis_read media_id:\(media.id) wait:600)")
+        }
         let proxy = proxyQuality.flatMap { Proxies.cached(media, quality: $0) }
         let key = proxy?.path ?? media.path
         if let e = lock.withLock({ entries[key] }) { return e }

@@ -17,12 +17,22 @@ public enum ExportPreset: String, CaseIterable, Sendable {
     /// ProRes 4444 with alpha, for overlays and graphics.
     case prores4444
     case prores4444xq
+    /// Avid DNxHR through ffmpeg: HQ and SQ 8-bit 4:2:2, HQX 10-bit 4:2:2, LB offline.
+    case dnxhr_hq
+    case dnxhr_hqx
+    case dnxhr_sq
+    case dnxhr_lb
+    /// Sony XDCAM HD422 through ffmpeg: MPEG-2 4:2:2 50 Mb/s long GOP, 1920×1080, eight 24-bit PCM channels in MXF OP1a.
+    case xdcam_hd422
 
     public var fileType: AVFileType { isProRes ? .mov : .mp4 }
     /// QuickTime for ProRes or a .mov path (MP4 can't carry a timecode track), MP4 otherwise.
     public func fileType(for url: URL) -> AVFileType { isProRes || url.pathExtension.lowercased() == "mov" ? .mov : .mp4 }
-    public var fileExtension: String { isProRes ? "mov" : "mp4" }
+    public var fileExtension: String { isProRes || isDNxHR ? "mov" : self == .xdcam_hd422 ? "mxf" : "mp4" }
     public var isProRes: Bool { rawValue.hasPrefix("prores") }
+    public var isDNxHR: Bool { rawValue.hasPrefix("dnxhr") }
+    /// Rendered as a ProRes intermediate and encoded by ffmpeg.
+    public var needsFFmpeg: Bool { isDNxHR || self == .xdcam_hd422 }
 
     public var title: String {
         switch self {
@@ -35,15 +45,23 @@ public enum ExportPreset: String, CaseIterable, Sendable {
         case .prores_proxy: "Apple ProRes 422 Proxy"
         case .prores4444: "Apple ProRes 4444"
         case .prores4444xq: "Apple ProRes 4444 XQ"
+        case .dnxhr_hq: "Avid DNxHR HQ"
+        case .dnxhr_hqx: "Avid DNxHR HQX"
+        case .dnxhr_sq: "Avid DNxHR SQ"
+        case .dnxhr_lb: "Avid DNxHR LB"
+        case .xdcam_hd422: "Sony XDCAM HD422"
         }
     }
 
-    /// Codecs people ask for that macOS has no encoder for, with what to use instead.
-    public static func unavailable(_ name: String) -> String? {
+    /// Codecs people ask for that this Mac can't encode, with what to use instead.
+    public static func unavailable(_ name: String, ffmpeg: Bool = FFmpeg.tools() != nil) -> String? {
         let n = name.lowercased()
-        if n.hasPrefix("dnx") { return "DNxHR/DNxHD isn't available: macOS has no system encoder for it. Use prores_hq (or prores_lt/prores_proxy for offline), or transcode the ProRes master with DaVinci Resolve or ffmpeg." }
+        if let p = ExportPreset(rawValue: n), p.needsFFmpeg {
+            return ffmpeg ? nil : FFmpegDelivery.missing(p)
+        }
+        if n.hasPrefix("dnx") { return "\(name) isn't a preset. DNxHR presets: dnxhr_hq, dnxhr_hqx (10-bit), dnxhr_sq, dnxhr_lb." }
         if n.hasPrefix("h264_10") || n == "h264_422" { return "10-bit H.264 isn't available: VideoToolbox only encodes 8-bit H.264. Use hevc_10bit or a ProRes preset." }
-        if n.hasPrefix("xdcam") || n.hasPrefix("mpeg2") { return "XDCAM/MPEG-2 isn't available: macOS has no system encoder for it. Deliver prores_hq and let the broadcaster's ingest transcode." }
+        if n.hasPrefix("xdcam") || n.hasPrefix("mpeg2") { return "\(name) isn't a preset; use xdcam_hd422 (MPEG-2 4:2:2 50 Mb/s in MXF OP1a)." }
         return nil
     }
 
@@ -57,6 +75,7 @@ public enum ExportPreset: String, CaseIterable, Sendable {
         case .prores_proxy: .proRes422Proxy
         case .prores4444: .proRes4444
         case .prores4444xq: AVVideoCodecType(rawValue: "ap4x")
+        case .dnxhr_hq, .dnxhr_hqx, .dnxhr_sq, .dnxhr_lb, .xdcam_hd422: .proRes422HQ
         }
     }
 
@@ -122,6 +141,7 @@ public struct ExportOptions: Sendable {
 /// with codec, bitrate, Rec. 709 color tags, and optional subtitle, chapter and closed caption tracks.
 public enum Exporter {
     public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)? = nil) async throws {
+        if options.preset.needsFFmpeg { return try await FFmpegDelivery.export(built, to: url, options: options, progress: progress) }
         let comp = built.composition
         let reader = try AVAssetReader(asset: comp)
         let range = options.range.map { CMTimeRange(start: TimelineBuilder.time($0.start), end: TimelineBuilder.time(min($0.end, built.duration))) }
