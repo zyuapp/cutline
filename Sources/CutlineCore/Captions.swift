@@ -188,14 +188,14 @@ extension Project {
         return words
     }
 
-    /// Burned-in captions: the shared cues (`captionCues`) laid out with the caption style's lines. A cue with more
+    /// Burned-in captions: the shared cues (`captionCues`, in `captions.language`) laid out with the caption style's lines. A cue with more
     /// words than the style's `maxWordsPerLine × maxLines` shows as consecutive pages within the cue's time; subtitles
     /// and closed captions keep it as one cue.
     public func captionSegments(transcripts: [String: Transcript]) -> [CaptionSegment] {
         let style = captions.style
         let perLine = max(1, style.maxWordsPerLine)
         let perPage = perLine * max(1, style.maxLines)
-        let cues = captionCues(transcripts: transcripts)
+        let cues = captionCues(transcripts: transcripts, language: captions.language)
         var segments: [CaptionSegment] = []
         for (ci, cue) in cues.enumerated() {
             var words = cue.words

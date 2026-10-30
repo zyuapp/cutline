@@ -1,27 +1,45 @@
 import CutlineCore
+import CutlineEngine
 import Foundation
 
 extension Toolbox {
     func registerCaptionTools() {
-        add(Tool(name: "captions_list", description: "List the caption cues on the timeline with their times, text and the source words they cover (\"<media>.wN\"), which tracks are captioned, and where two people talk over each other. Burned-in captions, subtitles (SRT/VTT, embedded) and closed captions share these cues; a cue with more words than the caption style's max_words_per_line × max_lines shows burned-in as consecutive pages (noted per cue). Use the word anchors with caption_edit.", schema: Schema.object([
+        add(Tool(name: "captions_list", description: "List the caption cues on the timeline with their times, text (uncertain words marked [word?]) and the source words they cover (\"<media>.wN\"), which tracks are captioned, and where two people talk over each other. Burned-in captions, subtitles (SRT/VTT, embedded) and closed captions share these cues; a cue with more words than the caption style's max_words_per_line × max_lines shows burned-in as consecutive pages (noted per cue). Use the word anchors with caption_edit.", schema: Schema.object([
             "start": Schema.time("Only from this timeline time"),
             "end": Schema.time("Only until this timeline time"),
+            "language": Schema.string("Also show each cue's translation in this language (captions_translate)"),
         ])) { [unowned self] args in
             let b = try session.requireBundle()
             let p = try session.project()
             let transcripts = b.transcripts(for: p)
             let lo = try args.optTime("start") ?? 0, hi = try args.optTime("end") ?? .infinity
-            let cues = p.captionCues(transcripts: transcripts).filter { $0.end > lo && $0.start < hi }
+            let all = p.captionCues(transcripts: transcripts)
+            let cues = all.filter { $0.end > lo && $0.start < hi }
+            let shownLanguage = args.optString("language").map(Project.languageTag)
+            let translated = shownLanguage.map { p.cueTranslations($0, cues: all).texts } ?? []
             let pages = p.captionSegments(transcripts: transcripts)
             let ids = p.captions.trackIds.isEmpty ? p.captionTrackIds : p.captions.trackIds
             let names = ids.compactMap { id in p.tracks.first { $0.id == id }.map { "\($0.name) (\(id))" } }
             var lines = ["Captioned tracks: " + (names.isEmpty ? "none" : names.joined(separator: ", ")) + (p.captions.trackIds.isEmpty ? " — dialogue by default; set track_ids in captions_set or a track's role to change" : "")]
             if !p.captions.enabled { lines.append("Captions are off on the picture (captions_set); subtitles and closed captions on export use these cues too.") }
+            var unsure = 0
+            func marked(_ w: CaptionWord) -> String {
+                guard w.lastAnchor == nil, let (m, n) = w.anchor.flatMap(Project.parseWordAnchor), let tw = transcripts[m]?.words, tw.indices.contains(n), tw[n].isLowConfidence, Vocabulary.tokens(w.text) == Vocabulary.tokens(tw[n].text) else { return w.text }
+                unsure += 1
+                return "[\(w.text)?]"
+            }
             for c in cues {
                 let first = c.words.first?.anchor ?? "?", last = c.words.last?.endAnchor ?? "?"
                 let shown = pages.filter { $0.start >= c.start - 1e-6 && $0.start < c.end - 1e-6 }.count
-                lines.append("#\(c.id) [\(fmt2(c.start))–\(fmt2(c.end))] \(c.text)   (\(first)…\(last))" + (shown > 1 ? " — burned in as \(shown) pages" : ""))
+                lines.append("#\(c.id) [\(fmt2(c.start))–\(fmt2(c.end))] \(c.words.map(marked).joined(separator: " "))   (\(first)…\(last))" + (shown > 1 ? " — burned in as \(shown) pages" : ""))
+                if let lang = shownLanguage { lines.append("    \(lang): " + ((translated.indices.contains(c.id) ? translated[c.id] : nil) ?? "(untranslated)")) }
             }
+            for lang in p.captions.translations.keys.sorted() {
+                let (texts, stale) = p.cueTranslations(lang, cues: all)
+                let missing = texts.indices.filter { texts[$0] == nil }
+                lines.append("Translation \(lang): \(all.count - missing.count)/\(all.count) cues" + (missing.isEmpty ? "" : ", untranslated #" + missing.prefix(8).map(String.init).joined(separator: ", #") + (missing.count > 8 ? "…" : "")) + (stale > 0 ? ", \(stale) no longer match a cue" : "") + (p.captions.language == lang ? " (burned in)" : ""))
+            }
+            if unsure > 0 { lines.append("\(unsure) word(s) the recognizer was unsure of are marked [word?]; fix with caption_edit or transcript_edit.") }
             if cues.isEmpty { lines.append("No caption cues in that range.") }
             let overlaps = p.overlappingSpeech(transcripts: transcripts).filter { $0.end > lo && $0.start < hi }
             if !overlaps.isEmpty {
@@ -82,6 +100,57 @@ extension Toolbox {
             p.captions.edits.append(edit)
             let old = t.words[first...last].map(\.text).joined(separator: " ")
             return "Caption edit on \(media).w\(first)–w\(last) (\"\(old)\")"
+        })
+
+        add(Tool(name: "captions_translate", description: "Translate the caption cues into other languages for subtitles. With only language, Apple's on-device Translation framework translates every cue (the language must be installed in System Settings › General › Language & Region › Translation Languages; a server can't download one). cues [{id, text}] stores your own translation per cue (ids from captions_list), and file imports an .srt or .vtt, matching its cues to these by time. Translations are keyed by each cue's source words, so they follow later edits; timing stays the spoken cues' and the text is rewrapped to each output's line limits. Export them with export subtitle_languages; captions_set language burns one in; captions_list language shows them. clear:true removes the language.", schema: Schema.object([
+            "language": Schema.string("Target language tag, e.g. fr, de, pt-BR"),
+            "cues": Schema.array(Schema.object(["id": Schema.integer("Cue number from captions_list"), "text": Schema.string("Translated text; \"\" removes")], required: ["id", "text"]), "Your translation of these cues"),
+            "file": Schema.string("An .srt or .vtt in that language to import"),
+            "clear": Schema.bool("Remove this language's translations"),
+        ], required: ["language"])) { [unowned self] args in
+            let b = try session.requireBundle()
+            let lang = Project.languageTag(try args.string("language"))
+            let p0 = try session.project()
+            let transcripts = b.transcripts(for: p0)
+            let cues = p0.captionCues(transcripts: transcripts)
+            if args.bool("clear", default: false) {
+                _ = try session.edit("Remove \(lang) captions") { p in
+                    p.captions.translations[lang] = nil
+                    if p.captions.language == lang { p.captions.language = nil }
+                }
+                return .text("Removed the \(lang) translation.")
+            }
+            guard !cues.isEmpty else { throw EditError("No caption cues to translate: the timeline has no transcribed speech on its caption tracks") }
+            var texts: [Int: String] = [:]
+            let how: String
+            if let list = args.raw["cues"]?.array {
+                for item in list {
+                    guard let id = item["id"]?.double.map({ Int($0) }) else { throw EditError("Each cue needs id and text") }
+                    texts[id] = item["text"]?.string ?? ""
+                }
+                how = "from your text"
+            } else if let path = args.optString("file") {
+                let url = session.resolve(path)
+                guard let raw = try? String(contentsOf: url, encoding: .utf8) else { throw EditError("Cannot read \(url.path)") }
+                let parsed = Project.parseSubtitles(raw)
+                guard !parsed.isEmpty else { throw EditError("\(url.lastPathComponent) has no SRT or VTT cues") }
+                texts = p0.translationTexts(from: parsed, transcripts: transcripts)
+                how = "from \(url.lastPathComponent) (\(parsed.count) cues matched by time)"
+            } else {
+                let source = p0.spokenLanguage(transcripts: transcripts)
+                let out = try await Translator.translate(cues.map(\.text), from: source, to: lang)
+                texts = Dictionary(uniqueKeysWithValues: out.enumerated().map { ($0.offset, $0.element) })
+                how = "on-device (\(source)→\(lang))"
+            }
+            var stored = 0
+            let p = try session.edit("Translate captions to \(lang)") { p in stored = try p.setCaptionTranslations(lang, texts: texts, transcripts: transcripts) }
+            let now = p.cueTranslations(lang, cues: cues).texts
+            let missing = now.indices.filter { now[$0] == nil }
+            var lines = ["\(lang): \(stored) cue(s) translated \(how); \(cues.count - missing.count)/\(cues.count) cues have \(lang) text" + (missing.isEmpty ? "." : " (untranslated #" + missing.prefix(10).map(String.init).joined(separator: ", #") + ").")]
+            for i in now.indices.prefix(3) { lines.append("#\(i) \(cues[i].text) → \(now[i] ?? "—")") }
+            lines.append("Export with subtitle_languages:[\"\(lang)\"]; review with captions_list language:\"\(lang)\".")
+            try? session.sendPreview(["action": "rebuild"])
+            return .text(lines.joined(separator: "\n"))
         })
 
         add(Tool(name: "transcript_edit", description: "Correct a media file's transcript and who speaks: replace misheard words (from/to + text), add missed words (insert), set the speaker of words (from/to + speaker) or rename speakers everywhere (rename {\"S1\": \"Anna\"}). Captions, subtitles, timeline_transcript and speaker-based recipes use the corrected transcript. Replacing words with a different number of words shifts later word ids; the result says by how much.", schema: Schema.object([
@@ -150,11 +219,20 @@ extension Toolbox {
             guard !report.isEmpty else { throw EditError("Pass text, insert, speaker or rename") }
             try b.saveTranscript(t)
             if let speakers { try b.saveAnalysis(speakers, id, "speakers") }
-            if let shift, try session.project().captions.edits.contains(where: { $0.mediaId == id && $0.toWord > shift.after }) {
+            func moved(_ anchor: String) -> String {
+                guard let (m, n) = Project.parseWordAnchor(anchor), m == id, let shift, n > shift.after else { return anchor }
+                return "\(m).w\(n + shift.by)"
+            }
+            let project = try session.project()
+            let translationsMove = project.captions.translations.values.joined().contains { moved($0.from) != $0.from || moved($0.to) != $0.to }
+            if let shift, translationsMove || project.captions.edits.contains(where: { $0.mediaId == id && $0.toWord > shift.after }) {
                 _ = try session.edit("Follow transcript word ids") { p in
                     for i in p.captions.edits.indices where p.captions.edits[i].mediaId == id {
                         if p.captions.edits[i].fromWord > shift.after { p.captions.edits[i].fromWord += shift.by }
                         if p.captions.edits[i].toWord > shift.after { p.captions.edits[i].toWord += shift.by }
+                    }
+                    for (lang, list) in p.captions.translations {
+                        p.captions.translations[lang] = list.map { CaptionTranslation(from: moved($0.from), to: moved($0.to), text: $0.text) }
                     }
                 }
             }

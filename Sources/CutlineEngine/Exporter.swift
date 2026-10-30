@@ -146,6 +146,21 @@ public struct TimedText: Sendable {
     }
 }
 
+/// A subtitle track in one language.
+public struct SubtitleTrack: Sendable {
+    /// BCP 47 tag, e.g. "fr" or "pt-BR".
+    public var language: String
+    public var cues: [TimedText]
+    /// Every cue is forced: players show it even with subtitles off.
+    public var forced: Bool
+
+    public init(language: String, cues: [TimedText], forced: Bool = false) {
+        self.language = language
+        self.cues = cues
+        self.forced = forced
+    }
+}
+
 public struct ExportOptions: Sendable {
     public var preset: ExportPreset
     /// Megabits per second; nil picks a high-quality default. Ignored for ProRes.
@@ -177,6 +192,10 @@ public struct ExportOptions: Sendable {
     public var audioTracksReport: AudioTracks.Report?
     /// Dialogue spans (timeline time) a dialogue-gated master loudness target is measured over.
     public var loudnessGate: [TimeRange]?
+    /// Subtitle tracks after `subtitles` (other languages). All subtitle tracks form one alternate group.
+    public var subtitleTracks: [SubtitleTrack] = []
+    /// Language of the subtitle track players pick by default; nil is the first.
+    public var defaultSubtitleLanguage: String?
 
     public init(preset: ExportPreset = .hevc, bitrateMbps: Double? = nil, range: TimeRange? = nil, subtitles: [TimedText] = [], subtitleLanguage: String = "en", chapters: [TimedText] = [], closedCaptions: [TimedText] = [], audioKbps: Int = 256, timecodeStart: String? = nil, leader: Leader? = nil) {
         self.preset = preset
@@ -391,20 +410,34 @@ public enum Exporter {
                 return e > s ? TimedText(start: s - offset.seconds + lead, end: e - offset.seconds + lead, text: c.text) : nil
             }
         }
-        let textInputs = try [(options.subtitles, AVMediaType.subtitle), (options.chapters, AVMediaType.text)].compactMap { cues, type -> (AVAssetWriterInput, [TimedText])? in
-            let shifted = inRange(cues)
-            guard !shifted.isEmpty else { return nil }
-            let input = AVAssetWriterInput(mediaType: type, outputSettings: nil, sourceFormatHint: try TextTrack.formatDescription(type))
+        let subtitleTracks = (options.subtitles.isEmpty ? [] : [SubtitleTrack(language: options.subtitleLanguage, cues: options.subtitles)]) + options.subtitleTracks
+        let defaultSubtitle = subtitleTracks.firstIndex { $0.language == options.defaultSubtitleLanguage } ?? 0
+        var textInputs: [(AVAssetWriterInput, [TimedText], Bool)] = []
+        for (i, track) in subtitleTracks.enumerated() {
+            let shifted = inRange(track.cues)
+            guard !shifted.isEmpty else { continue }
+            let input = AVAssetWriterInput(mediaType: .subtitle, outputSettings: nil, sourceFormatHint: try TextTrack.formatDescription(.subtitle, forced: track.forced))
             input.expectsMediaDataInRealTime = false
-            if type == .subtitle {
-                input.languageCode = options.subtitleLanguage
-                input.extendedLanguageTag = options.subtitleLanguage
-            } else {
-                input.marksOutputTrackAsEnabled = false
-            }
-            guard writer.canAdd(input) else { return nil }
+            input.languageCode = TextTrack.iso639(track.language)
+            input.extendedLanguageTag = track.language
+            input.marksOutputTrackAsEnabled = i == defaultSubtitle
+            guard writer.canAdd(input) else { continue }
             writer.add(input)
-            return (input, shifted)
+            textInputs.append((input, shifted, track.forced))
+        }
+        if textInputs.count > 1 {
+            let group = AVAssetWriterInputGroup(inputs: textInputs.map(\.0), defaultInput: textInputs.first { $0.0.marksOutputTrackAsEnabled }?.0)
+            if writer.canAdd(group) { writer.add(group) }
+        }
+        let chapterCues = inRange(options.chapters)
+        if !chapterCues.isEmpty {
+            let input = AVAssetWriterInput(mediaType: .text, outputSettings: nil, sourceFormatHint: try TextTrack.formatDescription(.text))
+            input.expectsMediaDataInRealTime = false
+            input.marksOutputTrackAsEnabled = false
+            if writer.canAdd(input) {
+                writer.add(input)
+                textInputs.append((input, chapterCues, false))
+            }
         }
         if let chapters = textInputs.first(where: { $0.0.mediaType == .text })?.0, videoIn.canAddTrackAssociation(withTrackOf: chapters, type: AVAssetTrack.AssociationType.chapterList.rawValue) {
             videoIn.addTrackAssociation(withTrackOf: chapters, type: AVAssetTrack.AssociationType.chapterList.rawValue)
@@ -454,8 +487,8 @@ public enum Exporter {
         }
         // Fed together so the writer can interleave every track while the video is being rendered.
         try await withThrowingTaskGroup(of: Void.self) { group in
-            for (input, cues) in textInputs {
-                group.addTask { try await TextTrack.write(cues, to: input, duration: total + lead) }
+            for (input, cues, forced) in textInputs {
+                group.addTask { try await TextTrack.write(cues, to: input, duration: total + lead, forced: forced) }
             }
             if let (input, cues) = captionInput {
                 group.addTask { try await CEA608.write(cues, to: input, fps: fps, duration: total + lead) }
@@ -585,12 +618,17 @@ public enum Exporter {
 
 /// 3GPP timed text (tx3g) samples, the format MP4 and QuickTime use for subtitles and chapter names.
 enum TextTrack {
-    static func formatDescription(_ type: AVMediaType) throws -> CMFormatDescription {
+    /// ISO 639-2/T code ("fra") for a BCP 47 tag ("fr-CA"), as QuickTime track languages need.
+    static func iso639(_ tag: String) -> String {
+        Locale.Language(identifier: tag).languageCode?.identifier(.alpha3) ?? tag
+    }
+
+    static func formatDescription(_ type: AVMediaType, forced: Bool = false) throws -> CMFormatDescription {
         let color: (Int) -> [String: Any] = { v in
             [kCMTextFormatDescriptionColor_Red as String: v, kCMTextFormatDescriptionColor_Green as String: v, kCMTextFormatDescriptionColor_Blue as String: v, kCMTextFormatDescriptionColor_Alpha as String: 255]
         }
         let extensions: [String: Any] = [
-            kCMTextFormatDescriptionExtension_DisplayFlags as String: 0,
+            kCMTextFormatDescriptionExtension_DisplayFlags as String: forced ? kCMTextDisplayFlag_allSubtitlesForced : 0,
             kCMTextFormatDescriptionExtension_BackgroundColor as String: [kCMTextFormatDescriptionColor_Red as String: 0, kCMTextFormatDescriptionColor_Green as String: 0, kCMTextFormatDescriptionColor_Blue as String: 0, kCMTextFormatDescriptionColor_Alpha as String: 0],
             kCMTextFormatDescriptionExtension_DefaultTextBox as String: [kCMTextFormatDescriptionRect_Top as String: 0, kCMTextFormatDescriptionRect_Left as String: 0, kCMTextFormatDescriptionRect_Bottom as String: 0, kCMTextFormatDescriptionRect_Right as String: 0],
             kCMTextFormatDescriptionExtension_DefaultStyle as String: [
@@ -610,8 +648,8 @@ enum TextTrack {
     }
 
     /// Writes cues with empty samples filling the gaps so the track spans the whole timeline.
-    static func write(_ cues: [TimedText], to input: AVAssetWriterInput, duration: Seconds) async throws {
-        let fd = try formatDescription(input.mediaType)
+    static func write(_ cues: [TimedText], to input: AVAssetWriterInput, duration: Seconds, forced: Bool = false) async throws {
+        let fd = try formatDescription(input.mediaType, forced: forced)
         var spans: [(Seconds, Seconds, String)] = []
         var t = 0.0
         for c in cues.sorted(by: { $0.start < $1.start }) where c.end > t {

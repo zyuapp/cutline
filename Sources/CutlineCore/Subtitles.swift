@@ -50,9 +50,10 @@ extension Project {
     /// Subtitles for the words heard on the timeline, with the caption replacements and hidden words applied.
     /// With `range`, only cues inside it, clipped to it and timed from its start.
     /// `offset` delays every cue, e.g. by a leader before the program, so times count from the file's first frame.
-    public func subtitles(_ format: SubtitleFormat, transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil, offset: Seconds = 0) -> String {
+    /// `language` picks a translation (`captions.translations`); nil is the spoken language.
+    public func subtitles(_ format: SubtitleFormat, transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil, offset: Seconds = 0, language: String? = nil) -> String {
         let shift = Self.ms(offset)
-        let cues = subtitleCues(transcripts: transcripts, maxCharsPerLine: maxCharsPerLine, maxLines: maxLines, range: range)
+        let cues = subtitleCues(transcripts: transcripts, maxCharsPerLine: maxCharsPerLine, maxLines: maxLines, range: range, language: language)
             .map { SubtitleCue(startMs: $0.startMs + shift, endMs: $0.endMs + shift, lines: $0.lines) }
         switch format {
         case .srt:
@@ -70,12 +71,24 @@ extension Project {
 
     /// The shared `captionCues`, each wrapped to `maxCharsPerLine`. A cue that needs more than `maxLines` lines at that
     /// width is split into the fewest consecutive cues that fit, with their characters evened out; otherwise cue
-    /// boundaries and timing are the shared ones.
-    public func subtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil) -> [SubtitleCue] {
+    /// boundaries and timing are the shared ones. In a translation (`language`) the translated text is wrapped the
+    /// same way, and a cue too long for its lines is split within its own time.
+    public func subtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil, language: String? = nil) -> [SubtitleCue] {
         let width = max(1, maxCharsPerLine), rows = max(1, maxLines)
-        let shared = captionCues(transcripts: transcripts)
+        let shared = captionCues(transcripts: transcripts, language: language)
         var cues: [SubtitleCue]
-        if shared.allSatisfy({ Self.fits($0.words, width: width, lines: rows) }) {
+        if let language, captions.translations[Self.languageTag(language)] != nil {
+            cues = shared.flatMap { c -> [SubtitleCue] in
+                let parts = Self.splitToFit(c.words, width: width, lines: rows)
+                let total = Double(max(1, parts.reduce(0) { $0 + $1.map(\.text).joined(separator: " ").count }))
+                var at = Double(c.startMs)
+                return parts.map { g in
+                    let d = Double(c.endMs - c.startMs) * Double(g.map(\.text).joined(separator: " ").count) / total
+                    defer { at += d }
+                    return SubtitleCue(startMs: Int(at.rounded()), endMs: Int((at + d).rounded()), lines: Self.balancedLines(g.map(\.text), width: width), anchors: g.compactMap(\.anchor))
+                }
+            }
+        } else if shared.allSatisfy({ Self.fits($0.words, width: width, lines: rows) }) {
             cues = shared.map { SubtitleCue(startMs: $0.startMs, endMs: $0.endMs, lines: Self.balancedLines($0.words.map(\.text), width: width), anchors: $0.words.compactMap(\.anchor)) }
         } else {
             let groups = shared.flatMap { Self.splitToFit($0.words, width: width, lines: rows) }

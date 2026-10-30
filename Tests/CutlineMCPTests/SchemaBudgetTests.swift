@@ -5,7 +5,7 @@ import Foundation
 import Testing
 
 /// tools/list as the client receives it. Before the briefs it was 69,434 bytes (≈17.4k tokens).
-private let budget = 40_000
+private let budget = 42_000
 
 @Test func toolSchemasStayWithinTheirBudget() {
     let box = Toolbox()

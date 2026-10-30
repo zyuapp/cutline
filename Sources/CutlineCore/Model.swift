@@ -212,6 +212,8 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     /// The source channel(s) transcription, speakers, beats, sounds and sync listen to; nil picks the first track,
     /// or for multichannel files every channel with sound.
     public var analysisChannel: ChannelRouting?
+    /// Names and terms transcription should spell this way.
+    public var vocabulary: [String]?
     /// Camera RAW source: format, as-shot metadata and the media's own development settings. For video `path` is then
     /// the developed picture (encoded in `CameraRaw.workingLog`); for stills it is the raw file.
     public var raw: RawMedia?
@@ -1002,17 +1004,23 @@ public struct Captions: Codable, Equatable, Sendable {
     public var edits: [CaptionEdit]
     /// Platform whose UI-free area the captions stay inside (`Platform.id`), or "none"; nil picks one from the canvas.
     public var platform: String?
+    /// Translated cue text by language tag ("fr", "pt-BR"), keyed by the source words each cue covers.
+    public var translations: [String: [CaptionTranslation]]
+    /// The language burned-in captions show; nil is the spoken language.
+    public var language: String?
 
-    public init(enabled: Bool = false, style: CaptionStyle = CaptionStyle(), replacements: [String: String] = [:], hiddenWords: [String] = [], trackIds: [String] = [], edits: [CaptionEdit] = []) {
+    public init(enabled: Bool = false, style: CaptionStyle = CaptionStyle(), replacements: [String: String] = [:], hiddenWords: [String] = [], trackIds: [String] = [], edits: [CaptionEdit] = [], translations: [String: [CaptionTranslation]] = [:], language: String? = nil) {
         self.enabled = enabled
         self.style = style
         self.replacements = replacements
         self.hiddenWords = hiddenWords
         self.trackIds = trackIds
         self.edits = edits
+        self.translations = translations
+        self.language = language
     }
 
-    enum CodingKeys: String, CodingKey { case enabled, style, replacements, hiddenWords, trackIds, edits, platform }
+    enum CodingKeys: String, CodingKey { case enabled, style, replacements, hiddenWords, trackIds, edits, platform, translations, language }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1023,6 +1031,34 @@ public struct Captions: Codable, Equatable, Sendable {
         trackIds = try c.decodeIfPresent([String].self, forKey: .trackIds) ?? []
         edits = try c.decodeIfPresent([CaptionEdit].self, forKey: .edits) ?? []
         platform = try c.decodeIfPresent(String.self, forKey: .platform)
+        translations = try c.decodeIfPresent([String: [CaptionTranslation]].self, forKey: .translations) ?? [:]
+        language = try c.decodeIfPresent(String.self, forKey: .language)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(style, forKey: .style)
+        try c.encode(replacements, forKey: .replacements)
+        try c.encode(hiddenWords, forKey: .hiddenWords)
+        try c.encode(trackIds, forKey: .trackIds)
+        try c.encode(edits, forKey: .edits)
+        if !translations.isEmpty { try c.encode(translations, forKey: .translations) }
+        try c.encodeIfPresent(language, forKey: .language)
+        try c.encodeIfPresent(platform, forKey: .platform)
+    }
+}
+
+/// One cue's text in another language, keyed by the first and last source word it translates ("<media>.wN").
+public struct CaptionTranslation: Codable, Equatable, Sendable {
+    public var from: String
+    public var to: String
+    public var text: String
+
+    public init(from: String, to: String, text: String) {
+        self.from = from
+        self.to = to
+        self.text = text
     }
 }
 

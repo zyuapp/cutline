@@ -58,11 +58,11 @@ extension Toolbox {
             "media_id": "Id, ids or \"all\"",
             "features": "Default all the media allows",
             "channel": "Channel(s) analysis listens to: \"ch3\", \"ch3+ch4\", \"mix:1,3\", auto",
-            "background": "Return at once", "language": "Default en-US",
+            "background": "Return at once", "language": "Default en-US", "vocabulary": "Names/terms to spell; kept",
         ], hide: ["log", "signal_range"]),
         "media_remove": ToolBrief(text: "Remove unused media.", args: ["media_id": ""]),
-        "media_transcript": ToolBrief(text: "What a media file says, in SOURCE time with word ids (for source_cut, assemble, source_in/out); fillers *um*, pauses ≥0.4 s.", args: [
-            "media_id": "", "start": "Source time", "end": "Source time", "words": "Every word with its time",
+        "media_transcript": ToolBrief(text: "What a media file says, in SOURCE time with word ids (for source_cut, assemble, source_in/out); fillers *um*, unsure [word?], pauses ≥0.4 s.", args: [
+            "media_id": "", "start": "Source time", "end": "Source time", "words": "Every word with its time", "low_confidence": "Only unsure words",
         ]),
         "media_frames": ToolBrief(text: "Contact sheet of source frames from one media file.", args: [
             "media_id": "", "times": "Source times", "count": "Default 8, max 24", "start": "", "end": "",
@@ -142,6 +142,7 @@ extension Toolbox {
             "uppercase": "", "y": "Center, default 0.82", "max_width": "", "max_words_per_line": "", "max_lines": "Lines at once; longer cues page",
             "replacements": "{\"cut line\": \"Cutline\"}; \"\" deletes", "hidden_words": "Never captioned", "track_ids": "Default the dialogue tracks",
             "platform": "Stay inside its UI-free area: id, auto (9:16 canvas) or none",
+            "language": "Burn in a translation",
         ]),
         "markers": ToolBrief(text: "Timeline markers (anchors \"marker:<label>\"), or with media_id keyword/rating tags on source ranges.", args: [
             "add": "[{time, end, label, kind, color, note, rating}]", "add[].color": "", "add[].end": "", "add[].kind": "", "add[].label": "",
@@ -149,7 +150,7 @@ extension Toolbox {
             "update": "[{id, label, kind, note}]", "update[].id": "Id or label", "update[].kind": "", "update[].label": "", "update[].note": "",
             "remove": "Ids or labels", "remove_all": "", "media_id": "Tag this media's source ranges",
         ]),
-        "param_set": ToolBrief(text: "Set or animate any parameter by path (transform.*, blend, fade.*, audio.volume/channels/pan_*, text.*, fx.<id>.<param>) or bind it to analysis. Keys [time, value, ease?] in timeline time or anchors; eases in catalog. project_status target=<clip> lists paths.", args: [
+        "param_set": ToolBrief(text: "Set, animate ([time, value, ease?] keys) or bind any parameter by path (transform.*, audio.*, text.*, fx.<id>.<param>…); project_status target=<clip> lists paths.", args: [
             "target": "Clip, track, \"V1/*\", \"group:<id>\", \"master\" or a list",
             "set": "{path: value}", "animate": "{path: [[time, value, ease?], …]}; replaces that path's keys",
             "unset": "Paths to reset", "relative": "Key times from each clip's start",
@@ -160,7 +161,7 @@ extension Toolbox {
             "type": "Effect type (catalog)", "params": "", "id": "Default from type, e.g. vignette1", "index": "Stack position, 0 first",
             "mix": "0…1", "enabled": "", "remove": "Remove this id (or every effect of type)", "scope": "shot: only the shot at at", "at": "",
         ]),
-        "catalog": ToolBrief(text: "Reference: no arguments lists effects, transitions, blends, eases, paths and anchors. type: one effect; search; paths; recipe: a recipe's arguments; tool: a tool's full manual; plugins: Audio Units.", args: [
+        "catalog": ToolBrief(text: "Reference: effects, transitions, eases, paths, anchors; type, search, recipe or tool for details; plugins lists Audio Units.", args: [
             "type": "Effect, transition or raw", "search": "", "paths": "", "recipe": "Name or \"all\"", "plugins": "", "tool": "Tool name",
         ]),
         "transition_set": ToolBrief(text: "Add, change or remove transitions on cuts (borrowing handles), or in/out over what lies beneath. Types in catalog; part sound/both crossfades audio.", args: [
@@ -190,7 +191,7 @@ extension Toolbox {
             "media_id": "Omit for the timeline", "what": "Default summary", "start": "", "end": "",
             "wait": "Seconds to wait for running analysis (≤600)", "start_missing": "Start analysis that never ran",
         ]),
-        "export": ToolBrief(text: "Render the timeline (default HEVC .mp4 in <project>/exports). platform picks the codec and checks shape, length, loudness, true peak and UI-safe text; strict refuses on failures. Also subtitles, chapters, captions, interchange files, stems, stills, archive, variants. catalog tool=export explains every option.", args: [
+        "export": ToolBrief(text: "Render the timeline (default HEVC .mp4 in <project>/exports); platform picks the codec and checks the spec. Also subtitles, captions, interchange, stems, stills, variants; catalog tool=export for all options.", args: [
             "path": "", "platform": "", "strict": "Refuse to export when the platform check fails", "check_only": "Only run the platform checks",
             "hdr": "PQ HDR10 metadata; MaxCLL/FALL measured if omitted",
             "hdr.mastering": "", "hdr.max_nits": "", "hdr.min_nits": "", "hdr.max_cll": "", "hdr.max_fall": "",
@@ -199,7 +200,7 @@ extension Toolbox {
             "deliver": "Default video; stems is one file per audio role", "audio_format": "", "downmix": "", "image_format": "", "times": "For stills",
             "interlaced": "1080i master: tff or bff", "leader": "Bars, slate, 2-pop: true or {bars, slate, black, pop, version}",
             "leader.bars": "", "leader.black": "", "leader.pop": "", "leader.slate": "", "leader.version": "",
-            "timecode_start": "\"hh:mm:ss:ff\" of the program", "subtitles": "Soft subtitles from the transcripts, default none", "subtitle_formats": "srt, vtt, ttml, imsc, ebu-tt-d",
+            "timecode_start": "\"hh:mm:ss:ff\" of the program", "subtitles": "Soft subtitles from the transcripts, default none", "subtitle_formats": "srt, vtt, ttml, imsc, ebu-tt-d", "subtitle_languages": "Translations too", "subtitle_default": "", "subtitle_forced": "",
             "subtitle_position": "", "subtitle_speakers": "Color speakers in TTML", "closed_captions": "CEA-608 plus .scc",
             "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml (+ .notes.txt)", "render_graphics": "Bake generators", "bake_luts": "Grades as .cube", "trim": "For archive: used parts only",
             "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported after the base, then undone", "base": "With variants: render this export too, default true",
@@ -219,8 +220,11 @@ extension Toolbox {
         ]),
         "comment_reply": ToolBrief(text: "Reply to a comment and resolve it.", args: ["comment_id": "", "text": "", "resolve": "Default true"]),
         "comment_add": ToolBrief(text: "Leave the human a note at a timeline time.", args: ["text": "", "at": ""]),
-        "captions_list": ToolBrief(text: "Caption cues with times, text and source words (\"<media>.wN\" for caption_edit), captioned tracks and overlapping speech.", args: [
-            "start": "", "end": "",
+        "captions_list": ToolBrief(text: "Caption cues with times, text ([word?] unsure) and source words (\"<media>.wN\" for caption_edit), captioned tracks, overlapping speech, translations.", args: [
+            "start": "", "end": "", "language": "Show this translation",
+        ]),
+        "captions_translate": ToolBrief(text: "Translate caption cues (on-device, or your cues/.srt) for subtitles in other languages; follows edits.", args: [
+            "language": "e.g. fr", "cues": "[{id, text}] your own", "cues[].id": "", "cues[].text": "", "file": ".srt/.vtt to import", "clear": "",
         ]),
         "caption_edit": ToolBrief(text: "Fix one caption cue (by at or from/to words): text, timing, hide, break_before, merge with the next, or clear edits.", args: [
             "at": "Time inside the cue", "from": "\"<media>.wN\"", "to": "Default from", "text": "", "start_offset": "", "end_offset": "",

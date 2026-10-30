@@ -495,6 +495,7 @@ extension Toolbox {
             "hidden_words": Schema.strings("Words never captioned, e.g. fillers you kept in the audio"),
             "track_ids": Schema.strings("Only caption speech from these tracks"),
             "platform": Schema.string("Keep captions inside this platform's UI-free area (y and max_width are pulled in as needed): a platform id, auto (default: on a 9:16 canvas the area clear of TikTok, Reels and Shorts UI) or none"),
+            "language": Schema.string("Burn in this translation (captions_translate) instead of the spoken words; \"\" for the spoken language. Cue times stay; words are spread over each cue"),
         ]), label: { a, _ in a.bool("enabled", default: true) ? (a.optString("preset").map { "Captions: \($0) style" } ?? "Restyle captions") : "Turn off captions" }) { p, args in
             var c = p.captions
             c.enabled = args.bool("enabled", default: true)
@@ -526,6 +527,11 @@ extension Toolbox {
                 guard v == "none" || v == "auto" || Platform.named(v) != nil else { throw EditError("platform is a platform id (\(Platform.all.map(\.id).joined(separator: ", "))), auto or none") }
                 c.platform = v == "auto" ? nil : v
             }
+            if let v = args.optString("language") {
+                let tag = Project.languageTag(v)
+                guard tag.isEmpty || c.translations[tag] != nil else { throw EditError("No \(tag) translation yet; run captions_translate language:\"\(tag)\" first" + (c.translations.isEmpty ? "" : " (translated: \(c.translations.keys.sorted().joined(separator: ", ")))")) }
+                c.language = tag.isEmpty ? nil : tag
+            }
             p.captions = c
             guard c.enabled else { return "Captions off" }
             let shown = p.captionStyle
@@ -533,7 +539,7 @@ extension Toolbox {
             if let area = p.captionSafeArea {
                 text += shown == s ? ", inside \(area.name)" : "; kept inside \(area.name)" + (shown.y != s.y ? ": y \(fmt2(s.y))→\(fmt2(shown.y))" : ":") + (shown.maxWidth != s.maxWidth ? " max_width \(fmt2(s.maxWidth))→\(fmt2(shown.maxWidth))" : "") + (shown.x.map { " x \(fmt2($0))" } ?? "") + "; platform:\"none\" places them exactly as set"
             }
-            return text + ")"
+            return text + (c.language.map { ", in \($0)" } ?? "") + ")"
         })
 
         addEdit(EditTool(name: "markers", description: "Timeline markers (chapters, to-dos, notes; labels work as anchors \"marker:<label>\") and, with media_id, source tags on footage: keyword ranges plus favorite/reject ratings, like Final Cut's keywords. Tags show in analysis_read and help pick takes.", schema: Schema.object([

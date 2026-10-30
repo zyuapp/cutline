@@ -32,6 +32,8 @@ public struct TimedTextOptions: Sendable {
     /// Colors each speaker's lines differently (and names them as TTML agents outside EBU-TT-D).
     public var speakerColors = false
     public var language = "en"
+    /// The translation the text comes from (`captions.translations`); nil is the spoken language.
+    public var translation: String?
     /// Rows and columns of the cell grid font sizes are measured in.
     public var cellResolution = (columns: 32, rows: 15)
 
@@ -46,7 +48,7 @@ extension Project {
     /// (`subtitleCues`). With `range`, only cues inside it, timed from its start. `speaker` names the speaker of a
     /// transcript word anchor ("<media>.w<index>"); each cue takes its words' most common speaker.
     public func timedText(_ format: TimedTextFormat, transcripts: [String: Transcript], range: TimeRange? = nil, options o: TimedTextOptions = TimedTextOptions(), speaker: ((String) -> String?)? = nil) -> String {
-        let cues = subtitleCues(transcripts: transcripts, range: range)
+        let cues = subtitleCues(transcripts: transcripts, range: range, language: o.translation)
         let ebu = format == .ebuttd
         let cueSpeakers: [String?] = cues.map { c in
             guard o.speakerColors, let speaker else { return nil }
