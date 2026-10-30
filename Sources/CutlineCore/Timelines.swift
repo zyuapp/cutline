@@ -70,3 +70,46 @@ extension Project {
         timelines.remove(at: i)
     }
 }
+
+extension Project {
+    /// Adds another project's timeline (an imported EDL, FCPXML, OTIO or XML) as a new timeline and makes it current.
+    /// Its media are matched to this project's by file path, so clips point at media already here; the rest are added.
+    @discardableResult
+    public mutating func adoptTimeline(_ other: Project, name: String) throws -> (matched: Int, added: Int) {
+        var rename: [String: String] = [:]
+        var matched = 0, added = 0
+        for m in other.media {
+            if let same = media.first(where: { $0.path == m.path }) ?? media.first(where: { $0.id == m.id && $0.name == m.name }) {
+                rename[m.id] = same.id
+                matched += 1
+            } else {
+                var copy = m
+                var n = 2
+                while media.contains(where: { $0.id == copy.id }) { copy.id = "\(m.id)-\(n)"; n += 1 }
+                rename[m.id] = copy.id
+                media.append(copy)
+                added += 1
+            }
+        }
+        func remap(_ tracks: [Track]) -> [Track] {
+            tracks.map { t in
+                var t = t
+                for i in t.clips.indices { if let id = t.clips[i].mediaId { t.clips[i].mediaId = rename[id] ?? id } }
+                return t
+            }
+        }
+        try newTimeline(name, duplicate: false)
+        canvas = other.canvas
+        tracks = remap(other.tracks)
+        transitions = other.transitions
+        markers = other.markers
+        captions = other.captions
+        master = other.master
+        for s in other.sequences where !sequences.contains(where: { $0.id == s.id }) {
+            var s = s
+            s.tracks = remap(s.tracks)
+            sequences.append(s)
+        }
+        return (matched, added)
+    }
+}

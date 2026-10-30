@@ -29,3 +29,19 @@ import Testing
     let data = try JSONEncoder().encode(p)
     #expect(try JSONDecoder().decode(Project.self, from: data) == p)
 }
+
+@Test func adoptedTimelinesReuseMatchingMedia() throws {
+    var p = Project(name: "Show")
+    p.media = [MediaAsset(id: "a", path: "/x/a.mov", name: "a", duration: 9, width: 1920, height: 1080, fps: 25, hasVideo: true, hasAudio: true)]
+    var other = Project(name: "Offline")
+    other.media = [
+        MediaAsset(id: "a-cam", path: "/x/a.mov", name: "A cam", duration: 9, width: 1920, height: 1080, fps: 25, hasVideo: true, hasAudio: true),
+        MediaAsset(id: "a", path: "/y/other.mov", name: "other", duration: 9, width: 1920, height: 1080, fps: 25, hasVideo: true, hasAudio: true),
+    ]
+    other.tracks[0].clips = [Clip(id: "c1", kind: .media, mediaId: "a-cam", start: 0, duration: 2), Clip(id: "c2", kind: .media, mediaId: "a", start: 2, duration: 2)]
+    let counts = try p.adoptTimeline(other, name: "Offline cut")
+    #expect(counts.matched == 1 && counts.added == 1)
+    #expect(p.currentTimelineName == "Offline cut" && p.timelines.map(\.name) == ["Main"])
+    #expect(p.tracks[0].clips.map(\.mediaId) == ["a", "a-2"])
+    #expect(p.mediaAsset("a-2")?.path == "/y/other.mov")
+}

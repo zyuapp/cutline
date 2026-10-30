@@ -76,6 +76,17 @@ extension Toolbox {
                 throw EditError("check_only needs a platform")
             }
 
+            if let target = args.optString("path").map({ session.resolve($0) }), ["otio", "fcpxml", "edl", "xml"].contains(target.pathExtension.lowercased()) {
+                // A timeline file path writes just that file.
+                let p = try session.project()
+                switch target.pathExtension.lowercased() {
+                case "otio": try p.otio().write(to: target)
+                case "fcpxml": try p.fcpxml().write(to: target, atomically: true, encoding: .utf8)
+                case "edl": try p.edl(title: p.name).write(to: target, atomically: true, encoding: .utf8)
+                default: try p.xmeml().write(to: target, atomically: true, encoding: .utf8)
+                }
+                return .text("Wrote \(target.path) (timeline \(p.currentTimelineName), \(p.tracks.flatMap(\.clips).count) clips, \(fmt2(p.duration))s); no video rendered.")
+            }
             let built = try await session.timeline()
             let p = built.scene.project
             let container = try args.enumValue("container", Container.self)
