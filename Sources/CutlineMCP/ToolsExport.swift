@@ -13,6 +13,7 @@ extension Toolbox {
             "start": Schema.time("Export from this timeline time"),
             "end": Schema.time("Export until this timeline time"),
             "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (.srt and .vtt) or both", values: ["none", "embed", "sidecar", "both"]),
+            "closed_captions": Schema.bool("Embed CEA-608 closed captions (broadcast, Apple TV, platform ingest) and write an .scc file beside the video, from the transcripts"),
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
             "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
@@ -78,6 +79,14 @@ extension Toolbox {
                     report.append("Subtitles: \(base.lastPathComponent).srt and .vtt (\(cues.count) cues)")
                 }
             }
+            var closed: [TimedText] = []
+            if args.bool("closed_captions", default: false) {
+                closed = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 2).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
+                if closed.isEmpty { report.append("No transcribed speech, so no closed captions.") } else {
+                    try CEA608.scc(closed, fps: p.canvas.fps).write(to: base.appendingPathExtension("scc"), atomically: true, encoding: .utf8)
+                    report.append("Closed captions: \(closed.count) cues embedded (CEA-608, CC1) and \(base.lastPathComponent).scc")
+                }
+            }
             var chapters: [TimedText] = []
             if args.bool("chapters", default: p.markers.count >= 2) {
                 let list = p.chapters()
@@ -103,7 +112,8 @@ extension Toolbox {
             try? session.sendPreview(["action": "export", "state": "started", "path": url.path])
             let started = Date()
             let project = b.url.path
-            let options = ExportOptions(preset: preset, bitrateMbps: args.optDouble("bitrate_mbps"), range: range, subtitles: subs == "embed" || subs == "both" ? cues : [], chapters: chapters)
+            var options = ExportOptions(preset: preset, bitrateMbps: args.optDouble("bitrate_mbps"), range: range, subtitles: subs == "embed" || subs == "both" ? cues : [], chapters: chapters)
+            options.closedCaptions = closed
             try await Exporter.export(built, to: url, options: options) { fraction in
                 DistributedNotificationCenter.default().postNotificationName(PreviewControl.notification, object: nil, userInfo: ["action": "export", "state": "progress", "progress": fraction, "project": project], deliverImmediately: true)
             }
