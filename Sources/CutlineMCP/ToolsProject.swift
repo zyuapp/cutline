@@ -196,6 +196,7 @@ extension Toolbox {
         let base = file.deletingLastPathComponent()
         var result: ImportResult
         switch file.pathExtension.lowercased() {
+        case "xml" where String(decoding: data.prefix(4096), as: UTF8.self).contains("<xmeml"): result = try Importer.xmeml(data, relativeTo: base)
         case "fcpxml", "fcpxmld", "xml": result = try Importer.fcpxml(data, relativeTo: base)
         case "otio": result = try Importer.otio(data, relativeTo: base)
         case "edl":

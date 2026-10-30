@@ -16,7 +16,7 @@ let package = Package(
         .target(name: "CutlineMCP", dependencies: ["CutlineCore", "CutlineEngine"], swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(name: "cutline-mcp", dependencies: ["CutlineMCP"], swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(name: "Cutline", dependencies: ["CutlineCore", "CutlineEngine"], resources: [.copy("Fonts")], swiftSettings: [.swiftLanguageMode(.v5)]),
-        .testTarget(name: "CutlineCoreTests", dependencies: ["CutlineCore"], swiftSettings: [.swiftLanguageMode(.v5)]),
+        .testTarget(name: "CutlineCoreTests", dependencies: ["CutlineCore"], resources: [.copy("Fixtures")], swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "CutlineEngineTests", dependencies: ["CutlineEngine", "CutlineCore"], swiftSettings: [.swiftLanguageMode(.v5)]),
     ]
 )

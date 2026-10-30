@@ -134,6 +134,58 @@ private func markers(_ p: Project, fps: Double = 30) -> [String] {
     #expect(q.media.first { $0.id == "a" }?.path == "/tmp/cutline import/a.mov")
 }
 
+@Test func xmemlRoundTripKeepsTimingSpeedTitlesVolumeAndMarkers() throws {
+    let p = roundTripProject()
+    let xml = p.xmeml()
+    #expect(xml.hasPrefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n<xmeml version=\"5\">"))
+    #expect(xml.contains("<pathurl>file://localhost/tmp/cutline%20import/a.mov</pathurl>"))
+    #expect(xml.contains("<file id=\"file-a\"/>"))
+    #expect(xml.contains("<alignment>start</alignment>"))
+    #expect(xml.contains("<parameterid>speed</parameterid>") && xml.contains("<value>200</value>"))
+
+    let r = try Importer.xmeml(Data(xml.utf8), relativeTo: nil)
+    let q = r.project
+    #expect(r.warnings.isEmpty, "\(r.warnings)")
+    #expect(q.canvas.width == p.canvas.width && q.canvas.height == p.canvas.height && q.canvas.fps == p.canvas.fps)
+    #expect(q.name == "Round Trip")
+    // The sound of V1's clips folds back into them.
+    #expect(q.tracks.map(\.id) == ["V1", "V2", "A1"])
+    #expect(shapes(q.tracks[0]) == shapes(p.tracks[0]))
+    #expect(shapes(q.tracks[1]) == shapes(p.tracks[2]))
+    #expect(shapes(q.tracks[2]) == shapes(p.tracks[1]))
+    #expect(q.tracks[0].clips.map(\.volume) == [1, 1, 1] && q.tracks[2].clips[0].volume == 0.5)
+    #expect(q.media.map(\.id) == ["a", "b", "music"])
+    #expect(q.media.map(\.path) == p.media.map(\.path))
+    #expect(q.media.map(\.duration) == [20, 10, 30])
+    #expect(q.media.map(\.hasAudio) == [true, false, true] && q.media.map(\.hasVideo) == [true, true, false])
+    #expect(markers(q) == ["60 Hook", "255 Fast"])
+    let tr = try #require(q.transitions.first)
+    #expect(q.transitions.count == 1)
+    #expect(tr.from == q.tracks[0].clips[0].id && tr.to == q.tracks[0].clips[1].id)
+    #expect(tr.type == "dissolve" && tr.duration == 1 && tr.align == .start)
+    try q.validate()
+}
+
+@Test func xmemlRoundTripKeepsCenteredAndBlackTransitionWindows() throws {
+    var p = roundTripProject(align: .center)
+    p.transitions += [
+        Transition(id: "in", from: nil, to: "c1", type: "dissolve", duration: 0.5),
+        Transition(id: "out", from: "c3", to: nil, type: "dissolve", duration: 1),
+    ]
+    let xml = p.xmeml()
+    #expect(xml.contains("<alignment>start-black</alignment>") && xml.contains("<alignment>end-black</alignment>"))
+    #expect(xml.contains("<start>-1</start>") && xml.contains("<end>-1</end>"))
+
+    let q = try Importer.xmeml(Data(xml.utf8), relativeTo: nil).project
+    #expect(shapes(q.tracks[0]) == shapes(p.tracks[0]))
+    func windows(_ p: Project) -> [String] {
+        p.transitionWindows.map { "\($0.transition.from == nil ? "-" : "from") \($0.transition.to == nil ? "-" : "to") \(Int(($0.start * 30).rounded()))–\(Int(($0.end * 30).rounded()))" }.sorted()
+    }
+    #expect(windows(q) == windows(p))
+    #expect(windows(q) == ["- to 0–15", "from - 270–300", "from to 105–135"])
+    try q.validate()
+}
+
 @Test func edlMovesCenteredAndBlackTransitionsToTheirEdits() throws {
     var p = roundTripProject(align: .center)
     p.transitions += [
@@ -270,12 +322,16 @@ private let fcp11 = """
     let fps = 24000.0 / 1001
     #expect(p.name == "Rough Cut")
     #expect(p.canvas.fps == 23.976 && p.canvas.width == 1920 && p.canvas.height == 1080)
-    #expect(r.warnings == ["Keywords on A001_C003 not kept: interview, wide"])
+    #expect(r.warnings.isEmpty, "\(r.warnings)")
 
     #expect(p.media.map(\.id) == ["a001-c003", "b-roll-city", "music-bed"])
     #expect(p.media.map(\.path) == ["/Volumes/Footage/A001_C003.mov", "/tmp/fcp-fixture/Media/B-Roll City.mov", "/Users/editor/Music/bed.m4a"])
     #expect(r.missingMedia == p.media.map(\.path))
     #expect(abs(p.media[0].duration - 50.05) < 1e-9 && p.media[0].fps == 23.976 && p.media[0].hasAudio && p.media[0].hasVideo)
+    #expect(p.media[0].timecodeStart == 3600)
+    let tags = try #require(p.media[0].tags)
+    #expect(tags.map(\.label) == ["interview", "wide"])
+    #expect(tags.allSatisfy { abs($0.start - 240 / fps) < 1e-9 && abs($0.end - 360 / fps) < 1e-9 && $0.rating == nil })
     #expect(!p.media[1].hasAudio && p.media[1].width == 1920)
     #expect(!p.media[2].hasVideo && p.media[2].hasAudio && p.media[2].duration == 120)
 
@@ -388,6 +444,34 @@ private let fcpBare = """
     #expect(r.warnings.contains { $0.hasPrefix("Dropped transition tr2") })
 }
 
+@Test func fcpxmlEventClipsKeepKeywordsAndRatingsInSourceTime() throws {
+    let xml = """
+    <fcpxml version="1.9">
+        <resources>
+            <format id="r1" frameDuration="1/25s" width="1920" height="1080"/>
+            <asset id="r2" name="Take" src="file:///nowhere/take.mov" start="3600s" duration="30s" hasVideo="1" hasAudio="1" format="r1"/>
+        </resources>
+        <library>
+            <event name="Selects">
+                <asset-clip ref="r2" name="Take" start="3602s" duration="10s" format="r1">
+                    <keyword start="3604s" duration="2s" value="smile"/>
+                    <rating name="Best bit" start="3603s" duration="1s" value="favorite"/>
+                    <rating start="3610s" duration="2s" value="reject"/>
+                </asset-clip>
+            </event>
+        </library>
+    </fcpxml>
+    """
+    let r = try Importer.fcpxml(Data(xml.utf8), relativeTo: nil)
+    let p = r.project
+    #expect(p.name == "Selects" && p.canvas.fps == 25)
+    #expect(shapes(p.tracks[0], fps: 25) == [Shape(kind: .media, media: "take", start: 0, duration: 250, sourceIn: 50, speed: 1)])
+    let tags = try #require(p.media[0].tags)
+    #expect(tags.map { "\($0.label) \($0.start)–\($0.end) \($0.rating ?? "-")" } == ["Best bit 3.0–4.0 favorite", "smile 4.0–6.0 -", "reject 10.0–12.0 reject"])
+    #expect(p.media[0].timecodeStart == 3600)
+    try p.validate()
+}
+
 @Test func fcpxmlRejectsOtherDocuments() {
     #expect(throws: EditError.self) { try Importer.fcpxml(Data("not xml".utf8), relativeTo: nil) }
     #expect(throws: EditError.self) { try Importer.fcpxml(Data("<xmeml version=\"5\"/>".utf8), relativeTo: nil) }
@@ -448,12 +532,14 @@ private let resolveOTIO = """
     let r = try Importer.otio(Data(resolveOTIO.utf8), relativeTo: URL(fileURLWithPath: "/tmp/otio-fixture/", isDirectory: true))
     let p = r.project
     #expect(p.name == "Resolve Cut" && p.canvas.fps == 24)
-    #expect(r.warnings == ["Clip Missing has no media file; left as a gap"])
-    #expect(p.media.map(\.id) == ["a001", "b002", "music"])
-    #expect(p.media.map(\.path) == ["/Volumes/Media/A001.mov", "/tmp/otio-fixture/media/B002.mov", "/Volumes/Media/music.wav"])
-    #expect(p.media.map(\.hasAudio) == [true, false, true])
-    #expect(p.media.map(\.hasVideo) == [true, true, false])
-    #expect(p.media[0].duration == 100)
+    #expect(r.warnings.isEmpty, "\(r.warnings)")
+    // The clip without media stays, offline, as long as it's used.
+    #expect(p.media.map(\.id) == ["a001", "b002", "missing", "music"])
+    #expect(p.media.map(\.path) == ["/Volumes/Media/A001.mov", "/tmp/otio-fixture/media/B002.mov", "Missing", "/Volumes/Media/music.wav"])
+    #expect(p.media.map(\.hasAudio) == [true, false, false, true])
+    #expect(p.media.map(\.hasVideo) == [true, true, true, false])
+    #expect(p.media[0].duration == 100 && p.media[0].timecodeStart == 3600)
+    #expect(p.media[2].duration == 1)
     #expect(r.missingMedia.contains("Missing"))
 
     // The linked audio of A001 folds into its video clip; its emptied track goes away.
@@ -463,6 +549,7 @@ private let resolveOTIO = """
         Shape(kind: .media, media: "a001", start: 0, duration: 96, sourceIn: 48, speed: 1),
         Shape(kind: .media, media: "b002", start: 96, duration: 48, sourceIn: 240, speed: 0.5),
         Shape(kind: .sequence, media: "nest", start: 168, duration: 36, sourceIn: 12, speed: 1),
+        Shape(kind: .media, media: "missing", start: 204, duration: 24, sourceIn: 0, speed: 1),
     ])
     #expect(shapes(p.tracks[1], fps: 24) == [Shape(kind: .media, media: "music", start: 24, duration: 192, sourceIn: 0, speed: 1)])
     #expect(p.sequences.map(\.id) == ["nest"])
@@ -473,6 +560,38 @@ private let resolveOTIO = """
     #expect(t.type == "dissolve" && t.align == .center && t.duration == 1)
     #expect(t.from == p.tracks[0].clips[0].id && t.to == p.tracks[0].clips[1].id)
     #expect(markers(p, fps: 24) == ["12 Smile", "144 Act 2"])
+    try p.validate()
+}
+
+@Test func otioImageSequencesSolidsAndFreezeFrames() throws {
+    let json = """
+    {"OTIO_SCHEMA": "Timeline.1", "name": "Renders", "tracks": {"OTIO_SCHEMA": "Stack.1", "children": [
+        {"OTIO_SCHEMA": "Track.1", "name": "V", "kind": "Video", "children": [
+            {"OTIO_SCHEMA": "Clip.2", "name": "shot", "source_range": \(tr(1010, 24)), "active_media_reference_key": "DEFAULT_MEDIA",
+             "media_references": {"DEFAULT_MEDIA": {"OTIO_SCHEMA": "ImageSequenceReference.1", "target_url_base": "file:///renders/shot/",
+                "name_prefix": "shot.", "name_suffix": ".exr", "start_frame": 1001, "frame_step": 1, "rate": 24.0, "frame_zero_padding": 4,
+                "available_range": \(tr(1001, 48))}}},
+            {"OTIO_SCHEMA": "Clip.2", "name": "Red", "source_range": \(tr(0, 12)),
+             "media_references": {"DEFAULT_MEDIA": {"OTIO_SCHEMA": "GeneratorReference.1", "generator_kind": "SolidColor", "parameters": {"color": "#FF0000"}}}},
+            {"OTIO_SCHEMA": "Clip.2", "name": "hold", "source_range": \(tr(1020, 12)), "effects": [{"OTIO_SCHEMA": "FreezeFrame.1", "time_scalar": 0}],
+             "media_references": {"DEFAULT_MEDIA": {"OTIO_SCHEMA": "ImageSequenceReference.1", "target_url_base": "file:///renders/shot/",
+                "name_prefix": "shot.", "name_suffix": ".exr", "start_frame": 1001, "rate": 24.0, "frame_zero_padding": 4, "available_range": \(tr(1001, 48))}}}
+        ]}
+    ]}}
+    """
+    let r = try Importer.otio(Data(json.utf8), relativeTo: nil)
+    let p = r.project
+    #expect(r.warnings.isEmpty, "\(r.warnings)")
+    #expect(p.media.map(\.path) == ["/renders/shot/shot.1001.exr"] && r.missingMedia == ["/renders/shot/shot.1001.exr"])
+    let m = p.media[0]
+    #expect(m.id == "shot" && m.duration == 2 && m.fps == 24 && !m.isImage && m.timecodeStart == 1001.0 / 24)
+    #expect(shapes(p.tracks[0], fps: 24) == [
+        Shape(kind: .media, media: "shot", start: 0, duration: 24, sourceIn: 9, speed: 1),
+        Shape(kind: .solid, start: 24, duration: 12, sourceIn: 0, speed: 1),
+        Shape(kind: .media, media: "shot", start: 36, duration: 12, sourceIn: 19, speed: 1),
+    ])
+    #expect(p.tracks[0].clips[1].color == RGBA(r: 1, g: 0, b: 0))
+    #expect(p.tracks[0].clips[2].isRetimed && p.tracks[0].clips[2].sourceOut == p.tracks[0].clips[2].sourceIn)
     try p.validate()
 }
 
@@ -559,11 +678,14 @@ M2   AX       050.0                00:00:30:00
     let r = try Importer.edl(edl, fps: 29.97) { $0 == "long.mov" ? "long" : nil }
     let p = r.project
     let clips = p.tracks[0].clips
-    #expect(clips.count == 2)
+    #expect(clips.count == 3)
     #expect(abs(clips[0].duration - 1800 * 1001 / 30000.0) < 1e-9)
-    #expect(clips[1].mediaId == "found" && abs(clips[1].start - 1830 * 1001 / 30000.0) < 1e-9)
+    // TAPE9 stays as offline media named by its reel.
+    #expect(clips[1].mediaId == "tape9" && abs(clips[1].start - 1800 * 1001 / 30000.0) < 1e-9)
+    #expect(p.media.first { $0.id == "tape9" }.map { $0.path == "TAPE9" && abs($0.duration - 1.001) < 1e-9 } == true)
+    #expect(clips[2].mediaId == "found" && abs(clips[2].start - 1830 * 1001 / 30000.0) < 1e-9)
     #expect(r.missingMedia == ["TAPE9", "/nowhere/found.mov"])
-    #expect(r.warnings == ["Event 002: no media for TAPE9; left as a gap"])
+    #expect(r.warnings.isEmpty, "\(r.warnings)")
     #expect(p.media.first { $0.id == "found" }?.path == "/nowhere/found.mov")
 
     #expect(EDLTimecode.string(107892 + 1800, nominal: 30, drop: true) == "01:01:00;02")

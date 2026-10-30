@@ -5,7 +5,7 @@ public struct ImportResult: Sendable {
     public var project: Project
     /// What was dropped or approximated, one sentence each.
     public var warnings: [String]
-    /// Media paths that don't exist on this machine, or EDL sources no media could be found for.
+    /// Offline media, once each: paths that don't exist on this machine, or the names of sources without a path.
     public var missingMedia: [String]
 
     public init(project: Project, warnings: [String] = [], missingMedia: [String] = []) {
@@ -15,8 +15,9 @@ public struct ImportResult: Sendable {
     }
 }
 
-/// Reads timelines (FCPXML, OpenTimelineIO, CMX 3600 EDL) and subtitles (SRT, WebVTT) written by other tools.
-/// Media is never probed: durations, sizes and rates come from the file, and only file existence is checked.
+/// Reads timelines (FCPXML, Final Cut Pro 7 XML, OpenTimelineIO, CMX 3600 EDL) and subtitles (SRT, WebVTT) written
+/// by other tools. Media is never probed: durations, sizes and rates come from the file, and only file existence is
+/// checked. Media that isn't found stays as offline media, with the clips' timing, so it can be relinked.
 public enum Importer {
     public typealias Cue = (start: Seconds, end: Seconds, text: String)
 
@@ -55,7 +56,12 @@ public enum Importer {
                 warnings.append("Media \(s) isn't a local file")
                 return s
             }
-            if url.path.hasPrefix("/") { return url.path }
+            if url.path.hasPrefix("/") {
+                // file://localhost/D%3a/media/a.mov from Windows: "D:/media/a.mov".
+                let p = url.path
+                if p.count > 3, p.dropFirst().first!.isLetter, p.dropFirst(2).hasPrefix(":/") { return String(p.dropFirst()) }
+                return p
+            }
             relative = url.path.isEmpty ? String(s.dropFirst(5)) : url.path
         } else if s.hasPrefix("/") {
             return s
@@ -73,7 +79,18 @@ public enum Importer {
         return URL(fileURLWithPath: relative, relativeTo: dir).standardizedFileURL.path
     }
 
-    static func exists(_ path: String) -> Bool { !path.isEmpty && FileManager.default.fileExists(atPath: path) }
+    /// A regular file (not a folder) at `path`.
+    static func exists(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        return !path.isEmpty && FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && !isDir.boolValue
+    }
+
+    /// The last component of a POSIX or Windows path.
+    static func fileName(_ path: String) -> String {
+        path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? path
+    }
+
+    static let stillExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "tif", "tiff", "gif", "webp", "bmp", "psd", "tga", "dpx", "exr"]
 
     /// Speeds that are a hair off a round value (from frame-rate arithmetic) snap to it.
     static func niceSpeed(_ s: Double) -> Double {
@@ -81,9 +98,81 @@ public enum Importer {
         return abs(s * 100 - r * 100) < 0.2 ? r : s
     }
 
-    /// Fills unknown media durations from the edit, sorts tracks, and reports clips and transitions that don't fit.
-    /// Transitions that can't be placed at all are dropped.
-    static func finish(_ p: inout Project, _ warnings: inout [String]) {
+    /// Holds the clip's first source frame for its whole length, silently.
+    static func freeze(_ c: inout Clip) {
+        c.speed = 1
+        c.reverse = false
+        c.anim["time.speed"] = Curve(keys: [CurveKey(t: 0, v: .number(0), ease: .hold)])
+        c.volume = 0
+    }
+
+    /// Repeated warnings collapse into one line with a count, in first-seen order.
+    static func condense(_ warnings: [String]) -> [String] {
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for w in warnings {
+            if counts[w] == nil { order.append(w) }
+            counts[w, default: 0] += 1
+        }
+        return order.map { counts[$0]! > 1 ? "\($0) (×\(counts[$0]!))" : $0 }
+    }
+
+    /// "Effect X on a not kept", or "Effect X on 12 clips not kept: a, b, c, …" for many clips.
+    static func summarize(_ what: String, clips: [String]) -> String {
+        var names: [String] = []
+        for c in clips where !names.contains(c) { names.append(c) }
+        if clips.count == 1 { return "\(what) on \(names[0]) not kept" }
+        let shown = names.prefix(3).joined(separator: ", ") + (names.count > 3 ? ", …" : "")
+        return "\(what) on \(clips.count) clips not kept: \(shown)"
+    }
+
+    /// Grows offline media so every clip and transition handle that reads it fits. Media read before its
+    /// start gains frames at the front: clips' source times and the timecode move with them.
+    static func fitOffline(_ p: inout Project, _ offline: Set<String>) {
+        guard !offline.isEmpty else { return }
+        var lo: [String: Seconds] = [:], hi: [String: Seconds] = [:]
+        func scan(_ scope: Project) {
+            let windows = scope.transitionWindows
+            for c in scope.tracks.flatMap(\.clips) where c.kind == .media {
+                guard let id = c.mediaId, offline.contains(id), let m = p.mediaAsset(id), !m.isImage else { continue }
+                var a = min(c.sourceIn, c.sourceOut), b = max(c.sourceIn, c.sourceOut, c.sourceIn + 1 / max(m.fps, 24))
+                if !c.reverse {
+                    for w in windows {
+                        if w.transition.to == c.id { a = min(a, c.sourceIn - w.head * max(c.speed(atLocal: 0), 0.01)) }
+                        if w.transition.from == c.id { b = max(b, c.sourceOut + w.tail * max(c.speed(atLocal: c.duration), 0.01)) }
+                    }
+                }
+                lo[id] = min(lo[id] ?? a, a)
+                hi[id] = max(hi[id] ?? b, b)
+            }
+        }
+        scan(p)
+        for s in p.sequences { scan(p.inside(s)) }
+        for i in p.media.indices {
+            let id = p.media[i].id
+            guard let low = lo[id], let high = hi[id] else { continue }
+            let fps = max(p.media[i].fps > 0 ? p.media[i].fps : p.canvas.fps, 1)
+            let shift = low < -1e-6 ? (-low * fps - 1e-6).rounded(.up) / fps : 0
+            if shift > 0 {
+                if let tc = p.media[i].timecodeStart { p.media[i].timecodeStart = tc - shift }
+                func move(_ tracks: inout [Track]) {
+                    for t in tracks.indices {
+                        for c in tracks[t].clips.indices where tracks[t].clips[c].kind == .media && tracks[t].clips[c].mediaId == id {
+                            tracks[t].clips[c].sourceIn += shift
+                        }
+                    }
+                }
+                move(&p.tracks)
+                for s in p.sequences.indices { move(&p.sequences[s].tracks) }
+                p.media[i].tags = p.media[i].tags?.map { MediaTag(label: $0.label, start: $0.start + shift, end: $0.end + shift, rating: $0.rating) }
+            }
+            p.media[i].duration = max(p.media[i].duration + shift, high + shift)
+        }
+    }
+
+    /// Fills unknown media durations from the edit, sorts tracks, grows `offline` media to fit, and reports
+    /// clips and transitions that don't fit. Transitions that can't be placed at all are dropped.
+    static func finish(_ p: inout Project, _ warnings: inout [String], offline: Set<String> = []) {
         var used: [String: Seconds] = [:]
         func scan(_ tracks: [Track]) {
             for c in tracks.flatMap(\.clips) where c.kind == .media {
@@ -99,6 +188,26 @@ public enum Importer {
         for s in p.sequences.indices {
             for t in p.sequences[s].tracks.indices { p.sequences[s].tracks[t].clips.sort { $0.start < $1.start } }
         }
+        fitOffline(&p, offline)
+        // A nested sequence ends at its last clip; what a use plays past that was empty.
+        let frame = p.canvas.frameDuration
+        func trimNested(_ tracks: inout [Track], label: String, in sequences: [NestedSequence]) {
+            for t in tracks.indices {
+                for c in tracks[t].clips.indices where tracks[t].clips[c].kind == .sequence {
+                    let clip = tracks[t].clips[c]
+                    guard let seq = sequences.first(where: { $0.id == clip.mediaId }) else { continue }
+                    let left = seq.duration - clip.sourceIn
+                    guard clip.duration > left + frame / 2, left > frame / 2 else { continue }
+                    tracks[t].clips[c].duration = left
+                    warnings.append("\(label)Nested \(seq.name) holds \(fmt2(left))s from \(fmt2(clip.sourceIn))s but \(clip.id) plays \(fmt2(clip.duration))s of it; trimmed to its content")
+                }
+            }
+        }
+        for i in p.sequences.indices {
+            let all = p.sequences
+            trimNested(&p.sequences[i].tracks, label: "In \(all[i].name): ", in: all)
+        }
+        trimNested(&p.tracks, label: "", in: p.sequences)
 
         func check(_ scope: inout Project, label: String) {
             for track in scope.tracks {
@@ -129,6 +238,18 @@ public enum Importer {
             check(&inner, label: "In \(p.sequences[i].name): ")
             p.sequences[i].transitions = inner.transitions
         }
+        warnings = condense(warnings)
+    }
+
+    /// Alignment and duration of a transition running `before` seconds before its cut and `after` past it,
+    /// covering the same frames; uneven ones are centered on the cut and widened.
+    static func alignment(before a: Seconds, after b: Seconds, frame: Seconds, name: String, warnings: inout [String]) -> (TransitionAlign, Seconds) {
+        let half = frame / 2
+        if a < half { return (.start, b) }
+        if b < half { return (.end, a) }
+        if abs(a - b) < half { return (.center, a + b) }
+        warnings.append("Transition \"\(name)\" runs \(fmt2(a))s before its cut and \(fmt2(b))s after; centered and widened to \(fmt2(2 * max(a, b)))s")
+        return (.center, 2 * max(a, b))
     }
 }
 
@@ -159,8 +280,31 @@ struct LaneBuilder {
         }
     }
 
+    /// Detached audio playing exactly under its own silenced video clip folds back into that clip.
+    static func foldAudio(_ slots: inout [Slot]) {
+        var removals: [(slot: Int, clip: Int)] = []
+        for s in slots.indices where slots[s].kind == .audio {
+            for (k, a) in slots[s].clips.enumerated() where a.kind == .media {
+                for v in slots.indices where slots[v].kind == .video && slots[v].disabled == slots[s].disabled {
+                    guard let i = slots[v].clips.firstIndex(where: { c in
+                        c.kind == .media && c.volume == 0 && c.mediaId == a.mediaId && abs(c.start - a.start) < 1e-4 && abs(c.duration - a.duration) < 1e-4
+                            && abs(c.sourceIn - a.sourceIn) < 1e-4 && c.speed == a.speed && c.reverse == a.reverse && !c.isRetimed
+                    }) else { continue }
+                    slots[v].clips[i].volume = a.volume
+                    slots[v].clips[i].audioFadeIn = a.audioFadeIn
+                    slots[v].clips[i].audioFadeOut = a.audioFadeOut
+                    removals.append((s, k))
+                    break
+                }
+            }
+        }
+        for r in removals.sorted(by: { ($0.slot, $0.clip) > ($1.slot, $1.clip) }) { slots[r.slot].clips.remove(at: r.clip) }
+        slots.removeAll { $0.kind == .audio && $0.clips.isEmpty }
+    }
+
     func tracks() -> [Track] {
         var slots = self.slots
+        LaneBuilder.foldAudio(&slots)
         if slots[0].clips.isEmpty, slots.contains(where: { $0.kind == .video && $0.lane == 0 && $0.disabled }) { slots.removeFirst() }
         func key(_ i: Int) -> (Int, Int, Int, Int) {
             let s = slots[i]
@@ -189,7 +333,8 @@ extension XMLElement {
 }
 
 extension Importer {
-    /// Final Cut Pro XML 1.6–1.11: a library/event/project, or a bare project or sequence.
+    /// Final Cut Pro XML 1.6–1.11: a library/event/project, or a bare project or sequence. Without either, the
+    /// event's clips are strung out on V1. Keywords and ratings become media tags.
     ///
     /// The primary storyline becomes V1; connected clips and secondary storylines at positive lanes become
     /// video tracks above it, audio at negative lanes audio tracks. Compound clips (`ref-clip`) become nested
@@ -217,6 +362,7 @@ final class FCPReader {
     let base: URL?
     var warnings: [String] = []
     var missing: [String] = []
+    var offline = Set<String>()
     var resources: [String: XMLElement] = [:]
     /// Asset resource id → media id and the asset's start timecode.
     var assets: [String: (id: String, start: Seconds)] = [:]
@@ -258,31 +404,92 @@ final class FCPReader {
         readResources(root)
 
         let projects = descendants(root, "project")
-        let sequence: XMLElement
+        let browser = browserClips(root)
+        var sequence: XMLElement?
         if let p = projects.first {
             guard let s = p.first("sequence") else { throw EditError("Project \(p.attr("name") ?? "") has no sequence") }
             sequence = s
             if projects.count > 1 { warnings.append("The file has \(projects.count) projects; imported \(p.attr("name") ?? "the first")") }
         } else if let s = descendants(root, "sequence").first {
             sequence = s
-        } else {
-            throw EditError("No project or sequence in the FCPXML")
+        } else if browser.isEmpty {
+            throw EditError("No project, sequence or clips in the FCPXML")
         }
-        let name = projects.first?.attr("name") ?? sequence.attr("name") ?? "Imported"
+        let name = projects.first?.attr("name") ?? sequence?.attr("name") ?? descendants(root, "event").first?.attr("name") ?? "Imported"
 
-        let format = sequence.attr("format").flatMap { resources[$0] }
+        let formatId = sequence?.attr("format") ?? browser.lazy.compactMap { e in
+            e.attr("format") ?? e.attr("ref").flatMap { self.resources[$0] }.flatMap { $0.first("sequence")?.attr("format") ?? $0.attr("format") }
+        }.first
+        let format = formatId.flatMap { resources[$0] }
         if let fd = time(format?.attr("frameDuration")), fd > 0 { grid = FrameGrid(fps: 1 / fd) }
         canvas = Canvas(width: Int(format?.attr("width") ?? "") ?? 1920, height: Int(format?.attr("height") ?? "") ?? 1080, fps: Importer.niceFps(grid.rate))
 
-        let main = readSequence(sequence)
+        let main: Context
+        if let sequence {
+            main = readSequence(sequence)
+            for e in browser { tagBrowserClip(e) }
+        } else {
+            warnings.append("The file has no project; its \(browser.count) event clips are strung out on V1 in order")
+            main = nestedContext {
+                var t: Seconds = 0
+                for e in browser {
+                    readItem(e, at: t, lane: 0, disabled: false)
+                    t = snap(t + (time(e.attr("duration")) ?? 0))
+                }
+            }
+        }
+        for i in media.indices where media[i].tags != nil {
+            var seen: [MediaTag] = []
+            for t in media[i].tags! where !seen.contains(t) { seen.append(t) }
+            media[i].tags = seen.sorted { ($0.start, $0.label) < ($1.start, $1.label) }
+        }
         var p = Project(name: name, canvas: canvas)
         p.media = media
         p.tracks = main.lanes.tracks()
         p.transitions = main.transitions
         p.markers = main.markers.sorted { $0.time < $1.time }
         p.sequences = sequences
-        Importer.finish(&p, &warnings)
+        Importer.finish(&p, &warnings, offline: offline)
         return ImportResult(project: p, warnings: warnings, missingMedia: missing)
+    }
+
+    /// Clips in events (or at the root) outside any project: the browser.
+    func browserClips(_ root: XMLElement) -> [XMLElement] {
+        let holders = [root] + root.elems.filter { $0.name == "library" } + descendants(root, "event")
+        return holders.flatMap { h in h.elems.filter { FCPReader.storyNames.contains($0.name ?? "") && $0.name != "gap" } }
+    }
+
+    /// Keywords and ratings on `e` become tags of the media `clip` plays, in source time; `start` is `e`'s local start.
+    func addTags(_ e: XMLElement, _ clip: Clip, start: Seconds, duration: Seconds) {
+        let marks = e.elems.filter { $0.name == "keyword" || $0.name == "rating" }
+        guard !marks.isEmpty else { return }
+        guard clip.kind == .media, let i = media.firstIndex(where: { $0.id == clip.mediaId }) else {
+            warnings.append("Keywords on \(clip.name ?? label(e)) not kept")
+            return
+        }
+        for k in marks {
+            let s = time(k.attr("start")) ?? start, d = time(k.attr("duration")) ?? duration
+            let a = clip.sourceIn + (s - start) * clip.speed, b = a + d * clip.speed
+            if k.name == "rating" {
+                let value = k.attr("value") ?? "favorite"
+                media[i].tags = (media[i].tags ?? []) + [MediaTag(label: k.attr("name") ?? value, start: a, end: b, rating: value)]
+            } else {
+                let labels = (k.attr("value") ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                media[i].tags = (media[i].tags ?? []) + labels.map { MediaTag(label: $0, start: a, end: b) }
+            }
+        }
+    }
+
+    /// Keywords and ratings of a browser clip, which isn't placed on the timeline.
+    func tagBrowserClip(_ e: XMLElement) {
+        guard ["asset-clip", "clip", "sync-clip", "video", "audio"].contains(e.name ?? ""),
+              e.elems.contains(where: { $0.name == "keyword" || $0.name == "rating" }) else { return }
+        let start = time(e.attr("start")) ?? 0, duration = time(e.attr("duration")) ?? 0
+        let saved = warnings
+        var made: (Clip, TrackKind)?
+        _ = nestedContext { made = build(e, start: start, duration: duration, place: { $0 }, lane: 0, disabled: false) }
+        warnings = saved
+        if let made { addTags(e, made.0, start: start, duration: duration) }
     }
 
     /// Elements named `name` below `e`, skipping resources (compound clips hold sequences too).
@@ -304,10 +511,13 @@ final class FCPReader {
             let path = src.map { Importer.resolvePath($0, base: base, warnings: &warnings) } ?? ""
             let fileName = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
             let name = e.attr("name") ?? (fileName.isEmpty ? rid : fileName)
+            let id = Importer.unique(Importer.slug(name), &used)
             if src == nil {
                 warnings.append("Asset \(name) has no media path")
-            } else if !Importer.exists(path), !missing.contains(path) {
-                missing.append(path)
+            }
+            if !Importer.exists(path) {
+                offline.insert(id)
+                if src != nil, !missing.contains(path) { missing.append(path) }
             }
             let format = e.attr("format").flatMap { resources[$0] }
             let frameDuration = time(format?.attr("frameDuration"))
@@ -316,12 +526,14 @@ final class FCPReader {
             let duration = time(e.attr("duration"))
             let isImage = hasVideo && (duration == 0 || (frameDuration == nil && format?.attr("name") == "FFVideoFormatRateUndefined"))
             let fps = isImage || !hasVideo ? 0 : frameDuration.map { Importer.niceFps(1 / $0) } ?? 0
-            let id = Importer.unique(Importer.slug(name), &used)
-            media.append(MediaAsset(id: id, path: path, name: name, duration: isImage ? 0 : duration ?? 0,
-                                    width: hasVideo ? Int(format?.attr("width") ?? "") ?? 0 : 0,
-                                    height: hasVideo ? Int(format?.attr("height") ?? "") ?? 0 : 0,
-                                    fps: fps, hasVideo: hasVideo, hasAudio: hasAudio, isImage: isImage))
-            assets[rid] = (id, time(e.attr("start")) ?? 0)
+            var m = MediaAsset(id: id, path: path, name: name, duration: isImage ? 0 : duration ?? 0,
+                               width: hasVideo ? Int(format?.attr("width") ?? "") ?? 0 : 0,
+                               height: hasVideo ? Int(format?.attr("height") ?? "") ?? 0 : 0,
+                               fps: fps, hasVideo: hasVideo, hasAudio: hasAudio, isImage: isImage)
+            let start = time(e.attr("start")) ?? 0
+            if start > 0, !isImage { m.timecodeStart = start }
+            media.append(m)
+            assets[rid] = (id, start)
         }
     }
 
@@ -427,12 +639,7 @@ final class FCPReader {
                 clip.start = s
                 clip.duration = end - s
                 clip.id = nextClipId()
-                let keywords = e.elems.filter { $0.name == "keyword" }.compactMap { $0.attr("value") }
-                if !keywords.isEmpty {
-                    if clip.name == nil { clip.name = keywords.joined(separator: ", ") } else {
-                        warnings.append("Keywords on \(clip.name!) not kept: \(keywords.joined(separator: ", "))")
-                    }
-                }
+                addTags(e, clip, start: start, duration: duration)
                 emit(clip, kind: kind, lane: lane, disabled: disabled)
                 clipId = clip.id
             }
@@ -550,15 +757,27 @@ final class FCPReader {
         let laneless = e.elems.filter { content.contains($0.name ?? "") && $0.attr("lane") == nil }
         let (outerMap, outerSpeed) = timeMap(e)
         let local = outerMap(start)
-        if let inner = laneless.first(where: { $0.name != "audio" }) ?? laneless.first {
-            let innerOffset = time(inner.attr("offset")) ?? 0, innerStart = time(inner.attr("start")) ?? 0
+        var hosted: (inner: XMLElement, offset: Seconds)?
+        if laneless.isEmpty, let gap = e.elems.first(where: { $0.name == "gap" && $0.attr("lane") == nil }),
+           let k = gap.elems.first(where: { content.contains($0.name ?? "") && $0.attr("lane") != nil }) {
+            // Final Cut's detached audio: a clip holding a gap with the sound connected to it.
+            hosted = (k, (time(gap.attr("offset")) ?? 0) + (time(k.attr("offset")) ?? 0) - (time(gap.attr("start")) ?? 0))
+        }
+        if let inner = hosted?.inner ?? laneless.first(where: { $0.name != "audio" }) ?? laneless.first {
+            let innerOffset = hosted?.offset ?? time(inner.attr("offset")) ?? 0, innerStart = time(inner.attr("start")) ?? 0
             let innerPlace: (Seconds) -> Seconds = { place(innerOffset + ($0 - innerStart)) }
             guard let made = build(inner, start: innerStart + (local - innerOffset), duration: duration * abs(outerSpeed), place: innerPlace, lane: lane, disabled: disabled) else { return nil }
             var clip = made.0
             if abs(outerSpeed - 1) > 1e-9 { clampSpeed(&clip, (clip.reverse ? -clip.speed : clip.speed) * outerSpeed, e) }
             clip.name = e.attr("name") ?? clip.name
-            adjust(e, &clip)
             let ref = inner.attr("ref")
+            // A clip showing only the picture of a file leaves its sound to a detached audio clip, if any.
+            if inner.name == "video", hosted == nil, clip.kind == .media, clip.mediaId.flatMap({ id in media.first { $0.id == id } })?.hasAudio == true,
+               !laneless.contains(where: { $0.name == "audio" && $0.attr("ref") == ref }),
+               !inner.elems.contains(where: { $0.name == "audio" && $0.attr("ref") == ref }) {
+                clip.volume = 0
+            }
+            adjust(e, &clip)
             readChildren(inner, place: innerPlace, lane: lane, disabled: disabled) { k in k.name == "audio" && k.attr("ref") == ref }
             return (clip, made.1)
         }
@@ -610,6 +829,7 @@ final class FCPReader {
         let (map, speed) = timeMap(e)
         if abs(speed - 1) > 1e-6 { warnings.append("Speed of compound clip \(label(e)) not kept") }
         var clip = Clip(id: "", kind: .sequence, name: e.attr("name") ?? res.attr("name"), mediaId: seq.id, start: 0, duration: 0, sourceIn: map(start) - seq.tcStart)
+        if e.attr("srcEnable") == "video" { clip.volume = 0 }
         adjust(e, &clip)
         return (clip, e.attr("srcEnable") == "audio" ? .audio : .video)
     }
@@ -730,10 +950,12 @@ final class FCPReader {
 
 extension Importer {
     /// OpenTimelineIO JSON: a Timeline (or a SerializableCollection holding one) whose Stack holds Video and
-    /// Audio tracks. Clips (Clip.1 `media_reference`, Clip.2 `media_references`) with ExternalReferences,
-    /// gaps, SMPTE dissolves, LinearTimeWarp speed, markers and nested Stacks (as nested sequences).
-    /// Audio clips that only repeat a video clip's sound are folded into it. Cutline's own metadata
-    /// (clip ids, titles, volumes) is read back when present.
+    /// Audio tracks. Clips (Clip.1 `media_reference`, Clip.2 `media_references`) with External and ImageSequence
+    /// references (Missing and Generator ones become offline media), gaps, dissolves, LinearTimeWarp speed and
+    /// freeze frames, markers, and nested Stacks and Tracks (as nested sequences; items directly in a stack get
+    /// a track each). Resolve's per-clip volume is kept and its untouched clip properties skipped. Audio clips
+    /// that only repeat a video clip's sound are folded into it. Cutline's own metadata (clip ids, titles,
+    /// volumes) is read back when present.
     public static func otio(_ data: Data, relativeTo base: URL?) throws -> ImportResult {
         let json: Any
         do { json = try JSONSerialization.jsonObject(with: data) } catch { throw EditError("Not valid JSON: \(error.localizedDescription)") }
@@ -747,13 +969,16 @@ final class OTIOReader {
     var warnings: [String] = []
     var missing: [String] = []
     var media: [MediaAsset] = []
-    var mediaByPath: [String: Int] = [:]
+    var mediaByKey: [String: Int] = [:]
     var availableStart: [String: Seconds] = [:]
+    var offline = Set<String>()
     var usedMediaIds = Set<String>(), usedSequenceIds = Set<String>(), usedClipIds = Set<String>()
     var sequences: [NestedSequence] = []
     var markers: [Marker] = []
     var clipCount = 0, transitionCount = 0
     var canvas = Canvas()
+    /// Effects that couldn't be carried, by name, with the clips they were on.
+    var dropped: [(name: String, clips: [String])] = []
 
     init(base: URL?) { self.base = base }
 
@@ -770,6 +995,11 @@ final class OTIOReader {
     }
     static func cutline(_ d: [String: Any]) -> [String: Any] { (d["metadata"] as? [String: Any])?["cutline"] as? [String: Any] ?? [:] }
     static func items(_ d: [String: Any]) -> [[String: Any]] { d["children"] as? [[String: Any]] ?? [] }
+    static func path(_ d: [String: Any]?, _ keys: [String]) -> Any? {
+        var cur: Any? = d
+        for k in keys { cur = (cur as? [String: Any])?[k] }
+        return cur
+    }
 
     func read(_ root: [String: Any]) throws -> ImportResult {
         var timeline = root
@@ -787,19 +1017,22 @@ final class OTIOReader {
 
         let md = Self.cutline(timeline)
         let fps = Self.number(md["fps"]) ?? findRate(stack) ?? 24
-        canvas = Canvas(width: Int(Self.number(md["width"]) ?? 1920), height: Int(Self.number(md["height"]) ?? 1080),
+        let fcp = Self.path(timeline, ["metadata", "fcp_xml", "media", "video", "format", "samplecharacteristics"]) as? [String: Any]
+        canvas = Canvas(width: Int(Self.number(md["width"]) ?? Self.number(fcp?["width"]) ?? 1920),
+                        height: Int(Self.number(md["height"]) ?? Self.number(fcp?["height"]) ?? 1080),
                         fps: Importer.niceFps(fps), background: (md["background"] as? String).flatMap { RGBA(hex: $0) } ?? .black)
 
         let (tracks, transitions) = readStack(stack, top: true)
         for m in stack["markers"] as? [[String: Any]] ?? [] { addMarker(m, at: { $0 }) }
 
-        var p = Project(name: timeline["name"] as? String ?? "Imported", canvas: canvas)
+        var p = Project(name: (timeline["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Imported", canvas: canvas)
         p.media = media
         p.tracks = tracks.contains(where: { $0.kind == .video }) ? tracks : [Track(id: "V1", kind: .video, name: "Main")] + tracks
         p.transitions = transitions
         p.markers = markers.sorted { $0.time < $1.time }
         p.sequences = sequences
-        Importer.finish(&p, &warnings)
+        for d in dropped { warnings.append(Importer.summarize(d.name, clips: d.clips)) }
+        Importer.finish(&p, &warnings, offline: offline)
         return ImportResult(project: p, warnings: warnings, missingMedia: missing)
     }
 
@@ -812,8 +1045,12 @@ final class OTIOReader {
 
     func addMarker(_ m: [String: Any], at map: (Seconds) -> Seconds) {
         guard let r = Self.range(m["marked_range"]) else { return }
-        let name = (m["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (m["comment"] as? String) ?? "Marker"
+        let name = (m["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (m["comment"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Marker"
         markers.append(Marker(id: "marker\(markers.count + 1)", time: map(r.start), label: name))
+    }
+
+    func drop(_ effect: String, on clip: String) {
+        if let i = dropped.firstIndex(where: { $0.name == effect }) { dropped[i].clips.append(clip) } else { dropped.append((effect, [clip])) }
     }
 
     func clipId(_ preferred: Any?) -> String {
@@ -827,16 +1064,23 @@ final class OTIOReader {
         var tracks: [Track] = []
         var transitions: [Transition] = []
         var linked = Set<String>()
-        for child in Self.items(stack) {
-            guard Self.schema(child) == "Track" else {
-                warnings.append("\(child["OTIO_SCHEMA"] as? String ?? "Item") directly in a stack not kept")
+        for item in Self.items(stack) {
+            var child = item
+            switch Self.schema(item) {
+            case "Track": break
+            case "Gap": continue
+            case "Clip", "Stack":
+                // An item placed directly in a stack plays from the stack's start on a track of its own.
+                child = ["OTIO_SCHEMA": "Track.1", "name": item["name"] ?? "", "kind": "Video", "children": [item]]
+            default:
+                warnings.append("\(item["OTIO_SCHEMA"] as? String ?? "Item") directly in a stack not kept")
                 continue
             }
             let kind: TrackKind = (child["kind"] as? String)?.lowercased() == "audio" ? .audio : .video
             let md = Self.cutline(child)
             if md["embeddedAudio"] as? Bool == true {
                 for item in Self.items(child) where Self.schema(item) == "Clip" {
-                    if let ref = activeReference(item), let id = mediaId(ref, clipName: item["name"] as? String ?? "", kind: .audio) { linked.insert(id) }
+                    if let id = mediaId(activeReference(item), clipName: item["name"] as? String ?? "", kind: .audio) { linked.insert(id) }
                 }
                 continue
             }
@@ -896,33 +1140,60 @@ final class OTIOReader {
         return clip["media_reference"] as? [String: Any]
     }
 
-    func mediaId(_ ref: [String: Any], clipName: String, kind: TrackKind) -> String? {
-        switch Self.schema(ref) {
+    /// The media a reference points at. References without a usable file (missing, generator, empty URL)
+    /// become offline media named after the reference or clip, sized from their available range.
+    func mediaId(_ ref: [String: Any]?, clipName: String, kind: TrackKind) -> String? {
+        let avail = ref.flatMap { Self.range($0["available_range"]) }
+        let availRate = ref.flatMap { Self.rate($0["available_range"]) }
+        let refName = (ref?["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        switch ref.map(Self.schema) {
         case "ExternalReference":
-            guard let url = ref["target_url"] as? String, !url.isEmpty else { return nil }
+            guard let url = ref?["target_url"] as? String, !url.isEmpty else { break }
             let path = Importer.resolvePath(url, base: base, warnings: &warnings)
-            let avail = Self.range(ref["available_range"])
-            if let i = mediaByPath[path] {
-                if kind == .video { media[i].hasVideo = true } else { media[i].hasAudio = true }
-                return media[i].id
-            }
             let file = (path as NSString).lastPathComponent
-            var name = (ref["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (clipName.isEmpty ? file : clipName)
+            var name = refName ?? (clipName.isEmpty ? file : clipName)
             if name == file { name = (file as NSString).deletingPathExtension }
-            let ext = (file as NSString).pathExtension.lowercased()
-            let isImage = avail == nil && ["png", "jpg", "jpeg", "heic", "tif", "tiff", "gif", "webp", "bmp"].contains(ext)
-            let id = Importer.unique(Importer.slug(name), &usedMediaIds)
-            media.append(MediaAsset(id: id, path: path, name: name, duration: avail?.duration ?? 0,
-                                    width: canvas.width, height: canvas.height,
-                                    fps: kind == .video && !isImage ? Importer.niceFps(Self.rate(ref["available_range"]) ?? canvas.fps) : 0,
-                                    hasVideo: kind == .video, hasAudio: kind == .audio, isImage: isImage))
-            mediaByPath[path] = media.count - 1
-            availableStart[id] = avail?.start ?? 0
-            if !Importer.exists(path), !missing.contains(path) { missing.append(path) }
-            return id
+            let isImage = Importer.stillExtensions.contains((file as NSString).pathExtension.lowercased())
+                && (avail.map { $0.duration <= 1.5 / max(availRate ?? canvas.fps, 1) } ?? true)
+            return addMedia(key: path, path: path, name: name, avail: avail, rate: availRate, kind: kind, isImage: isImage, shown: path)
+        case "ImageSequenceReference":
+            guard let r = ref, let baseURL = r["target_url_base"] as? String else { break }
+            let prefix = r["name_prefix"] as? String ?? "", suffix = r["name_suffix"] as? String ?? ""
+            let first = Int(Self.number(r["start_frame"]) ?? 1), pad = Int(Self.number(r["frame_zero_padding"]) ?? 0)
+            let digits = String(first)
+            let frame = String(repeating: "0", count: max(0, pad - digits.count)) + digits
+            let folder = Importer.resolvePath(baseURL, base: base, warnings: &warnings)
+            let path = (folder as NSString).appendingPathComponent(prefix + frame + suffix)
+            var name = refName ?? (clipName.isEmpty ? prefix : clipName)
+            while let last = name.last, ".-_ ".contains(last) { name.removeLast() }
+            return addMedia(key: path, path: path, name: name.isEmpty ? "Sequence" : name, avail: avail, rate: Self.number(r["rate"]) ?? availRate,
+                            kind: kind, isImage: false, shown: path)
         default:
-            return nil
+            break
         }
+        let name = refName ?? (clipName.isEmpty ? "Offline" : clipName)
+        return addMedia(key: "\u{0}" + name, path: name, name: (name as NSString).deletingPathExtension, avail: avail, rate: availRate, kind: kind, isImage: false, shown: name)
+    }
+
+    func addMedia(key: String, path: String, name: String, avail: (start: Seconds, duration: Seconds)?, rate: Double?, kind: TrackKind, isImage: Bool, shown: String) -> String {
+        if let i = mediaByKey[key] {
+            if kind == .video { media[i].hasVideo = true } else { media[i].hasAudio = true }
+            return media[i].id
+        }
+        let id = Importer.unique(Importer.slug(name), &usedMediaIds)
+        var m = MediaAsset(id: id, path: path, name: name, duration: isImage ? 0 : avail?.duration ?? 0,
+                           width: canvas.width, height: canvas.height,
+                           fps: kind == .video && !isImage ? Importer.niceFps(rate ?? canvas.fps) : 0,
+                           hasVideo: kind == .video, hasAudio: kind == .audio, isImage: isImage)
+        if let s = avail?.start, s > 0, !isImage { m.timecodeStart = s }
+        media.append(m)
+        mediaByKey[key] = media.count - 1
+        availableStart[id] = isImage ? 0 : avail?.start ?? 0
+        if !Importer.exists(path) {
+            offline.insert(id)
+            if !missing.contains(shown) { missing.append(shown) }
+        }
+        return id
     }
 
     func readTrack(_ track: [String: Any], kind: TrackKind, top: Bool) -> (clips: [Clip], disabled: [Clip], transitions: [Transition]) {
@@ -931,6 +1202,7 @@ final class OTIOReader {
         var items: [(id: String?, start: Seconds, end: Seconds)] = []
         var pending: [([String: Any], Int)] = []
         var cursor: Seconds = 0
+        let frame = 1 / max(canvas.fps, 1)
         for item in Self.items(track) {
             let schema = Self.schema(item)
             let name = item["name"] as? String ?? ""
@@ -945,17 +1217,28 @@ final class OTIOReader {
                 made = clip(item, kind: kind, start: start, duration: duration, range: range)
                 if let c = made, top {
                     for m in item["markers"] as? [[String: Any]] ?? [] {
-                        addMarker(m) { c.start + ($0 - (range?.start ?? 0)) / c.speed }
+                        addMarker(m) { c.start + ($0 - (range?.start ?? self.availableStart[c.mediaId ?? ""] ?? 0)) / c.speed }
                     }
                 }
             case "Gap":
                 made = gapClip(item, kind: kind, start: start, duration: duration)
-            case "Stack":
-                let (tracks, trs) = readStack(item, top: false)
+            case "Stack", "Track":
+                let stack = schema == "Stack" ? item : ["OTIO_SCHEMA": "Stack.1", "name": name, "children": [item]]
+                let (tracks, trs) = readStack(stack, top: false)
                 let seqName = name.isEmpty ? "Nested \(sequences.count + 1)" : name
+                let content = tracks.flatMap(\.clips).map(\.end).max() ?? 0
+                let offset = range?.start ?? 0
+                if content <= offset + frame / 2 {
+                    warnings.append("Nested \(seqName) has nothing in it; kept as offline media")
+                    if let id = mediaId(nil, clipName: seqName, kind: kind) {
+                        made = Clip(id: clipId(nil), kind: .media, name: seqName, mediaId: id, start: start, duration: duration, sourceIn: offset)
+                    }
+                    break
+                }
                 let id = Importer.unique(Importer.slug(seqName), &usedSequenceIds)
                 sequences.append(NestedSequence(id: id, name: seqName, tracks: tracks, transitions: trs))
-                made = Clip(id: clipId(nil), kind: .sequence, name: name.isEmpty ? nil : name, mediaId: id, start: start, duration: duration, sourceIn: range?.start ?? 0)
+                made = Clip(id: clipId(nil), kind: .sequence, name: name.isEmpty ? nil : name, mediaId: id, start: start, duration: duration, sourceIn: offset)
+                if !(item["effects"] as? [[String: Any]] ?? []).isEmpty { drop("Effects", on: seqName) }
             default:
                 warnings.append("\(item["OTIO_SCHEMA"] as? String ?? "Item") \(name) in a track left as a gap")
             }
@@ -969,51 +1252,63 @@ final class OTIOReader {
         if top {
             for m in track["markers"] as? [[String: Any]] ?? [] { addMarker(m) { $0 } }
         }
-        let half = 0.5 / max(canvas.fps, 1)
         for (tr, index) in pending {
             let a = Self.time(tr["in_offset"]) ?? 0, b = Self.time(tr["out_offset"]) ?? 0
             let from = index > 0 ? items[index - 1].id : nil
             let to = index < items.count ? items[index].id : nil
             guard a + b > 0, from != nil || to != nil else { continue }
-            var align = TransitionAlign.center
-            if a < half { align = .start } else if b < half { align = .end } else if abs(a - b) > half {
-                warnings.append("Uneven transition \(tr["name"] as? String ?? "") centered on its cut")
-            }
-            let name = (tr["name"] as? String ?? "").lowercased()
+            let label = (tr["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? tr["transition_type"] as? String ?? ""
+            let (align, duration) = from != nil && to != nil
+                ? Importer.alignment(before: a, after: b, frame: frame, name: label, warnings: &warnings)
+                : (TransitionAlign.center, a + b)
+            let name = label.lowercased()
             var type = "dissolve"
-            if name.contains("dip") || name.contains("fade to") { type = "dip" } else if tr["transition_type"] as? String != "SMPTE_Dissolve" && !name.contains("dissolve") {
-                warnings.append("Transition \(tr["name"] as? String ?? tr["transition_type"] as? String ?? "") imported as a dissolve")
+            if name.contains("dip") || name.contains("fade to") { type = "dip" } else if tr["transition_type"] as? String != "SMPTE_Dissolve" && !name.contains("dissolve") && !name.contains("cross fade") {
+                warnings.append("Transition \(label) imported as a dissolve")
             }
             transitionCount += 1
-            transitions.append(Transition(id: "tr\(transitionCount)", from: from, to: to, type: type, duration: a + b, align: align))
+            transitions.append(Transition(id: "tr\(transitionCount)", from: from, to: to, type: type, duration: duration, align: align))
         }
         return (clips, disabled, transitions)
     }
 
     func clip(_ item: [String: Any], kind: TrackKind, start: Seconds, duration: Seconds, range: (start: Seconds, duration: Seconds)?) -> Clip? {
         let name = item["name"] as? String ?? ""
-        guard let ref = activeReference(item), let id = mediaId(ref, clipName: name, kind: kind) else {
-            warnings.append("Clip \(name) has no media file; left as a gap")
-            if !name.isEmpty, !missing.contains(name) { missing.append(name) }
-            return nil
-        }
         let md = Self.cutline(item)
+        let ref = activeReference(item)
+        if let ref, Self.schema(ref) == "GeneratorReference" {
+            let generator = ref["generator_kind"] as? String ?? ""
+            if generator.lowercased().contains("solid"), kind == .video {
+                let color = (ref["parameters"] as? [String: Any])?["color"] as? String
+                return Clip(id: clipId(md["clipId"]), kind: .solid, name: name.isEmpty ? nil : name, start: start, duration: duration,
+                            color: color.flatMap { RGBA(hex: $0) ?? RGBA.named($0) } ?? .black)
+            }
+            warnings.append("Generator \(name.isEmpty ? generator : name)\(generator.isEmpty ? "" : " (\(generator))") kept as offline media")
+        }
+        guard let id = mediaId(ref, clipName: name, kind: kind) else { return nil }
         var c = Clip(id: clipId(md["clipId"]), kind: .media, name: name.isEmpty ? nil : name, mediaId: id, start: start, duration: duration,
-                     sourceIn: (range?.start ?? 0) - (availableStart[id] ?? 0))
+                     sourceIn: range.map { $0.start - (availableStart[id] ?? 0) } ?? 0)
+        let label = name.isEmpty ? c.id : name
         for e in item["effects"] as? [[String: Any]] ?? [] {
             switch Self.schema(e) {
             case "LinearTimeWarp":
                 var s = Self.number(e["time_scalar"]) ?? 1
                 if s < 0 { c.reverse = true; s = -s }
-                if s < 0.01 || s > 100 {
-                    warnings.append("Speed \(s)× on \(name) not kept")
+                if s == 0 {
+                    Importer.freeze(&c)
+                } else if s < 0.01 || s > 100 {
+                    warnings.append("Speed \(s)× on \(label) not kept")
                 } else {
                     c.speed = Importer.niceSpeed(s)
                 }
             case "FreezeFrame":
-                warnings.append("Freeze frame on \(name) not kept")
+                Importer.freeze(&c)
             default:
-                warnings.append("Effect \(e["effect_name"] as? String ?? e["OTIO_SCHEMA"] as? String ?? "") on \(name) not kept")
+                if let resolve = Self.path(e, ["metadata", "Resolve_OTIO"]) as? [String: Any] {
+                    resolveEffect(resolve, &c, label)
+                } else {
+                    drop("Effect \(e["effect_name"] as? String ?? e["OTIO_SCHEMA"] as? String ?? "")", on: label)
+                }
             }
         }
         if let v = Self.number(md["volume"]) { c.volume = v }
@@ -1021,6 +1316,33 @@ final class OTIOReader {
         if let f = Self.number(md["fadeOut"]) { c.fadeOut = f }
         if let b = (md["blend"] as? String).flatMap({ BlendMode(rawValue: $0) }) { c.blend = b }
         return c
+    }
+
+    /// Resolve writes every clip property as an effect: static clip volume is kept, untouched ones are skipped.
+    func resolveEffect(_ e: [String: Any], _ c: inout Clip, _ label: String) {
+        guard e["Enabled"] as? Bool != false else { return }
+        let effect = e["Effect Name"] as? String ?? e["Name"] as? String ?? "effect"
+        func same(_ a: Any?, _ b: Any?) -> Bool {
+            if let x = Self.number(a), let y = Self.number(b) { return abs(x - y) < 1e-6 }
+            if let x = a as? [Any], let y = b as? [Any] { return x.count == y.count && zip(x, y).allSatisfy { same($0, $1) } }
+            return String(describing: a) == String(describing: b)
+        }
+        var changed: [[String: Any]] = []
+        for q in e["Parameters"] as? [[String: Any]] ?? [] {
+            let keyed = !((q["Key Frames"] as? [String: Any]) ?? [:]).isEmpty
+            if keyed || (q["Default Parameter Value"] != nil && !same(q["Parameter Value"], q["Default Parameter Value"])) { changed.append(q) }
+        }
+        if effect == "Fairlight Clip Volume and Fades" {
+            for q in changed {
+                if q["Parameter ID"] as? String == "volume", ((q["Key Frames"] as? [String: Any]) ?? [:]).isEmpty, let db = Self.number(q["Parameter Value"]) {
+                    c.volume *= db <= -96 ? 0 : pow(10, db / 20)
+                } else {
+                    drop("Resolve \(q["Parameter ID"] as? String ?? "volume") animation", on: label)
+                }
+            }
+        } else if !changed.isEmpty {
+            drop("Resolve \(effect)", on: label)
+        }
     }
 
     /// Cutline writes titles, solids and adjustment clips as gaps with their kind in the metadata.
@@ -1085,12 +1407,16 @@ enum EDLTimecode {
 
 extension Importer {
     /// CMX 3600 EDL at `fps`: TITLE, FCM, cut (C), dissolve (D), wipe (W) and key (K) events on V and A/A2/AA
-    /// channels, M2 speed changes, and FROM/TO CLIP NAME, SOURCE FILE and LOC comments. Record times start
-    /// at the hour of the first event. A dissolve starts at its edit and borrows the outgoing clip's media.
+    /// channels, M2 speed changes and freeze frames, and FROM/TO CLIP NAME, SOURCE FILE (or Avid's FROM CLIP
+    /// and Nucoda's FROM FILE) and LOC comments. Without M2 the record duration wins over the source's.
+    /// Timeline zero is the hour at or before the first record-in, or the first record-in itself when it sits
+    /// in the last 10 minutes before an hour (pre-roll like 00:59:50:00). A dissolve starts at its edit and
+    /// borrows the outgoing clip's media.
     ///
     /// Each source is looked up with `mediaResolver` by clip name, source file path, file name and reel, in that
     /// order. The project lists a placeholder MediaAsset for each id it uses (sized from the edit) to replace
-    /// with the real one; sources it can't resolve but that name a SOURCE FILE get media at that path.
+    /// with the real one. Sources it can't resolve stay as offline media named by source file, clip name or
+    /// reel, with source times counted from the hour of their earliest timecode (kept as `timecodeStart`).
     public static func edl(_ text: String, fps: Double, mediaResolver: (String) -> String?) throws -> ImportResult {
         struct Line {
             var event: String
@@ -1100,11 +1426,11 @@ extension Importer {
             var transFrames: Int
             var src: (Int, Int)
             var rec: (Int, Int)
-            var recHour: Int
             var drop: Bool
             var clipName: String?
             var sourceFile: String?
             var speed: Double?
+            var freeze = false
         }
         let grid = FrameGrid(fps: fps)
         let rate = grid.rate
@@ -1115,6 +1441,7 @@ extension Importer {
         var lines: [Line] = []
         var locs: [(frames: Int, label: String)] = []
         var named: Int?
+        let bareComments = ["FROM CLIP NAME:", "TO CLIP NAME:", "SOURCE FILE:", "FROM CLIP:", "FROM FILE:", "LOC:"]
 
         let body = text.replacingOccurrences(of: "\u{FEFF}", with: "").replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         for (n, raw) in body.components(separatedBy: "\n").enumerated() {
@@ -1123,8 +1450,13 @@ extension Importer {
             let upper = line.uppercased()
             if upper.hasPrefix("TITLE:") { title = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces); continue }
             if upper.hasPrefix("FCM:") { drop = !upper.contains("NON") && upper.contains("DROP"); continue }
+            var comment: String?
             if line.hasPrefix("*") {
-                let comment = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
+                comment = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
+            } else if bareComments.contains(where: { upper.hasPrefix($0) }) {
+                comment = line
+            }
+            if let comment {
                 let uc = comment.uppercased()
                 func value(_ prefix: String) -> String { String(comment.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces) }
                 let current = lines.indices.reversed().prefix { lines[$0].event == lines.last?.event }.reversed().map { $0 }
@@ -1132,8 +1464,9 @@ extension Importer {
                     lines[i].clipName = value("FROM CLIP NAME:"); named = i
                 } else if uc.hasPrefix("TO CLIP NAME:"), let i = current.last {
                     lines[i].clipName = value("TO CLIP NAME:"); named = i
-                } else if uc.hasPrefix("SOURCE FILE:"), let i = named.flatMap({ current.contains($0) ? $0 : nil }) ?? current.last {
-                    lines[i].sourceFile = value("SOURCE FILE:")
+                } else if let prefix = ["SOURCE FILE:", "FROM CLIP:", "FROM FILE:"].first(where: { uc.hasPrefix($0) }),
+                          let i = named.flatMap({ current.contains($0) ? $0 : nil }) ?? current.last {
+                    lines[i].sourceFile = value(prefix)
                 } else if uc.hasPrefix("LOC:") {
                     let parts = value("LOC:").split(whereSeparator: \.isWhitespace).map(String.init)
                     if let first = parts.first, let tc = EDLTimecode.parse(first, nominal: nominal, drop: drop) {
@@ -1142,6 +1475,8 @@ extension Importer {
                         if let c = rest.first, colors.contains(c.uppercased()) { rest = rest.dropFirst() }
                         locs.append((tc.frames, rest.joined(separator: " ").isEmpty ? "Marker" : rest.joined(separator: " ")))
                     }
+                } else if uc.contains("FREEZE FRAME"), let i = current.last {
+                    lines[i].freeze = true
                 } else if let r = comment.range(of: "|M:"), let last = lines.last {
                     let label = comment[r.upperBound...].components(separatedBy: " |").first?.trimmingCharacters(in: .whitespaces) ?? "Marker"
                     locs.append((last.rec.0, label))
@@ -1162,59 +1497,74 @@ extension Importer {
             let tcs = tokens.dropFirst(idx).prefix(4).compactMap { EDLTimecode.parse($0, nominal: nominal, drop: drop) }
             guard tcs.count == 4 else { warnings.append("Line \(n + 1): unreadable event"); continue }
             lines.append(Line(event: first, reel: tokens[1], channel: tokens[2].uppercased(), trans: tokens[3].uppercased(), transFrames: transFrames,
-                              src: (tcs[0].frames, tcs[1].frames), rec: (tcs[2].frames, tcs[3].frames), recHour: tcs[2].hour, drop: tcs[2].drop))
+                              src: (tcs[0].frames, tcs[1].frames), rec: (tcs[2].frames, tcs[3].frames), drop: tcs[2].drop))
             named = nil
         }
         guard !lines.isEmpty else { throw EditError("No events in the EDL") }
 
         let firstLine = lines.min { $0.rec.0 < $1.rec.0 }!
-        let origin = EDLTimecode.frames(firstLine.recHour, 0, 0, 0, nominal: nominal, drop: firstLine.drop)
+        let perHour = EDLTimecode.frames(1, 0, 0, 0, nominal: nominal, drop: firstLine.drop)
+        let hour = firstLine.rec.0 / perHour * perHour
+        let origin = Double(hour + perHour - firstLine.rec.0) / rate <= 600 ? firstLine.rec.0 : hour
         func seconds(_ f: Int) -> Seconds { Double(f * grid.num) / Double(grid.den) }
         func rec(_ f: Int) -> Seconds { seconds(f - origin) }
 
         // Media
         var media: [MediaAsset] = []
         var usedIds = Set<String>()
-        var byPath: [String: String] = [:]
-        func resolve(_ l: Line, video: Bool, audio: Bool) -> String? {
+        var byKey: [String: String] = [:]
+        var placeholders = Set<String>(), offline = Set<String>()
+        /// "Z682_156 (LAY3) FF" and "Z686_5A (LAY2) (47.56 FPS)" name the same media as "Z682_156 (LAY3)" and "Z686_5A (LAY2)".
+        func mediaName(_ s: String) -> String {
+            var s = s.trimmingCharacters(in: .whitespaces)
+            if let r = s.range(of: #"\s*\(\s*-?[0-9.]+\s*FPS\s*\)\s*$"#, options: [.regularExpression, .caseInsensitive]) { s.removeSubrange(r) }
+            if let r = s.range(of: #"\s+FF$"#, options: .regularExpression) { s.removeSubrange(r) }
+            return s.isEmpty ? "Clip" : s
+        }
+        func resolve(_ l: Line, video: Bool, audio: Bool) -> String {
             var names: [String] = []
-            if let c = l.clipName { names.append(c) }
+            if let c = l.clipName {
+                names.append(c)
+                if mediaName(c) != c { names.append(mediaName(c)) }
+            }
             if let f = l.sourceFile {
                 names.append(f)
-                names.append((f as NSString).lastPathComponent)
-                names.append(((f as NSString).lastPathComponent as NSString).deletingPathExtension)
+                names.append(fileName(f))
+                names.append((fileName(f) as NSString).deletingPathExtension)
             }
             names.append(l.reel)
             var id: String?
             for n in names where id == nil { id = mediaResolver(n) }
-            var path = l.sourceFile ?? ""
-            if id == nil, let f = l.sourceFile {
-                path = f.hasPrefix("file:") ? (URL(string: f)?.path ?? f) : f
-                if let known = byPath[path] { id = known } else {
-                    let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-                    id = unique(slug(name), &usedIds)
-                    byPath[path] = id
-                    if !exists(path), !missing.contains(path) { missing.append(path) }
+            var path = l.sourceFile.map { $0.hasPrefix("file:") ? (URL(string: $0)?.path ?? $0) : $0 } ?? ""
+            if id == nil {
+                let key = path.isEmpty ? l.clipName.map(mediaName) ?? l.reel : path
+                if let known = byKey[key] { id = known } else {
+                    let base = path.isEmpty ? (key as NSString).deletingPathExtension : (fileName(path) as NSString).deletingPathExtension
+                    let made = unique(slug(base), &usedIds)
+                    byKey[key] = made
+                    placeholders.insert(made)
+                    if !exists(path) {
+                        offline.insert(made)
+                        if !missing.contains(path.isEmpty ? key : path) { missing.append(path.isEmpty ? key : path) }
+                    }
+                    if path.isEmpty { path = key }
+                    id = made
                 }
             }
-            guard let id else {
-                let what = l.clipName ?? l.reel
-                warnings.append("Event \(l.event): no media for \(what); left as a gap")
-                if !missing.contains(what) { missing.append(what) }
-                return nil
-            }
-            if let i = media.firstIndex(where: { $0.id == id }) {
+            let found = id!
+            if let i = media.firstIndex(where: { $0.id == found }) {
                 media[i].hasVideo = media[i].hasVideo || video
                 media[i].hasAudio = media[i].hasAudio || audio
                 if media[i].path.isEmpty { media[i].path = path }
             } else {
-                usedIds.insert(id)
-                let name = l.clipName.map { ($0 as NSString).deletingPathExtension } ?? l.reel
-                media.append(MediaAsset(id: id, path: path, name: name, duration: 0, width: 1920, height: 1080, fps: niceFps(rate), hasVideo: video, hasAudio: audio))
+                usedIds.insert(found)
+                let name = l.clipName.map { (mediaName($0) as NSString).deletingPathExtension } ?? l.reel
+                media.append(MediaAsset(id: found, path: path, name: name, duration: 0, width: 1920, height: 1080, fps: niceFps(rate), hasVideo: video, hasAudio: audio))
             }
-            return id
+            return found
         }
         var extent: [String: Seconds] = [:]
+        var mismatched: [String] = []
 
         // Tracks by channel: video channels by number, then audio.
         struct Channel: Hashable { var kind: TrackKind; var n: Int }
@@ -1236,22 +1586,24 @@ extension Importer {
         func isBlack(_ reel: String) -> Bool { ["BL", "BLK", "BLACK"].contains(reel.uppercased()) }
         func makeClip(_ l: Line, _ ch: (main: Channel, audio: Bool)) -> Clip? {
             guard !isBlack(l.reel), l.rec.1 > l.rec.0 else { return nil }
-            guard let id = resolve(l, video: ch.main.kind == .video, audio: ch.audio) else { return nil }
+            let id = resolve(l, video: ch.main.kind == .video, audio: ch.audio)
             let duration = seconds(l.rec.1 - l.rec.0)
             count += 1
             var c = Clip(id: "c\(count)", kind: .media, name: l.clipName ?? l.reel, mediaId: id, start: rec(l.rec.0), duration: duration, sourceIn: seconds(l.src.0))
-            var speed = l.speed ?? 1
-            if l.speed == nil, l.src.1 != l.src.0, abs((l.src.1 - l.src.0) - (l.rec.1 - l.rec.0)) > 1 {
-                speed = Double(l.src.1 - l.src.0) / Double(l.rec.1 - l.rec.0)
+            if l.freeze || l.speed == 0 {
+                freeze(&c)
+            } else {
+                var speed = l.speed ?? 1
+                if l.speed == nil, l.src.1 != l.src.0, abs((l.src.1 - l.src.0) - (l.rec.1 - l.rec.0)) > 1 { mismatched.append(l.event) }
+                if speed < 0 { c.reverse = true; speed = -speed }
+                if speed < 0.01 || speed > 100 {
+                    warnings.append("Event \(l.event): speed \(speed)× not kept")
+                    speed = 1
+                }
+                c.speed = niceSpeed(speed)
+                if c.reverse { c.sourceIn -= duration * c.speed }
             }
-            if speed < 0 { c.reverse = true; speed = -speed }
-            if speed < 0.01 || speed > 100 {
-                warnings.append("Event \(l.event): speed \(speed)× not kept")
-                speed = 1
-            }
-            c.speed = niceSpeed(speed)
-            if c.reverse { c.sourceIn -= duration * c.speed }
-            extent[id] = max(extent[id] ?? 0, c.sourceOut)
+            extent[id] = max(extent[id] ?? 0, c.sourceOut, c.sourceIn + 1 / rate)
             return c
         }
 
@@ -1308,6 +1660,24 @@ extension Importer {
             if let f = from, let id = f.mediaId { extent[id] = max(extent[id] ?? 0, f.sourceOut + d * f.speed) }
             transitions.append(Transition(id: "tr\(transitions.count + 1)", from: from?.id, to: incoming.id, type: type, duration: d, align: .start))
         }
+        if !mismatched.isEmpty {
+            let list = mismatched.count > 6 ? mismatched.prefix(6).joined(separator: ", ") + ", …" : mismatched.joined(separator: ", ")
+            warnings.append("Event\(mismatched.count == 1 ? "" : "s") \(list): source and record durations differ without an M2 speed; record durations kept at normal speed")
+        }
+
+        // Offline sources count from the hour of their first timecode.
+        let sourceHour = EDLTimecode.frames(1, 0, 0, 0, nominal: nominal, drop: drop)
+        for id in placeholders {
+            let ins = clips.values.flatMap { $0 }.filter { $0.mediaId == id }.map(\.sourceIn)
+            guard let low = ins.min(), let m = media.firstIndex(where: { $0.id == id }) else { continue }
+            let tc = seconds(Int((low * rate + 0.5) / Double(sourceHour)) * sourceHour)
+            guard tc > 0 else { continue }
+            media[m].timecodeStart = tc
+            for key in clips.keys {
+                for k in clips[key]!.indices where clips[key]![k].mediaId == id { clips[key]![k].sourceIn -= tc }
+            }
+            extent[id] = (extent[id] ?? tc) - tc
+        }
 
         for k in media.indices { media[k].duration = extent[media[k].id] ?? 0 }
         var tracks: [Track] = []
@@ -1337,7 +1707,7 @@ extension Importer {
         p.tracks = tracks
         p.transitions = transitions
         p.markers = locs.enumerated().map { Marker(id: "marker\($0.offset + 1)", time: rec($0.element.frames), label: $0.element.label) }.sorted { $0.time < $1.time }
-        finish(&p, &warnings)
+        finish(&p, &warnings, offline: offline)
         return ImportResult(project: p, warnings: warnings, missingMedia: missing)
     }
 }
@@ -1436,6 +1806,718 @@ extension Project {
         if video == nil { flushMarkers(before: nil) }
         while out.last == "" { out.removeLast() }
         return out.joined(separator: "\n") + "\n"
+    }
+}
+
+// MARK: Final Cut Pro 7 XML
+
+extension Importer {
+    /// Final Cut Pro 7 XML (xmeml 1–5), which Premiere Pro, Resolve and Hiero also write: the first
+    /// sequence's video and audio tracks, clipitems with their `file` (defined once, referenced by id after),
+    /// nested sequences, transitionitems (clip edges of -1 sit at the transition's cut), generators (text,
+    /// color mattes, slugs), Time Remap speed, Audio Levels, Opacity, enabled flags and markers.
+    /// Audio clipitems that only repeat a video clip's sound fold into it; video clips whose sound isn't on
+    /// an audio track are silent. Files that don't exist, or that have no path, stay as offline media.
+    public static func xmeml(_ data: Data, relativeTo base: URL?) throws -> ImportResult {
+        let doc: XMLDocument
+        do { doc = try XMLDocument(data: data, options: []) } catch { throw EditError("Not valid XML: \(error.localizedDescription)") }
+        guard let root = doc.rootElement(), root.name == "xmeml" else { throw EditError("Not a Final Cut Pro 7 XML document: the root element must be <xmeml>") }
+        return try XMEMLReader(base: base).read(root)
+    }
+}
+
+final class XMEMLReader {
+    /// Premiere Pro's time unit.
+    static let ticksPerSecond = 254_016_000_000.0
+
+    let base: URL?
+    var warnings: [String] = []
+    var missing: [String] = []
+    var media: [MediaAsset] = []
+    var offline = Set<String>()
+    var fileDefs: [String: XMLElement] = [:]
+    var sequenceDefs: [String: XMLElement] = [:]
+    var mediaByKey: [String: String] = [:]
+    var usedMediaIds = Set<String>(), usedSequenceIds = Set<String>()
+    var sequences: [NestedSequence] = []
+    var nestedIds: [String: String] = [:]
+    var reading = Set<String>()
+    var markers: [Marker] = []
+    var dropped: [(name: String, clips: [String])] = []
+    var nestedMarkers = 0
+    /// Clip ids to their clipitem ids, and the clipitems each is linked with.
+    var xmlIds: [String: String] = [:]
+    var links: [String: Set<String>] = [:]
+    var clipCount = 0, transitionCount = 0
+    var canvas = Canvas()
+
+    init(base: URL?) { self.base = base }
+
+    func text(_ e: XMLElement?, _ name: String) -> String? {
+        e?.first(name)?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    func number(_ e: XMLElement?, _ name: String) -> Double? { text(e, name).flatMap { Double($0) } }
+
+    /// Frames per second of a `<rate>` (timebase, ntsc) inside `e`.
+    func rate(_ e: XMLElement?) -> Double? {
+        guard let r = e?.first("rate"), let base = number(r, "timebase"), base > 0 else { return nil }
+        return text(r, "ntsc")?.uppercased() == "TRUE" ? base * 1000 / 1001 : base
+    }
+
+    func all(_ e: XMLElement) -> [XMLElement] { e.elems.flatMap { [$0] + all($0) } }
+
+    func drop(_ what: String, on clip: String) {
+        if let i = dropped.firstIndex(where: { $0.name == what }) { dropped[i].clips.append(clip) } else { dropped.append((what, [clip])) }
+    }
+
+    func read(_ root: XMLElement) throws -> ImportResult {
+        for e in all(root) where !e.elems.isEmpty {
+            guard let id = e.attr("id") else { continue }
+            if e.name == "file", fileDefs[id] == nil { fileDefs[id] = e }
+            if e.name == "sequence", sequenceDefs[id] == nil { sequenceDefs[id] = e }
+        }
+        // The sequence at the top, or the first one in a project's bins.
+        var tops = root.elems.filter { $0.name == "sequence" }
+        if tops.isEmpty {
+            func bins(_ e: XMLElement) -> [XMLElement] {
+                e.elems.flatMap { k -> [XMLElement] in
+                    if k.name == "sequence" { return [k] }
+                    return ["project", "children", "bin"].contains(k.name ?? "") ? bins(k) : []
+                }
+            }
+            tops = bins(root)
+        }
+        guard let seq = tops.first else { throw EditError("No sequence in the XML") }
+        if tops.count > 1 { warnings.append("The file has \(tops.count) sequences; imported \(text(seq, "name") ?? "the first")") }
+
+        let fps = rate(seq) ?? 30
+        let format = seq.first("media")?.first("video")?.first("format")?.first("samplecharacteristics")
+        canvas = Canvas(width: Int(number(format, "width") ?? 1920), height: Int(number(format, "height") ?? 1080), fps: Importer.niceFps(fps))
+
+        let (tracks, transitions) = readBody(seq, top: true)
+        for m in seq.elems where m.name == "marker" {
+            guard let at = number(m, "in"), at >= 0 else { continue }
+            markers.append(Marker(id: "marker\(markers.count + 1)", time: at / fps, label: markerLabel(m)))
+        }
+        var p = Project(name: text(seq, "name").flatMap { $0.isEmpty ? nil : $0 } ?? "Imported", canvas: canvas)
+        p.media = media
+        p.tracks = tracks.contains(where: { $0.kind == .video }) ? tracks : [Track(id: "V1", kind: .video, name: "Video 1")] + tracks
+        p.transitions = transitions
+        p.markers = markers.sorted { $0.time < $1.time }
+        p.sequences = sequences
+        if nestedMarkers > 0 { warnings.append("\(nestedMarkers) marker(s) inside nested sequences not kept") }
+        for d in dropped { warnings.append(Importer.summarize(d.name, clips: d.clips)) }
+        Importer.finish(&p, &warnings, offline: offline)
+        return ImportResult(project: p, warnings: warnings, missingMedia: missing)
+    }
+
+    func markerLabel(_ m: XMLElement) -> String {
+        text(m, "name").flatMap { $0.isEmpty ? nil : $0 } ?? text(m, "comment").flatMap { $0.isEmpty ? nil : $0 } ?? "Marker"
+    }
+
+    /// Tracks and transitions of a sequence, with repeated sound folded away.
+    func readBody(_ seq: XMLElement, top: Bool) -> ([Track], [Transition]) {
+        let fps = rate(seq) ?? canvas.fps
+        var tracks: [Track] = []
+        var transitions: [Transition] = []
+        for kind in [TrackKind.video, .audio] {
+            let holder = seq.first("media")?.first(kind == .video ? "video" : "audio")
+            for (n, t) in (holder?.elems.filter { $0.name == "track" } ?? []).enumerated() {
+                let enabled = text(t, "enabled")?.uppercased() != "FALSE"
+                let name = text(t, "name").flatMap { $0.isEmpty ? nil : $0 } ?? "\(kind == .video ? "Video" : "Audio") \(n + 1)"
+                let read = readTrack(t, kind: kind, fps: fps, top: top)
+                transitions += read.transitions
+                tracks.append(Track(id: "", kind: kind, name: name, muted: kind == .audio && !enabled, hidden: kind == .video && !enabled, clips: read.clips))
+                if !read.disabled.isEmpty {
+                    tracks.append(Track(id: "", kind: kind, name: "\(name) (disabled)", muted: kind == .audio, hidden: kind == .video, clips: read.disabled))
+                }
+            }
+        }
+
+        // Audio clipitems repeating a video clip's sound, or another channel's, fold away.
+        let half = 0.5 / fps
+        func same(_ a: Clip, _ b: Clip) -> Bool {
+            a.mediaId == b.mediaId && a.kind == b.kind && abs(a.start - b.start) < half && abs(a.duration - b.duration) < half
+                && abs(a.sourceIn - b.sourceIn) < half && abs(a.speed - b.speed) < 1e-6 && a.reverse == b.reverse
+        }
+        var heard = Set<String>()
+        var folded = Set<String>()
+        for t in tracks.indices where tracks[t].kind == .audio {
+            for a in tracks[t].clips {
+                for v in tracks.indices where tracks[v].kind == .video && !folded.contains(a.id) {
+                    guard let i = tracks[v].clips.firstIndex(where: { same($0, a) }) else { continue }
+                    if !heard.contains(tracks[v].clips[i].id) { tracks[v].clips[i].volume = a.volume }
+                    heard.insert(tracks[v].clips[i].id)
+                    folded.insert(a.id)
+                }
+            }
+        }
+        // Other channels of sound already folded, linked to the same picture, go too.
+        let heardXML = Set(heard.compactMap { xmlIds[$0] })
+        var seen: [Clip] = []
+        for t in tracks.indices where tracks[t].kind == .audio {
+            let kept = tracks[t].clips.filter { a in
+                if folded.contains(a.id) { return false }
+                if !(links[a.id] ?? []).isDisjoint(with: heardXML),
+                   tracks.contains(where: { $0.kind == .video && $0.clips.contains { heard.contains($0.id) && $0.mediaId == a.mediaId && links[a.id]!.contains(xmlIds[$0.id] ?? "") } }) {
+                    return false
+                }
+                if seen.contains(where: { same($0, a) }) { return false }
+                seen.append(a)
+                return true
+            }
+            if !tracks[t].clips.isEmpty, kept.isEmpty { tracks[t].id = "-" }
+            tracks[t].clips = kept
+        }
+        tracks.removeAll { $0.id == "-" }
+        // Clips that overlap on a track move to a track of their own below it.
+        var split: [Track] = []
+        for track in tracks {
+            var lanes: [[Clip]] = [[]]
+            for c in track.clips.sorted(by: { $0.start < $1.start }) {
+                if let l = lanes.firstIndex(where: { ($0.last?.end ?? -.infinity) <= c.start + 1e-6 }) { lanes[l].append(c) } else { lanes.append([c]) }
+            }
+            for (n, clips) in lanes.enumerated() {
+                var t = track
+                t.clips = clips
+                if n > 0 {
+                    t.name += " (overlap \(n))"
+                    warnings.append("Overlapping clips on \(track.name) moved to a track of their own")
+                }
+                split.append(t)
+            }
+        }
+        tracks = split
+        // Picture whose sound isn't on any audio track plays silent.
+        for t in tracks.indices where tracks[t].kind == .video {
+            for c in tracks[t].clips.indices where !heard.contains(tracks[t].clips[c].id) {
+                let clip = tracks[t].clips[c]
+                let sounds: Bool
+                switch clip.kind {
+                case .media: sounds = clip.mediaId.flatMap { id in media.first { $0.id == id } }?.hasAudio ?? false
+                case .sequence: sounds = clip.mediaId.flatMap { id in sequences.first { $0.id == id } }.map(audible) ?? false
+                default: sounds = false
+                }
+                if sounds { tracks[t].clips[c].volume = 0 }
+            }
+        }
+        var v = 0, a = 0
+        for t in tracks.indices {
+            if tracks[t].kind == .video { v += 1; tracks[t].id = "V\(v)" } else { a += 1; tracks[t].id = "A\(a)" }
+        }
+        return (tracks, transitions)
+    }
+
+    /// Whether anything in a nested sequence makes sound.
+    func audible(_ seq: NestedSequence) -> Bool {
+        seq.tracks.contains { t in
+            t.clips.contains { c in
+                guard c.volume > 0 else { return false }
+                switch c.kind {
+                case .media: return t.kind == .audio || (media.first { $0.id == c.mediaId }?.hasAudio ?? false)
+                case .sequence: return sequences.first { $0.id == c.mediaId }.map(audible) ?? false
+                default: return false
+                }
+            }
+        }
+    }
+
+    /// A transitionitem in sequence frames, with the frame its clips' -1 edges stand for.
+    struct Edge {
+        var start: Double
+        var end: Double
+        var cut: Double
+        var align: String
+    }
+
+    func readTrack(_ track: XMLElement, kind: TrackKind, fps: Double, top: Bool) -> (clips: [Clip], disabled: [Clip], transitions: [Transition]) {
+        let entries = track.elems.filter { ["clipitem", "generatoritem", "transitionitem"].contains($0.name ?? "") }
+        var edges: [Int: Edge] = [:]
+        for (i, e) in entries.enumerated() where e.name == "transitionitem" {
+            guard let s = number(e, "start"), let en = number(e, "end"), en > s else { continue }
+            let align = text(e, "alignment")?.lowercased() ?? "center"
+            var cut: Double
+            switch align {
+            case "start", "start-black": cut = s
+            case "end", "end-black": cut = en
+            default: cut = s + ((en - s) / 2).rounded(.down)
+            }
+            if let ticks = number(e, "cutPointTicks"), align == "center" || align.isEmpty {
+                cut = s + (ticks / Self.ticksPerSecond * fps).rounded()
+            }
+            edges[i] = Edge(start: s, end: en, cut: cut, align: align)
+        }
+        var clips: [Clip] = [], disabled: [Clip] = []
+        var ids: [Int: String] = [:]
+        var cursor = 0.0
+        for (i, e) in entries.enumerated() where e.name != "transitionitem" {
+            var s = number(e, "start") ?? -1, en = number(e, "end") ?? -1
+            var mediaStart = s, mediaEnd = en
+            if s < 0, let t = i > 0 ? edges[i - 1] : nil { s = t.cut; mediaStart = t.start }
+            if en < 0, let t = edges[i + 1] { en = t.cut; mediaEnd = t.end }
+            let length = (number(e, "out") ?? 0) - (number(e, "in") ?? 0)
+            if s < 0 { s = en >= 0 ? en - length : cursor; mediaStart = s }
+            if en < 0 { en = s + length; mediaEnd = en }
+            if mediaStart < 0 { mediaStart = s }
+            if mediaEnd < 0 { mediaEnd = en }
+            cursor = en
+            guard en > s else { continue }
+            guard var c = item(e, kind: kind, fps: fps, start: s, end: en, mediaStart: mediaStart, mediaEnd: mediaEnd, top: top) else { continue }
+            clipCount += 1
+            c.id = "c\(clipCount)"
+            c.start = s / fps
+            c.duration = (en - s) / fps
+            if text(e, "enabled")?.uppercased() == "FALSE" {
+                disabled.append(c)
+                continue
+            }
+            if top, c.kind == .media || c.kind == .sequence {
+                let cr = rate(e) ?? fps
+                for m in e.elems where m.name == "marker" {
+                    guard let at = number(m, "in") else { continue }
+                    let t = c.start + (at / cr - c.sourceIn) / max(c.speed, 0.01)
+                    if t >= c.start - 1e-9 && t <= c.end + 1e-9 {
+                        markers.append(Marker(id: "marker\(markers.count + 1)", time: t, label: markerLabel(m)))
+                    }
+                }
+            } else if !top {
+                nestedMarkers += e.elems.filter { $0.name == "marker" }.count
+            }
+            clips.append(c)
+            ids[i] = c.id
+            xmlIds[c.id] = e.attr("id")
+            links[c.id] = Set(e.elems.filter { $0.name == "link" }.compactMap { text($0, "linkclipref") })
+        }
+
+        var transitions: [Transition] = []
+        for (i, edge) in edges.sorted(by: { $0.key < $1.key }) {
+            let e = entries[i]
+            let from = ids[i - 1], to = ids[i + 1]
+            guard from != nil || to != nil else { continue }
+            let effect = e.first("effect")
+            let name = text(effect, "name") ?? text(effect, "effectid") ?? "Transition"
+            let lower = name.lowercased(), category = text(effect, "effectcategory")?.lowercased() ?? ""
+            var type = "dissolve"
+            if lower.contains("dip") || lower.contains("fade to") {
+                type = "dip"
+            } else if category.contains("wipe") || lower.contains("wipe") {
+                type = "wipe"
+                warnings.append("Transition \(name) imported as a left-to-right wipe")
+            } else if !(lower.contains("dissolve") || lower.contains("cross fade") || lower.contains("crossfade") || lower.contains("constant")) {
+                warnings.append("Transition \(name) imported as a dissolve")
+            }
+            let d = (edge.end - edge.start) / fps
+            var align = TransitionAlign.center
+            switch edge.align {
+            case "start", "start-black": align = .start
+            case "end", "end-black": align = .end
+            default: break
+            }
+            let pair = from != nil && to != nil && !edge.align.hasSuffix("black")
+            transitionCount += 1
+            transitions.append(Transition(id: "tr\(transitionCount)", from: edge.align == "start-black" ? nil : from, to: edge.align == "end-black" ? nil : to,
+                                          type: type, duration: d, align: pair ? align : .center,
+                                          part: kind == .audio ? .audio : .both))
+        }
+        return (clips, disabled, transitions)
+    }
+
+    /// One clipitem or generatoritem between sequence frames `start` and `end`, whose media spans
+    /// `mediaStart`–`mediaEnd` (wider than the clip under transitions).
+    func item(_ e: XMLElement, kind: TrackKind, fps: Double, start: Double, end: Double, mediaStart: Double, mediaEnd: Double, top: Bool) -> Clip? {
+        let name = text(e, "name").flatMap { $0.isEmpty ? nil : $0 } ?? (e.name == "generatoritem" ? "Generator" : "Clip")
+        let duration = (end - start) / fps
+        if e.name == "generatoritem" { return generator(e, effect: e.first("effect"), name: name, kind: kind, duration: duration) }
+
+        let cr = rate(e) ?? fps
+        let inF = number(e, "in") ?? 0, outF = number(e, "out") ?? inF
+        var c: Clip
+        if let s = e.first("sequence") {
+            guard let id = nested(s) else { return nil }
+            c = Clip(id: "", kind: .sequence, name: name, mediaId: id, start: 0, duration: duration, sourceIn: inF / cr)
+        } else {
+            guard let f = e.first("file") else {
+                warnings.append("Clipitem \(name) has no file; left as a gap")
+                return nil
+            }
+            let file = f.attr("id").flatMap { fileDefs[$0] } ?? f
+            let source = text(file, "mediaSource") ?? ""
+            if source == "Slug" || source == "GraphicAndType" {
+                if let made = synthetic(e, file: file, source: source, name: name, kind: kind, duration: duration) { return made }
+            }
+            let id = mediaId(file, key: f.attr("id"), clipName: name, kind: kind)
+            c = Clip(id: "", kind: .media, name: name, mediaId: id, start: 0, duration: duration, sourceIn: inF / cr)
+        }
+
+        // Speed: the frames used against the frames shown, else the Time Remap filter.
+        var speed = 1.0, reverse = false, freeze = false
+        let shown = (mediaEnd - mediaStart) / fps, used = (outF - inF) / cr
+        if shown > 0, used > 0, abs(used / shown - 1) > 0.005 { speed = used / shown }
+        for effect in filters(e) {
+            let id = (text(effect, "effectid") ?? "").lowercased(), effectName = text(effect, "name") ?? id
+            let params = effect.elems.filter { $0.name == "parameter" }
+            func param(_ key: String) -> XMLElement? { params.first { ($0.first("parameterid")?.stringValue ?? "").lowercased() == key } }
+            switch id {
+            case "timeremap", "speed":
+                if text(param("variablespeed"), "value") == "1" || param("graphdict")?.first("keyframe") != nil {
+                    drop("Variable speed", on: name)
+                }
+                if text(param("reverse"), "value")?.uppercased() == "TRUE" { reverse = true }
+                if let v = number(param("speed"), "value") {
+                    if v < 0 { reverse = true }
+                    if v == 0 { freeze = true } else if speed == 1, abs(abs(v) - 100) > 1e-6 {
+                        // Percent in Final Cut Pro 7 and Premiere; Hiero writes the factor itself.
+                        speed = abs(v) > 10 ? abs(v) / 100 : abs(v)
+                    }
+                }
+            case "audiolevels":
+                if let p = param("level") {
+                    if p.first("keyframe") != nil { drop("Audio level keyframes", on: name) }
+                    if let v = number(p, "value") { c.volume *= max(0, v) }
+                }
+            case "opacity":
+                if let p = param("opacity") {
+                    if p.first("keyframe") != nil { drop("Opacity keyframes", on: name) }
+                    if let v = number(p, "value") { c.transform.opacity = min(max(v / 100, 0), 1) }
+                }
+            default:
+                drop("Filter \(effectName)", on: name)
+            }
+        }
+        if freeze {
+            Importer.freeze(&c)
+        } else {
+            if speed < 0.01 || speed > 100 {
+                warnings.append("Speed \(speed)× on \(name) not kept")
+                speed = 1
+            }
+            c.speed = Importer.niceSpeed(speed)
+            c.reverse = reverse
+            // Under an incoming transition the media starts at the transition, before the clip.
+            c.sourceIn += (start - mediaStart) / fps * c.speed
+            if reverse { c.sourceIn = inF / cr + (mediaEnd - end) / fps * c.speed }
+        }
+        return c
+    }
+
+    /// Enabled effects of a clipitem's filters.
+    func filters(_ e: XMLElement) -> [XMLElement] {
+        e.elems.filter { $0.name == "filter" && text($0, "enabled")?.uppercased() != "FALSE" }.compactMap { $0.first("effect") }
+    }
+
+    /// Premiere's synthetic media: black video becomes a solid, graphics with their text become titles.
+    func synthetic(_ e: XMLElement, file: XMLElement, source: String, name: String, kind: TrackKind, duration: Seconds) -> Clip? {
+        let fileName = text(file, "name") ?? name
+        if source == "GraphicAndType" {
+            if let effect = filters(e).first(where: { text($0, "effectid") == "GraphicAndType" }), let words = text(effect, "name"), !words.isEmpty, kind == .video {
+                warnings.append("Graphic \(name): its text is kept, its styling isn't")
+                let t = words.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+                return Clip(id: "", kind: .text, name: name, start: 0, duration: duration, text: TextSpec(text: t))
+            }
+            warnings.append("Graphic \(name) has no readable text; kept as offline media")
+            return nil
+        }
+        guard kind == .video else { return nil }
+        switch fileName.lowercased() {
+        case "black video":
+            return Clip(id: "", kind: .solid, name: name, start: 0, duration: duration, color: .black)
+        case "transparent video":
+            warnings.append("Transparent Video \(name) imported as an empty adjustment clip")
+            return Clip(id: "", kind: .adjustment, name: name, start: 0, duration: duration)
+        default:
+            warnings.append("Premiere \(fileName) kept as offline media")
+            return nil
+        }
+    }
+
+    func generator(_ e: XMLElement, effect: XMLElement?, name: String, kind: TrackKind, duration: Seconds) -> Clip? {
+        guard kind == .video else { return nil }
+        let id = (text(effect, "effectid") ?? "").lowercased(), category = (text(effect, "effectcategory") ?? "").lowercased()
+        let params = effect?.elems.filter { $0.name == "parameter" } ?? []
+        func param(_ key: String) -> XMLElement? { params.first { ($0.first("parameterid")?.stringValue ?? "").lowercased() == key } }
+        if category == "text" || id.contains("text") {
+            if let words = text(param("str"), "value"), !words.isEmpty {
+                var spec = TextSpec(text: words.replacingOccurrences(of: "\r", with: "\n"))
+                if let font = text(param("fontname"), "value"), !font.isEmpty { spec.font = font }
+                return Clip(id: "", kind: .text, name: name == words ? nil : name, start: 0, duration: duration, text: spec)
+            }
+            warnings.append("Text generator \(name) has no text; left as a gap")
+            return nil
+        }
+        if id == "color" || category == "matte" || id == "slug" {
+            var color = RGBA.black
+            if let v = param("fillcolor")?.first("value") {
+                func channel(_ n: String) -> Double { min(max((number(v, n) ?? 0) / 255, 0), 1) }
+                color = RGBA(r: channel("red"), g: channel("green"), b: channel("blue"))
+            }
+            return Clip(id: "", kind: .solid, name: name, start: 0, duration: duration, color: color)
+        }
+        warnings.append("Generator \(name) (\(text(effect, "name") ?? id)) left as a gap")
+        return nil
+    }
+
+    /// Media for a `file`, shared by every clipitem naming the same file id.
+    func mediaId(_ file: XMLElement, key fileKey: String?, clipName: String, kind: TrackKind) -> String {
+        let url = text(file, "pathurl").flatMap { $0.isEmpty ? nil : $0 }
+        let name = text(file, "name").flatMap { $0.isEmpty ? nil : $0 } ?? clipName
+        let key = fileKey ?? url ?? "\u{0}" + name
+        let fileMedia = file.first("media")
+        if let id = mediaByKey[key], let i = media.firstIndex(where: { $0.id == id }) {
+            if kind == .video { media[i].hasVideo = true } else { media[i].hasAudio = true }
+            return id
+        }
+        let path = url.map { Importer.resolvePath($0, base: base, warnings: &warnings) } ?? name
+        let fr = rate(file) ?? canvas.fps
+        let video = fileMedia?.first("video"), sample = video?.first("samplecharacteristics")
+        let hasVideo = video != nil || kind == .video, hasAudio = fileMedia?.first("audio") != nil || kind == .audio
+        let ext = (path as NSString).pathExtension.lowercased()
+        let isImage = Importer.stillExtensions.contains(ext) && (number(file, "duration") ?? 0) <= 1
+        let id = Importer.unique(Importer.slug((name as NSString).deletingPathExtension), &usedMediaIds)
+        var m = MediaAsset(id: id, path: path, name: (name as NSString).deletingPathExtension,
+                           duration: isImage ? 0 : (number(file, "duration") ?? 0) / fr,
+                           width: hasVideo ? Int(number(sample, "width") ?? number(file, "width") ?? Double(canvas.width)) : 0,
+                           height: hasVideo ? Int(number(sample, "height") ?? number(file, "height") ?? Double(canvas.height)) : 0,
+                           fps: hasVideo && !isImage ? Importer.niceFps(fr) : 0, hasVideo: hasVideo, hasAudio: hasAudio, isImage: isImage)
+        if let tc = file.first("timecode"), let frame = number(tc, "frame"), frame > 0, !isImage {
+            m.timecodeStart = frame / (rate(tc) ?? fr)
+        }
+        if let reel = text(file.first("timecode")?.first("reel"), "name"), !reel.isEmpty { m.reel = reel }
+        media.append(m)
+        mediaByKey[key] = id
+        if !Importer.exists(path) {
+            offline.insert(id)
+            if !missing.contains(path) { missing.append(path) }
+        }
+        return id
+    }
+
+    /// A nested sequence, read once per id.
+    func nested(_ s: XMLElement) -> String? {
+        let xmlId = s.attr("id")
+        if let xmlId, let known = nestedIds[xmlId] { return known }
+        let def = xmlId.flatMap { sequenceDefs[$0] } ?? s
+        guard def.first("media") != nil else {
+            warnings.append("Nested sequence \(xmlId ?? "") isn't in the file; left as a gap")
+            return nil
+        }
+        if let xmlId {
+            guard !reading.contains(xmlId) else { return nil }
+            reading.insert(xmlId)
+        }
+        let (tracks, transitions) = readBody(def, top: false)
+        nestedMarkers += def.elems.filter { $0.name == "marker" }.count
+        let name = text(def, "name").flatMap { $0.isEmpty ? nil : $0 } ?? "Nested \(sequences.count + 1)"
+        let id = Importer.unique(Importer.slug(name), &usedSequenceIds)
+        sequences.append(NestedSequence(id: id, name: name, tracks: tracks, transitions: transitions))
+        if let xmlId { nestedIds[xmlId] = id; reading.remove(xmlId) }
+        return id
+    }
+}
+
+extension Project {
+    /// Final Cut Pro 7 XML (xmeml version 5) for Premiere Pro, Resolve and Final Cut Pro 7, timed in canvas
+    /// frames. Video tracks come bottom first, then audio: the sound of video clips on an audio track of its
+    /// own after each video track's, then the audio tracks. Each file is described at its first use and
+    /// referenced by id after. Dissolves (wipes stay wipes, dips become Dip to Black) are transitionitems,
+    /// with the clips' edges under them written as -1 and their media spanning the transition. Speed is a
+    /// Time Remap filter, volume Audio Levels and opacity Opacity. Text clips become Text generators, solids
+    /// Color mattes, nested sequences nested sequences; adjustment and generator clips are left out.
+    public func xmeml() -> String {
+        let grid = FrameGrid(fps: canvas.fps)
+        let timebase = max(1, Int(grid.rate.rounded()))
+        let ntsc = grid.num == 1001
+        func f(_ t: Seconds) -> Int { grid.frames(t) }
+        func leaf(_ name: String, _ value: String) -> XMLElem { XMLElem(name, text: value) }
+        func rate() -> XMLElem { XMLElem("rate", children: [leaf("timebase", "\(timebase)"), leaf("ntsc", ntsc ? "TRUE" : "FALSE")]) }
+        func timecode(_ frames: Int) -> XMLElem {
+            XMLElem("timecode", children: [rate(), leaf("string", EDLTimecode.string(frames, nominal: timebase, drop: false)),
+                                           leaf("frame", "\(frames)"), leaf("displayformat", "NDF")])
+        }
+        func parameter(_ id: String, _ name: String, _ value: String, min: String? = nil, max: String? = nil) -> XMLElem {
+            XMLElem("parameter", children: [leaf("parameterid", id), leaf("name", name)] + (min.map { [leaf("valuemin", $0)] } ?? [])
+                + (max.map { [leaf("valuemax", $0)] } ?? []) + [leaf("value", value)])
+        }
+        func effect(_ name: String, id: String, category: String, type: String, mediaType: String, _ params: [XMLElem]) -> XMLElem {
+            XMLElem("effect", children: [leaf("name", name), leaf("effectid", id), leaf("effectcategory", category),
+                                         leaf("effecttype", type), leaf("mediatype", mediaType)] + params)
+        }
+        func number(_ v: Double) -> String {
+            let s = String(format: "%.6f", v)
+            var t = s
+            while t.hasSuffix("0") { t.removeLast() }
+            if t.hasSuffix(".") { t.removeLast() }
+            return t
+        }
+
+        var described = Set<String>()
+        func file(_ m: MediaAsset) -> XMLElem {
+            let id = "file-\(m.id)"
+            if described.contains(id) { return XMLElem("file", [("id", id)]) }
+            described.insert(id)
+            var kids = [leaf("name", (m.path as NSString).lastPathComponent.isEmpty ? m.name : (m.path as NSString).lastPathComponent)]
+            if m.path.hasPrefix("/") {
+                kids.append(leaf("pathurl", URL(fileURLWithPath: m.path).absoluteString.replacingOccurrences(of: "file:///", with: "file://localhost/")))
+            }
+            kids += [rate(), leaf("duration", "\(m.isImage ? 1 : f(m.duration))")]
+            kids.append(timecode(f(m.timecodeStart ?? 0)))
+            var mediaKids: [XMLElem] = []
+            if m.hasVideo {
+                mediaKids.append(XMLElem("video", children: [XMLElem("samplecharacteristics", children: [
+                    rate(), leaf("width", "\(m.width > 0 ? m.width : canvas.width)"), leaf("height", "\(m.height > 0 ? m.height : canvas.height)"),
+                ])]))
+            }
+            if m.hasAudio {
+                mediaKids.append(XMLElem("audio", children: [
+                    XMLElem("samplecharacteristics", children: [leaf("depth", "16"), leaf("samplerate", "48000")]), leaf("channelcount", "2"),
+                ]))
+            }
+            kids.append(XMLElem("media", children: mediaKids))
+            return XMLElem("file", [("id", id)], children: kids)
+        }
+
+        var itemCount = 0
+        var sequenceDescribed = Set<String>()
+        func sequenceElem(_ scope: Project, id: String, name: String, markers: [Marker]) -> XMLElem {
+            let windows = scope.transitionWindows
+            /// Sequence frames of a transitionitem; a centered one keeps its cut on a frame.
+            func frames(_ w: TransitionWindow) -> (start: Int, end: Int, cut: Int) {
+                let d = f(w.end - w.start)
+                switch (w.transition.from, w.transition.to, w.transition.align) {
+                case (nil, _, _), (_, _, .start): return (f(w.start), f(w.start) + d, f(w.start))
+                case (_, nil, _), (_, _, .end): return (f(w.end) - d, f(w.end), f(w.end))
+                case (_, _, .center):
+                    let cut = f(w.start + w.head)
+                    return (cut - d / 2, cut - d / 2 + d, cut)
+                }
+            }
+            func transitionItem(_ w: TransitionWindow, kind: TrackKind) -> XMLElem {
+                let tr = w.transition, at = frames(w)
+                let align: String
+                if tr.from == nil {
+                    align = "start-black"
+                } else if tr.to == nil {
+                    align = "end-black"
+                } else {
+                    align = tr.align == .start ? "start" : tr.align == .end ? "end" : "center"
+                }
+                let name: String, id: String, category: String
+                switch (tr.type, kind) {
+                case (_, .audio): (name, id, category) = ("Cross Fade (+3dB)", "KGAudioTransCrossFade3dB", "audiotransition")
+                case ("wipe", _): (name, id, category) = ("Edge Wipe", "Edge Wipe", "Wipe")
+                case ("dip", _): (name, id, category) = ("Dip to Color Dissolve", "Dip to Color Dissolve", "Dissolve")
+                default: (name, id, category) = ("Cross Dissolve", "Cross Dissolve", "Dissolve")
+                }
+                return XMLElem("transitionitem", children: [
+                    leaf("start", "\(at.start)"), leaf("end", "\(at.end)"), leaf("alignment", align), rate(),
+                    effect(name, id: id, category: category, type: "transition", mediaType: kind == .audio ? "audio" : "video", []),
+                ])
+            }
+            func byte(_ v: Double) -> String { "\(Int((min(max(v, 0), 1) * 255).rounded()))" }
+            /// `sound` is the audio of a video track, which takes no transitions.
+            func trackElem(_ track: Track, kind: TrackKind, sound: Bool) -> XMLElem {
+                let mine = sound ? [] : windows.filter { $0.trackId == track.id && (kind == .video ? $0.transition.hasVideo : $0.transition.hasAudio) }
+                var items: [XMLElem] = []
+                for c in track.clips.sorted(by: { $0.start < $1.start }) {
+                    let into = mine.first { $0.transition.to == c.id && $0.transition.from != nil }
+                    let outOf = mine.first { $0.transition.from == c.id && $0.transition.to != nil }
+                    if let w = mine.first(where: { $0.transition.to == c.id }) { items.append(transitionItem(w, kind: kind)) }
+                    let s = f(c.start), e = f(c.end)
+                    let head = into.map { s - frames($0).start } ?? 0, tail = outOf.map { frames($0).end - e } ?? 0
+                    var kids = [leaf("name", c.name ?? c.mediaId.flatMap { scope.mediaAsset($0)?.name } ?? c.kind.rawValue),
+                                leaf("enabled", "TRUE"), leaf("duration", "\(e - s + head + tail)"), rate(),
+                                leaf("start", into != nil ? "-1" : "\(s)"), leaf("end", outOf != nil ? "-1" : "\(e)")]
+                    switch c.kind {
+                    case .media:
+                        guard let m = c.mediaId.flatMap({ scope.mediaAsset($0) }) else { continue }
+                        let lo = min(c.sourceIn, c.sourceOut), hi = max(c.sourceIn, c.sourceOut)
+                        let inF = m.isImage ? 0 : f(lo - Double(head) / grid.rate * c.speed)
+                        let outF = m.isImage ? e - s + head + tail : f(hi + Double(tail) / grid.rate * c.speed)
+                        kids += [leaf("in", "\(inF)"), leaf("out", "\(outF)"), file(m)]
+                        if kind == .audio { kids.append(XMLElem("sourcetrack", children: [leaf("mediatype", "audio"), leaf("trackindex", "1")])) }
+                        if abs(c.speed - 1) > 1e-9 || c.reverse {
+                            kids.append(XMLElem("filter", children: [effect("Time Remap", id: "timeremap", category: "motion", type: "motion", mediaType: "video", [
+                                parameter("variablespeed", "variablespeed", "0"),
+                                parameter("speed", "speed", number(c.speed * 100 * (c.reverse ? -1 : 1))),
+                                parameter("reverse", "reverse", c.reverse ? "TRUE" : "FALSE"),
+                                parameter("frameblending", "frameblending", "FALSE"),
+                            ])]))
+                        }
+                    case .sequence:
+                        guard let seq = c.mediaId.flatMap({ scope.sequence($0) }) else { continue }
+                        kids += [leaf("in", "\(f(c.sourceIn) - head)"), leaf("out", "\(f(c.sourceIn + c.duration) + tail)")]
+                        let ref = "sequence-\(seq.id)"
+                        if sequenceDescribed.contains(ref) {
+                            kids.append(XMLElem("sequence", [("id", ref)]))
+                        } else {
+                            sequenceDescribed.insert(ref)
+                            kids.append(sequenceElem(scope.inside(seq), id: ref, name: seq.name, markers: []))
+                        }
+                    case .text where kind == .video:
+                        kids += [leaf("in", "0"), leaf("out", "\(e - s + head + tail)"), effect("Text", id: "Text", category: "Text", type: "generator", mediaType: "video", [
+                            parameter("str", "Text", c.text?.text ?? c.name ?? ""), parameter("fontname", "Font", c.text?.font ?? "system"),
+                        ])]
+                    case .solid where kind == .video:
+                        let color = c.color ?? .black
+                        kids += [leaf("in", "0"), leaf("out", "\(e - s + head + tail)"), effect("Color", id: "Color", category: "Matte", type: "generator", mediaType: "video", [
+                            XMLElem("parameter", children: [leaf("parameterid", "fillcolor"), leaf("name", "Color"), XMLElem("value", children: [
+                                leaf("alpha", "255"), leaf("red", byte(color.r)), leaf("green", byte(color.g)), leaf("blue", byte(color.b)),
+                            ])]),
+                        ])]
+                    default:
+                        continue
+                    }
+                    let gain = c.volume * track.volume
+                    if kind == .audio, abs(gain - 1) > 1e-6 {
+                        kids.append(XMLElem("filter", children: [effect("Audio Levels", id: "audiolevels", category: "audiolevels", type: "audiolevels", mediaType: "audio", [
+                            parameter("level", "Level", number(gain), min: "0", max: "3.98109"),
+                        ])]))
+                    }
+                    if kind == .video, c.transform.opacity < 1 - 1e-6 {
+                        kids.append(XMLElem("filter", children: [effect("Opacity", id: "opacity", category: "motion", type: "motion", mediaType: "video", [
+                            parameter("opacity", "opacity", number(c.transform.opacity * 100), min: "0", max: "100"),
+                        ])]))
+                    }
+                    itemCount += 1
+                    items.append(XMLElem(c.kind == .text || c.kind == .solid ? "generatoritem" : "clipitem", [("id", "clipitem-\(itemCount)")], children: kids))
+                    if let w = mine.first(where: { $0.transition.from == c.id && $0.transition.to == nil }) { items.append(transitionItem(w, kind: kind)) }
+                }
+                return XMLElem("track", children: items + [leaf("enabled", (kind == .video ? track.hidden : track.muted) ? "FALSE" : "TRUE"), leaf("locked", "FALSE")])
+            }
+
+            var video: [XMLElem] = [XMLElem("format", children: [XMLElem("samplecharacteristics", children: [
+                rate(), leaf("width", "\(canvas.width)"), leaf("height", "\(canvas.height)"), leaf("pixelaspectratio", "square"),
+            ])])]
+            var audio: [XMLElem] = [XMLElem("format", children: [XMLElem("samplecharacteristics", children: [leaf("depth", "16"), leaf("samplerate", "48000")])])]
+            for track in scope.tracks where track.kind == .video {
+                video.append(trackElem(track, kind: .video, sound: false))
+            }
+            for track in scope.tracks where track.kind == .video && !track.muted {
+                var sound = track
+                sound.clips = track.clips.filter { c in
+                    guard c.volume > 1e-6 else { return false }
+                    switch c.kind {
+                    case .media: return c.mediaId.flatMap { scope.mediaAsset($0) }.map { $0.hasAudio && !$0.isImage } ?? false
+                    case .sequence: return c.mediaId.flatMap { scope.sequence($0) }?.tracks.contains { $0.kind == .audio && !$0.clips.isEmpty || $0.kind == .video && $0.clips.contains { $0.kind == .media } } ?? false
+                    default: return false
+                    }
+                }
+                if !sound.clips.isEmpty { audio.append(trackElem(sound, kind: .audio, sound: true)) }
+            }
+            for track in scope.tracks where track.kind == .audio {
+                audio.append(trackElem(track, kind: .audio, sound: false))
+            }
+            var kids = [leaf("name", name), leaf("duration", "\(f(scope.duration))"), rate(), timecode(0),
+                        XMLElem("media", children: [XMLElem("video", children: video), XMLElem("audio", children: audio)])]
+            for m in markers.sorted(by: { $0.time < $1.time }) where m.time >= 0 {
+                kids.append(XMLElem("marker", children: [leaf("name", m.label), leaf("comment", ""), leaf("in", "\(f(m.time))"), leaf("out", "-1")]))
+            }
+            return XMLElem("sequence", [("id", id)], children: kids)
+        }
+
+        let root = XMLElem("xmeml", [("version", "5")], children: [sequenceElem(self, id: "sequence-1", name: name, markers: markers)])
+        var out = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n"
+        root.write(&out, depth: 0)
+        return out
     }
 }
 
