@@ -58,7 +58,7 @@ public final class RenderScene: @unchecked Sendable {
                 out = adjusted.composited(over: out).cropped(to: canvas)
                 continue
             }
-            guard var placed = layer(clip, at: t, source: source) else { continue }
+            guard var placed = blurredLayer(clip, at: t, source: source) else { continue }
             if !track.effects.isEmpty {
                 placed = EffectRenderer.apply(track.effects, to: placed, context: EffectRenderer.Context(unit: unit, time: t, opaque: false)) { _, _ in nil }
             }
@@ -162,7 +162,7 @@ public final class RenderScene: @unchecked Sendable {
         if !clip.effects.isEmpty {
             layer = EffectRenderer.apply(clip.effects, to: layer, context: ctx, param: param)
         }
-        return place(layer, center: center, scale: xf.scale, rotation: xf.rotation, opacity: xf.opacity)
+        return place(layer, center: center, xf: xf)
     }
 
     private var paths: [String: StabilizationPath?] = [:]
@@ -209,6 +209,66 @@ public final class RenderScene: @unchecked Sendable {
 
     func alpha(_ img: CIImage, _ a: Double) -> CIImage {
         img.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: a)])
+    }
+
+    /// Places a clip's picture: the anchor point pivots scale, rotation and 3D tilt, and lands at `center`
+    /// offset by its distance from the picture's center (so the default anchor keeps the picture centered).
+    func place(_ img: CIImage, center: CGPoint, xf: Transform) -> CIImage {
+        guard xf.is3D || xf.anchorX != 0.5 || xf.anchorY != 0.5 else {
+            return place(img, center: center, scale: xf.scale, rotation: xf.rotation, opacity: xf.opacity)
+        }
+        let e = img.extent
+        let a = CGPoint(x: e.minX + xf.anchorX * e.width, y: e.maxY - xf.anchorY * e.height)
+        let shift = CGPoint(x: center.x + (a.x - e.midX), y: center.y + (a.y - e.midY))
+        let f = max(0.3, xf.perspective) * canvasRect.height
+        let rx = xf.rotateX * .pi / 180, ry = xf.rotateY * .pi / 180, rz = -xf.rotation * .pi / 180
+        func project(_ p: CGPoint) -> CGPoint {
+            var x = (p.x - a.x) * xf.scale, y = (p.y - a.y) * xf.scale, z = 0.0
+            (y, z) = (y * cos(rx), y * sin(rx))
+            (x, z) = (x * cos(ry), z + x * sin(ry))
+            (x, y) = (x * cos(rz) - y * sin(rz), x * sin(rz) + y * cos(rz))
+            let k = f / max(f + z, f * 0.05)
+            return CGPoint(x: x * k + shift.x, y: y * k + shift.y)
+        }
+        var out: CIImage
+        if xf.is3D {
+            out = img.applyingFilter("CIPerspectiveTransform", parameters: [
+                "inputTopLeft": CIVector(cgPoint: project(CGPoint(x: e.minX, y: e.maxY))),
+                "inputTopRight": CIVector(cgPoint: project(CGPoint(x: e.maxX, y: e.maxY))),
+                "inputBottomRight": CIVector(cgPoint: project(CGPoint(x: e.maxX, y: e.minY))),
+                "inputBottomLeft": CIVector(cgPoint: project(CGPoint(x: e.minX, y: e.minY))),
+            ])
+        } else {
+            var t = CGAffineTransform(translationX: -a.x, y: -a.y)
+            t = t.concatenating(CGAffineTransform(scaleX: xf.scale, y: xf.scale))
+            if xf.rotation != 0 { t = t.concatenating(CGAffineTransform(rotationAngle: rz)) }
+            t = t.concatenating(CGAffineTransform(translationX: shift.x, y: shift.y))
+            out = img.transformed(by: t, highQualityDownsample: xf.scale < 1)
+        }
+        if xf.opacity < 0.999 {
+            out = out.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: xf.opacity)])
+        }
+        return out
+    }
+
+    /// A clip's placed picture averaged over the shutter interval when it has motion blur and moves.
+    func blurredLayer(_ clip: Clip, at t: Seconds, source: (String) -> CVPixelBuffer?) -> CIImage? {
+        let shutter = clip.number("transform.motion_blur", at: t - clip.start, default: clip.transform.motionBlur)
+        let moves = clip.anim.keys.contains { $0.hasPrefix("transform.") && $0 != "transform.opacity" }
+        guard shutter > 0, moves else { return layer(clip, at: t, source: source) }
+        let span = shutter / 360 / project.canvas.fps
+        let n = 8
+        var acc: CIImage?
+        for i in 0..<n {
+            let dt = span * (Double(i) / Double(n - 1) - 0.5)
+            guard var l = layer(clip, at: t + dt, source: source) else { continue }
+            l = l.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 1 / CGFloat(n), y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: 1 / CGFloat(n), z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: 1 / CGFloat(n), w: 0), "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1 / CGFloat(n)),
+            ])
+            acc = acc.map { l.applyingFilter("CIAdditionCompositing", parameters: [kCIInputBackgroundImageKey: $0]) } ?? l
+        }
+        return acc
     }
 
     func place(_ img: CIImage, center: CGPoint, scale: Double, rotation: Double, opacity: Double) -> CIImage {

@@ -140,6 +140,11 @@ extension Clip {
             t.crop.top = number("transform.crop.top", at: local, default: t.crop.top)
             t.crop.right = number("transform.crop.right", at: local, default: t.crop.right)
             t.crop.bottom = number("transform.crop.bottom", at: local, default: t.crop.bottom)
+            t.anchorX = number("transform.anchor_x", at: local, default: t.anchorX)
+            t.anchorY = number("transform.anchor_y", at: local, default: t.anchorY)
+            t.rotateX = number("transform.rotate_x", at: local, default: t.rotateX)
+            t.rotateY = number("transform.rotate_y", at: local, default: t.rotateY)
+            t.perspective = number("transform.perspective", at: local, default: t.perspective)
         }
         var fade = 1.0
         if fadeIn > 0 { fade = min(fade, local / fadeIn) }

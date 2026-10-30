@@ -445,6 +445,16 @@ public struct Transform: Codable, Equatable, Hashable, Sendable {
     public var rotation: Double
     public var opacity: Double
     public var crop: Crop
+    /// Point that scale and rotation pivot around, as fractions of the clip's frame (0.5, 0.5 is the center).
+    public var anchorX: Double = 0.5
+    public var anchorY: Double = 0.5
+    /// 3D tilt in degrees: around the horizontal axis (top away is positive) and the vertical axis (right side away is positive).
+    public var rotateX: Double = 0
+    public var rotateY: Double = 0
+    /// Camera distance for 3D tilts, in frame heights; smaller is more dramatic.
+    public var perspective: Double = 2
+    /// Shutter angle in degrees for motion blur on moving layers; 0 is off, 180 is film-like.
+    public var motionBlur: Double = 0
 
     public init(fit: FitMode = .fit, scale: Double = 1, x: Double = 0, y: Double = 0, rotation: Double = 0, opacity: Double = 1, crop: Crop = Crop()) {
         self.fit = fit
@@ -455,6 +465,45 @@ public struct Transform: Codable, Equatable, Hashable, Sendable {
         self.opacity = opacity
         self.crop = crop
     }
+
+    enum CodingKeys: String, CodingKey { case fit, scale, x, y, rotation, opacity, crop, anchorX, anchorY, rotateX, rotateY, perspective, motionBlur }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fit = try c.decodeIfPresent(FitMode.self, forKey: .fit) ?? .fit
+        scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1
+        x = try c.decodeIfPresent(Double.self, forKey: .x) ?? 0
+        y = try c.decodeIfPresent(Double.self, forKey: .y) ?? 0
+        rotation = try c.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1
+        crop = try c.decodeIfPresent(Crop.self, forKey: .crop) ?? Crop()
+        anchorX = try c.decodeIfPresent(Double.self, forKey: .anchorX) ?? 0.5
+        anchorY = try c.decodeIfPresent(Double.self, forKey: .anchorY) ?? 0.5
+        rotateX = try c.decodeIfPresent(Double.self, forKey: .rotateX) ?? 0
+        rotateY = try c.decodeIfPresent(Double.self, forKey: .rotateY) ?? 0
+        perspective = try c.decodeIfPresent(Double.self, forKey: .perspective) ?? 2
+        motionBlur = try c.decodeIfPresent(Double.self, forKey: .motionBlur) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(fit, forKey: .fit)
+        try c.encode(scale, forKey: .scale)
+        try c.encode(x, forKey: .x)
+        try c.encode(y, forKey: .y)
+        try c.encode(rotation, forKey: .rotation)
+        try c.encode(opacity, forKey: .opacity)
+        try c.encode(crop, forKey: .crop)
+        if anchorX != 0.5 { try c.encode(anchorX, forKey: .anchorX) }
+        if anchorY != 0.5 { try c.encode(anchorY, forKey: .anchorY) }
+        if rotateX != 0 { try c.encode(rotateX, forKey: .rotateX) }
+        if rotateY != 0 { try c.encode(rotateY, forKey: .rotateY) }
+        if perspective != 2 { try c.encode(perspective, forKey: .perspective) }
+        if motionBlur != 0 { try c.encode(motionBlur, forKey: .motionBlur) }
+    }
+
+    /// Whether the picture needs the 3D path.
+    public var is3D: Bool { rotateX != 0 || rotateY != 0 }
 }
 
 public enum Easing: String, Codable, Sendable, Hashable, CaseIterable {

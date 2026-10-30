@@ -42,11 +42,44 @@ public struct CurveKey: Codable, Equatable, Hashable, Sendable {
     public var v: ParamValue
     /// Easing of the segment that arrives at this key.
     public var ease: Easing
+    /// Custom timing for the arriving segment as cubic-bezier control points [x1, y1, x2, y2]; overrides `ease`.
+    public var bezier: [Double]?
 
-    public init(t: Seconds, v: ParamValue, ease: Easing = .easeInOut) {
+    public init(t: Seconds, v: ParamValue, ease: Easing = .easeInOut, bezier: [Double]? = nil) {
         self.t = t
         self.v = v
         self.ease = ease
+        self.bezier = bezier?.count == 4 ? bezier : nil
+    }
+
+    /// Eased progress through the segment arriving at this key.
+    public func progress(_ x: Double) -> Double {
+        guard let b = bezier else { return ease.apply(x) }
+        return CurveKey.cubicBezier(x, b[0], b[1], b[2], b[3])
+    }
+
+    /// CSS-style cubic-bezier timing: solves x(s) = t by Newton then bisection, returns y(s).
+    public static func cubicBezier(_ t: Double, _ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double) -> Double {
+        let t = min(max(t, 0), 1)
+        func bez(_ s: Double, _ a: Double, _ b: Double) -> Double { 3 * a * s * (1 - s) * (1 - s) + 3 * b * s * s * (1 - s) + s * s * s }
+        func dbez(_ s: Double, _ a: Double, _ b: Double) -> Double { 3 * a * (1 - s) * (1 - s) + 6 * (b - a) * s * (1 - s) + 3 * (1 - b) * s * s }
+        var s = t
+        for _ in 0..<8 {
+            let err = bez(s, x1, x2) - t
+            if abs(err) < 1e-7 { return bez(s, y1, y2) }
+            let d = dbez(s, x1, x2)
+            if abs(d) < 1e-6 { break }
+            s = min(max(s - err / d, 0), 1)
+        }
+        var lo = 0.0, hi = 1.0
+        s = t
+        for _ in 0..<40 {
+            let x = bez(s, x1, x2)
+            if abs(x - t) < 1e-7 { break }
+            if x < t { lo = s } else { hi = s }
+            s = (lo + hi) / 2
+        }
+        return bez(s, y1, y2)
     }
 }
 
@@ -62,7 +95,7 @@ public struct Curve: Codable, Equatable, Hashable, Sendable {
         guard let first = keys.first else { return nil }
         if t <= first.t { return first.v }
         for (a, b) in zip(keys, keys.dropFirst()) where t < b.t {
-            let p = b.ease.apply((t - a.t) / max(b.t - a.t, 1e-9))
+            let p = b.progress((t - a.t) / max(b.t - a.t, 1e-9))
             return Curve.mix(a.v, b.v, p)
         }
         return keys.last!.v

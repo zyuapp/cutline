@@ -90,3 +90,17 @@ private func cutProject() -> Project {
     #expect(abs(c.sourceTime(atTimeline: 10) - 6) < 1e-3)
     #expect(abs(c.sourceTime(atTimeline: 14) - 2) < 1e-3)
 }
+
+@Test func bezierKeysAndLegacyTransforms() throws {
+    #expect(abs(CurveKey.cubicBezier(0.5, 0.42, 0, 0.58, 1) - 0.5) < 1e-4)
+    #expect(CurveKey.cubicBezier(0.25, 0.42, 0, 1, 1) < 0.25)
+    let curve = Curve(keys: [CurveKey(t: 0, v: .number(0)), CurveKey(t: 1, v: .number(10), bezier: [0.2, 0, 0, 1])])
+    let mid = curve.value(at: 0.5)?.number ?? 0
+    #expect(mid > 8)
+    let old = #"{"fit":"fit","scale":1,"x":0,"y":0,"rotation":0,"opacity":1,"crop":{"left":0,"top":0,"right":0,"bottom":0}}"#
+    let t = try JSONDecoder().decode(Transform.self, from: Data(old.utf8))
+    #expect(t.anchorX == 0.5 && t.perspective == 2 && !t.is3D)
+    var c = Clip(id: "c", kind: .media, mediaId: "m", start: 0, duration: 2)
+    try c.set("transform.rotate_y", .number(30))
+    #expect(c.transform.is3D)
+}

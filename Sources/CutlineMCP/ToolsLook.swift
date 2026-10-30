@@ -6,7 +6,7 @@ extension Toolbox {
     func registerLookTools() {
         let targetSchema: JSON = ["type": ["string", "array"], "items": ["type": "string"], "description": "Clip id, track id, \"V1/*\" for every clip on a track, \"master\" (param_set gain_db), or a list of these"]
 
-        addEdit(EditTool(name: "param_set", description: "Set or animate any parameter of clips or tracks by path: transform.scale/x/y/rotation/opacity/fit/crop.*, blend, fade.in/out, audio.volume, text.*, color, and fx.<effect id>.<param> for effects. Animate with keys [time, value, ease?]; times are timeline seconds or anchors (\"talk.w12\", \"clip_x.end-0.5\"), or seconds from the clip start with relative:true. Eases: linear, easeIn, easeOut, easeInOut (default), hold, back, elastic, bounce. Numbers and colors interpolate. project_status with target lists a clip's paths and values; catalog explains every effect parameter.", schema: Schema.object([
+        addEdit(EditTool(name: "param_set", description: "Set or animate any parameter of clips or tracks by path: transform.scale/x/y/rotation/opacity/fit/crop.*, blend, fade.in/out, audio.volume, text.*, color, and fx.<effect id>.<param> for effects. Animate with keys [time, value, ease?]; times are timeline seconds or anchors (\"talk.w12\", \"clip_x.end-0.5\"), or seconds from the clip start with relative:true. Eases: linear, easeIn, easeOut, easeInOut (default), hold, back, elastic, bounce, or \"bezier(x1, y1, x2, y2)\" for a custom curve. Numbers and colors interpolate. project_status with target lists a clip's paths and values; catalog explains every effect parameter.", schema: Schema.object([
             "target": targetSchema,
             "set": ["type": "object", "description": "{path: value}, e.g. {\"transform.scale\": 1.2, \"blend\": \"screen\", \"fx.glow1.amount\": 0.8}"],
             "animate": ["type": "object", "description": "{path: [[time, value, ease?], ...]}, e.g. {\"transform.scale\": [[\"clip_x.start\", 1], [\"clip_x.end\", 1.15, \"easeOut\"]]}. Replaces that path's existing animation."],
@@ -210,11 +210,19 @@ extension Toolbox {
                 let t = try Args.parseTime(tj, name: "time")
                 let local = relative ? t : t - c.start
                 var ease = Easing.easeInOut
-                if let e = ej?.string {
-                    guard let parsed = Easing(rawValue: e) else { throw EditError("Unknown ease \(e). Use \(Easing.allCases.map(\.rawValue).joined(separator: ", "))") }
+                var bezier: [Double]?
+                if let arr = ej?.array, arr.count == 4 {
+                    bezier = arr.compactMap(\.double)
+                } else if let e = ej?.string, e.hasPrefix("bezier(") || e.hasPrefix("cubic-bezier(") {
+                    let nums = e.drop { $0 != "(" }.dropFirst().dropLast().split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                    guard nums.count == 4 else { throw EditError("Bezier eases look like \"bezier(0.2, 0, 0, 1)\"") }
+                    bezier = nums
+                } else if let e = ej?.string {
+                    guard let parsed = Easing(rawValue: e) else { throw EditError("Unknown ease \(e). Use \(Easing.allCases.map(\.rawValue).joined(separator: ", ")), or \"bezier(x1, y1, x2, y2)\"") }
                     ease = parsed
                 }
-                keys.append(CurveKey(t: canvas.snap(local), v: try paramValue(vj), ease: ease))
+                if let b = bezier, b.count != 4 || b[0] < 0 || b[0] > 1 || b[2] < 0 || b[2] > 1 { throw EditError("Bezier x values must be within 0…1") }
+                keys.append(CurveKey(t: canvas.snap(local), v: try paramValue(vj), ease: ease, bezier: bezier))
             }
             try c.animate(path, keys: keys)
             let canonical = Clip.canonical(path)

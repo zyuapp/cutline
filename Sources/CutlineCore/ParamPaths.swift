@@ -11,6 +11,12 @@ extension Clip {
         ParamSpec("transform.y", .number, .number(0), min: -10, max: 10, unit: "of frame height", "Vertical offset of the center; positive moves down"),
         ParamSpec("transform.rotation", .number, .number(0), min: -36000, max: 36000, unit: "degrees", "Clockwise rotation"),
         ParamSpec("transform.opacity", .number, .number(1), min: 0, max: 1, "Opacity"),
+        ParamSpec("transform.anchor_x", .number, .number(0.5), min: -2, max: 3, "Pivot for scale and rotation, 0 left to 1 right of the clip's frame"),
+        ParamSpec("transform.anchor_y", .number, .number(0.5), min: -2, max: 3, "Pivot, 0 top to 1 bottom"),
+        ParamSpec("transform.rotate_x", .number, .number(0), min: -360, max: 360, unit: "degrees", "3D tilt around the horizontal axis; positive tips the top away"),
+        ParamSpec("transform.rotate_y", .number, .number(0), min: -360, max: 360, unit: "degrees", "3D turn around the vertical axis; positive turns the right side away"),
+        ParamSpec("transform.perspective", .number, .number(2), min: 0.3, max: 50, unit: "frame heights", "Camera distance for 3D; smaller is more dramatic"),
+        ParamSpec("transform.motion_blur", .number, .number(0), min: 0, max: 720, unit: "degrees shutter", "Blur along the clip's own animated motion; 180 is film-like"),
         ParamSpec("transform.crop.left", .number, .number(0), min: 0, max: 0.95, "Fraction of the source removed from the left"),
         ParamSpec("transform.crop.top", .number, .number(0), min: 0, max: 0.95, "Fraction removed from the top"),
         ParamSpec("transform.crop.right", .number, .number(0), min: 0, max: 0.95, "Fraction removed from the right"),
@@ -134,6 +140,12 @@ extension Clip {
         case "audio.volume": return .number(volume)
         case "audio.fade_in": return .number(audioFadeIn)
         case "audio.fade_out": return .number(audioFadeOut)
+        case "transform.anchor_x": return .number(transform.anchorX)
+        case "transform.anchor_y": return .number(transform.anchorY)
+        case "transform.rotate_x": return .number(transform.rotateX)
+        case "transform.rotate_y": return .number(transform.rotateY)
+        case "transform.perspective": return .number(transform.perspective)
+        case "transform.motion_blur": return .number(transform.motionBlur)
         case "time.speed": return .number(speed)
         case "time.reverse": return .bool(reverse)
         case "time.interpolate": return .string(interpolate ?? "none")
@@ -200,6 +212,12 @@ extension Clip {
         case "transform.y": transform.y = n
         case "transform.rotation": transform.rotation = n
         case "transform.opacity": transform.opacity = n
+        case "transform.anchor_x": transform.anchorX = n
+        case "transform.anchor_y": transform.anchorY = n
+        case "transform.rotate_x": transform.rotateX = n
+        case "transform.rotate_y": transform.rotateY = n
+        case "transform.perspective": transform.perspective = n
+        case "transform.motion_blur": transform.motionBlur = n
         case "transform.crop.left": transform.crop.left = n
         case "transform.crop.top": transform.crop.top = n
         case "transform.crop.right": transform.crop.right = n

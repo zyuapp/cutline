@@ -93,6 +93,12 @@ enum EffectRenderer {
         case "key.chroma":
             let color = v("color").string.flatMap { $0 == "auto" ? nil : RGBA(hex: $0) }
             return ChromaKey.key(img, color: color, tolerance: Double(n("tolerance")), softness: Double(n("softness")), spill: Double(n("spill")), edgeFeather: n("feather") * ctx.unit).cropped(to: e)
+        case "distort.corner_pin":
+            func pt(_ x: String, _ y: String) -> CIVector { CIVector(x: e.minX + n(x) * e.width, y: e.maxY - n(y) * e.height) }
+            return img.applyingFilter("CIPerspectiveTransform", parameters: [
+                "inputTopLeft": pt("tl_x", "tl_y"), "inputTopRight": pt("tr_x", "tr_y"),
+                "inputBottomRight": pt("br_x", "br_y"), "inputBottomLeft": pt("bl_x", "bl_y"),
+            ])
         case "stylize.glitch":
             return TransitionRenderer.glitch(img, amount: Double(n("amount")), frame: Int((ctx.time * 30).rounded()), e)
         case "color.grade", "color.curves", "color.hsl", "color.look", "color.lut":

@@ -138,6 +138,16 @@ public enum EffectCatalog {
             ParamSpec("strength", .number, .number(1), min: 0, max: 1, animatable: false, "1 removes all shake within the smoothing window"),
             ParamSpec("zoom", .number, .number(0), min: 0, max: 0.5, animatable: false, "Extra zoom; 0 picks the smallest zoom that hides the edges"),
         ]),
+        EffectType(id: "distort.corner_pin", category: "distort", summary: "Moves the picture's four corners anywhere, e.g. to place a screen recording onto a phone or billboard (pair with media_track to follow it)", params: [
+            ParamSpec("tl_x", .number, .number(0), min: -2, max: 3, "Top-left corner x, fraction of the clip's frame"),
+            ParamSpec("tl_y", .number, .number(0), min: -2, max: 3, "Top-left corner y, 0 top"),
+            ParamSpec("tr_x", .number, .number(1), min: -2, max: 3, "Top-right corner x"),
+            ParamSpec("tr_y", .number, .number(0), min: -2, max: 3, "Top-right corner y"),
+            ParamSpec("br_x", .number, .number(1), min: -2, max: 3, "Bottom-right corner x"),
+            ParamSpec("br_y", .number, .number(1), min: -2, max: 3, "Bottom-right corner y"),
+            ParamSpec("bl_x", .number, .number(0), min: -2, max: 3, "Bottom-left corner x"),
+            ParamSpec("bl_y", .number, .number(1), min: -2, max: 3, "Bottom-left corner y"),
+        ]),
         EffectType(id: "distort.bulge", category: "distort", summary: "Bulges outward (positive) or pinches inward (negative)", params: [
             ParamSpec("amount", .number, .number(0.5), min: -1, max: 1, "Strength and direction"),
             ParamSpec("radius", .number, .number(0.3), min: 0, max: 1.5, "Size as a fraction of the frame height"),
