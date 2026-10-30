@@ -577,13 +577,16 @@ extension Toolbox {
 
     static func describeUpdate(_ a: Args, _ p: Project) -> String {
         let name = clipName(a.optString("clip_id"), p)
-        let keys = Set(a.raw.keys).subtracting(["clip_id", "ripple"])
+        let keys = Set(a.raw.keys).subtracting(["clip_id", "ripple", "dry_run"])
+        if let m = a.optString("media_id") { return "Replace \(name) with \(p.mediaAsset(m)?.name ?? m)" }
+        if keys == ["unlink"] { return "Unlink \(name)" }
+        if keys == ["link"] { return "Link \(name) with \(a.strings("link")?.count ?? 0) clip(s)" }
         if keys.contains("speed") { return "Change speed of \(name)" }
         if !keys.isDisjoint(with: ["source_in", "source_out", "duration", "end"]) { return "Trim \(name)" }
         if !keys.isDisjoint(with: ["start", "track"]) { return "Move \(name)" }
         if keys.contains("text") { return "Reword \(name)" }
         if keys == ["name"] { return "Rename \(name)" }
-        return "Restyle \(name)"
+        return "Update \(name)"
     }
 
     static func describeTrackUpdate(_ a: Args, _ p: Project) -> String {
@@ -593,6 +596,7 @@ extension Toolbox {
         if let m = a.optBool("muted") { return m ? "Mute \(name)" : "Unmute \(name)" }
         if let h = a.optBool("hidden") { return h ? "Hide \(name)" : "Show \(name)" }
         if a.optDouble("volume") != nil { return "Set \(name) volume" }
+        if let r = a.optString("role") { return "Set \(name) role to \(r)" }
         return "Rename \(name)"
     }
 

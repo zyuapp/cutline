@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 
 /// Delivery targets: shape, length and loudness limits, and where the app's own UI covers the picture.
+/// Broadcast targets also fix the frame size, frame rate and mastering codec.
 public struct Platform: Sendable {
     public var id: String
     public var name: String
@@ -9,10 +10,22 @@ public struct Platform: Sendable {
     public var aspects: [Double]
     public var maxDuration: Seconds?
     public var loudness: Double
-    /// Area free of platform UI, as fractions of the frame (top-left origin).
+    /// Allowed distance from `loudness` in LU.
+    public var loudnessTolerance: Double = 1
+    /// Highest true peak in dBTP.
+    public var truePeak: Double = -1
+    /// Safe area free of platform UI, as fractions of the frame (top-left origin).
     public var safe: CGRect
     public var preset: String
     public var notes: String
+    /// Required frame size in pixels; nil accepts any size of the right shape.
+    public var frameSize: (width: Int, height: Int)?
+    /// Accepted frame rates; nil accepts any.
+    public var frameRates: [Double]?
+    /// Accepted export presets; nil accepts any.
+    public var presets: [String]?
+
+    static let masterPresets = ["prores_hq", "prores", "prores4444", "prores4444xq"]
 
     public static let all: [Platform] = [
         Platform(id: "youtube", name: "YouTube", aspects: [16.0 / 9], maxDuration: nil, loudness: -14, safe: CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9), preset: "h264", notes: "Chapters from markers go in the description; the first must be at 0:00"),
@@ -22,17 +35,44 @@ public struct Platform: Sendable {
         Platform(id: "instagram_feed", name: "Instagram feed", aspects: [4.0 / 5, 1], maxDuration: 60, loudness: -14, safe: CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9), preset: "hevc", notes: ""),
         Platform(id: "x", name: "X", aspects: [16.0 / 9, 1], maxDuration: 140, loudness: -14, safe: CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9), preset: "h264", notes: ""),
         Platform(id: "linkedin", name: "LinkedIn", aspects: [16.0 / 9, 1, 4.0 / 5], maxDuration: 600, loudness: -14, safe: CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9), preset: "h264", notes: "Most viewers watch muted; burn in captions"),
-        Platform(id: "broadcast", name: "Broadcast (EBU R128)", aspects: [16.0 / 9], maxDuration: nil, loudness: -23, safe: CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8), preset: "prores", notes: "True peak at most −1 dBTP"),
+        Platform(id: "broadcast_eu", name: "Broadcast EU (EBU R128)", aspects: [16.0 / 9], maxDuration: nil, loudness: -23, loudnessTolerance: 1, truePeak: -1, safe: CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8), preset: "prores_hq",
+                 notes: "1080i25 masters are delivered as 1080p25 (or PsF); add bars, tone and slate with leader:true. Titles stay inside the 80% title-safe area.",
+                 frameSize: (1920, 1080), frameRates: [25], presets: masterPresets),
+        Platform(id: "broadcast_us", name: "Broadcast US (ATSC A/85)", aspects: [16.0 / 9], maxDuration: nil, loudness: -24, loudnessTolerance: 2, truePeak: -2, safe: CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8), preset: "prores_hq",
+                 notes: "1080i29.97 masters are delivered as 1080p29.97 with drop-frame timecode; add bars, tone and slate with leader:true. Titles stay inside the 80% title-safe area.",
+                 frameSize: (1920, 1080), frameRates: [30000.0 / 1001], presets: masterPresets),
+        Platform(id: "broadcast", name: "Broadcast (EBU R128 or ATSC A/85)", aspects: [16.0 / 9], maxDuration: nil, loudness: -23, loudnessTolerance: 1, truePeak: -1, safe: CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8), preset: "prores_hq",
+                 notes: "Generic broadcast: 25 fps checks against EBU R128, 29.97 against ATSC A/85. Pick broadcast_eu or broadcast_us for a region.",
+                 frameSize: (1920, 1080), frameRates: [25, 30000.0 / 1001], presets: masterPresets),
     ]
 
     public static func named(_ id: String) -> Platform? { all.first { $0.id == id } }
 
-    /// Problems with the edit's shape and length for this platform.
-    public func check(_ p: Project) -> [String] {
+    /// The regional variant for generic `broadcast` at the project's frame rate.
+    public func resolved(for p: Project) -> Platform {
+        guard id == "broadcast" else { return self }
+        guard var r = Platform.named(abs(p.canvas.fps - 30000.0 / 1001) < 0.01 ? "broadcast_us" : "broadcast_eu") else { return self }
+        r.frameRates = frameRates
+        return r
+    }
+
+    /// Problems with the edit's shape, length, frame rate and codec for this platform.
+    public func check(_ p: Project, preset chosen: String? = nil) -> [String] {
         var out: [String] = []
         let aspect = Double(p.canvas.width) / Double(p.canvas.height)
-        if !aspects.contains(where: { abs($0 - aspect) < 0.02 }) {
+        if let size = frameSize {
+            if p.canvas.width != size.width || p.canvas.height != size.height {
+                out.append("\(name) needs \(size.width)×\(size.height); the canvas is \(p.canvas.width)×\(p.canvas.height). Change it with canvas_set width:\(size.width) height:\(size.height).")
+            }
+        } else if !aspects.contains(where: { abs($0 - aspect) < 0.02 }) {
             out.append("\(name) expects \(aspects.map(Platform.ratioName).joined(separator: " or ")); the canvas is \(p.canvas.width)×\(p.canvas.height). Change it with canvas_set (use fit \"fill\" on landscape footage).")
+        }
+        if let rates = frameRates, !rates.contains(where: { abs($0 - p.canvas.fps) < 0.001 }) {
+            let names = rates.map(Platform.fpsName).joined(separator: " or ")
+            out.append("\(name) needs \(names) fps; the canvas is \(Platform.fpsName(p.canvas.fps)) fps. Conform with canvas_set fps:\(rates.map(Platform.fpsValue).joined(separator: " or fps:")) (changing rate re-times cuts to the new frame grid; footage shot at another rate will judder or need retiming).")
+        }
+        if let presets, let chosen, !presets.contains(chosen) {
+            out.append("\(name) masters are \(presets.joined(separator: ", ")); \(chosen) is a distribution codec. Use preset \(preset).")
         }
         if let maxDuration, p.duration > maxDuration + 0.01 {
             out.append("\(name) allows up to \(Int(maxDuration))s; the edit is \(fmt2(p.duration))s.")
@@ -44,4 +84,7 @@ public struct Platform: Sendable {
         for (w, h) in [(16, 9), (9, 16), (1, 1), (4, 5), (4, 3)] where abs(Double(w) / Double(h) - r) < 0.01 { return "\(w):\(h)" }
         return String(format: "%.2f:1", r)
     }
+
+    static func fpsName(_ f: Double) -> String { f.rounded() == f ? String(Int(f)) : String(format: "%.2f", f) }
+    static func fpsValue(_ f: Double) -> String { f.rounded() == f ? String(Int(f)) : String(format: "%.2f", f) }
 }

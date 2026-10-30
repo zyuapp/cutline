@@ -36,7 +36,7 @@ Claude creates a `.cutline` project and opens it in the preview window.
 | Look and sound | `param_set` (set, animate or bind any parameter), `effect_add` (video, color, mask, key and audio effects on clips, tracks, adjustment layers and the master), `transition_set`, `captions_set` |
 | Reuse | `catalog`, `recipe` (duck, loudness, J/L cuts, speed ramps, freeze frames, punch-ins, PiP, split screens, reframing, beat cuts, looks, glitches, whip pans, kinetic text, multicam, follow, templates), `template_save`, `batch` |
 | Review | `timeline_frames`, `timeline_transcript`, `timeline_measure` (loudness, true peak, exposure, color cast, flashes, text contrast, safe areas), `comments_list`, `comment_reply`, `comment_add`, `preview_seek`, `preview_state` |
-| Output | `export` (HEVC, H.264, ProRes; platform checks, embedded subtitles and chapters, SRT/VTT, OTIO, FCPXML, several variants per call) |
+| Output | `export` (HEVC, H.264, ProRes 422 HQ/LT/Proxy and 4444/XQ; QuickTime timecode track, bars, tone, slate and 2-pop leader; platform checks including EBU R128 and ATSC A/85 broadcast, embedded subtitles and chapters, SRT/VTT, OTIO, FCPXML, several variants per call) |
 
 Every parameter has a path, such as `transform.scale`, `audio.volume`, `text.color` or `fx.blur1.radius`, and any number or color can be animated with eased keyframes. Times can be anchors that survive later edits, such as a transcript word (`interview.w42`), a beat (`music.b16`, `beat:16`), a shot (`broll.s3`), a clip edge (`clip_ab12cd.end-0.5`) or a marker (`marker:Intro`). Every edit takes `dry_run` to preview its changes.
 

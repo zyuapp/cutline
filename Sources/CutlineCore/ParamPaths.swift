@@ -412,7 +412,7 @@ extension String {
     func ifEmpty(_ fallback: String) -> String { isEmpty ? fallback : self }
 }
 
-func editDistance(_ a: String, _ b: String) -> Int {
+public func editDistance(_ a: String, _ b: String) -> Int {
     let a = Array(a), b = Array(b)
     guard !a.isEmpty else { return b.count }
     guard !b.isEmpty else { return a.count }

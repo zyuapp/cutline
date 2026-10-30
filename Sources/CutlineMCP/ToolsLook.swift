@@ -76,10 +76,7 @@ extension Toolbox {
             "mix": Schema.number("0 original … 1 full effect"),
             "enabled": Schema.bool("Turn on or off"),
             "remove": Schema.bool("Remove the effect with this id (or every effect of this type)"),
-        ], required: ["target"]), label: { a, p in
-            let type = a.optString("type").map { EffectCatalog.title($0) } ?? a.optString("id") ?? "effect"
-            return (a.bool("remove", default: false) ? "Remove \(type) from " : "Add \(type) to ") + Toolbox.targetLabel(a.raw["target"], p)
-        }) { p, args in
+        ], required: ["target"]), label: { a, p in Toolbox.describeEffectEdit(a, p) }) { p, args in
             let targets = try Toolbox.resolveTargets(args.raw["target"], p)
             var lines: [String] = []
             for target in targets {
@@ -194,20 +191,43 @@ extension Toolbox {
 
     static func describeParamSet(_ a: Args, _ p: Project) -> String {
         let target = targetLabel(a.raw["target"], p)
-        let animated = a.raw["animate"]?.object?.keys.sorted() ?? []
-        let set = a.raw["set"]?.object?.keys.sorted() ?? []
-        let paths = animated + set
-        let topic: String
-        if paths.contains(where: { $0.hasPrefix("fx.") }) { topic = "effect" }
-        else if paths.contains(where: { $0.hasPrefix("audio.") || $0 == "volume" }) { topic = "volume" }
-        else if paths.contains(where: { $0.hasPrefix("text.") }) { return (animated.isEmpty ? "Restyle " : "Animate ") + target }
-        else if paths.contains(where: { $0.hasPrefix("transform.crop") }) { topic = "crop" }
-        else if paths.contains("blend") { topic = "blend" }
-        else if paths.contains(where: { $0.hasPrefix("fade.") }) { return "Fade \(target)" }
-        else { topic = "framing" }
-        if !animated.isEmpty { return "Animate \(topic) of \(target)" }
-        if a.raw["unset"] != nil && set.isEmpty { return "Reset \(topic) of \(target)" }
-        return "Set \(topic) of \(target)"
+        if a.raw["bind"] != nil { return "Bind parameters of \(target)" }
+        let animated = (a.raw["animate"]?.object?.keys.sorted() ?? []).map(Clip.canonical)
+        let setValues = a.raw["set"]?.object ?? [:]
+        let set = setValues.keys.sorted().map(Clip.canonical)
+        let unset = (a.strings("unset") ?? []).map(Clip.canonical)
+        if set == ["time.reverse"], animated.isEmpty, unset.isEmpty {
+            return (setValues.values.first?.bool ?? (setValues.values.first?.string == "true") ? "Reverse " : "Play forwards ") + target
+        }
+        if set == ["layout"] { return "Change master layout to \(setValues["layout"]?.string ?? "?")" }
+        if set == ["gain_db"] { return "Set master gain" }
+        if set == ["name"], animated.isEmpty, unset.isEmpty { return "Rename \(target)" }
+        let paths = animated + set + unset
+        var topics: [String] = []
+        for path in paths {
+            let topic: String
+            if path.hasPrefix("fx.") { topic = "effect" }
+            else if path.hasPrefix("audio.pan") || path == "audio.center" || path == "audio.lfe" { topic = "surround panning" }
+            else if path.hasPrefix("audio.fade") { topic = "sound fades" }
+            else if path == "audio.lead" || path == "audio.lag" { topic = "split edit" }
+            else if path.hasPrefix("audio.") || path == "volume" { topic = "volume" }
+            else if path.hasPrefix("text.") { topic = "text style" }
+            else if path == "time.speed" { topic = "speed" }
+            else if path == "time.reverse" { topic = "direction" }
+            else if path == "time.interpolate" { topic = "slow-motion smoothing" }
+            else if path.hasPrefix("input.") { topic = "log conversion" }
+            else if path.hasPrefix("transform.crop") { topic = "crop" }
+            else if path == "blend" { topic = "blend" }
+            else if path.hasPrefix("fade.") { topic = "fades" }
+            else if path == "name" { topic = "name" }
+            else if path.hasPrefix("transform.") || path == "color" { topic = path == "color" ? "color" : "framing" }
+            else { topic = path }
+            if !topics.contains(topic) { topics.append(topic) }
+        }
+        let what = topics.isEmpty ? "parameters" : topics.count <= 2 ? topics.joined(separator: " and ") : "\(topics.count) kinds of parameter"
+        if !animated.isEmpty { return "Animate \(what) of \(target)" }
+        if !unset.isEmpty && set.isEmpty { return "Reset \(what) of \(target)" }
+        return "Set \(what) of \(target)"
     }
 
     /// Applies set, animate and unset to one clip and describes the result.

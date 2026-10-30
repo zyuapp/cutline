@@ -125,6 +125,7 @@ final class Toolbox {
             return r
         }
         do {
+            try checkArguments(name, args, schema: tool.schema)
             installResolvers(try? session.project())
             return try await tool.run(Args(args))
         } catch {
@@ -141,6 +142,67 @@ final class Toolbox {
     }
 }
 
+// MARK: Argument names
+
+extension Toolbox {
+    /// Rejects argument names a tool's schema doesn't declare, at the top level and inside nested objects
+    /// whose schema lists properties. Batch operations are checked against their edit tool's schema.
+    func checkArguments(_ tool: String, _ args: JSON?, schema: JSON) throws {
+        var problems = Toolbox.unknownArguments(args ?? [:], schema: schema, path: "")
+        if tool == "batch", let ops = args?["operations"]?.array {
+            for (i, op) in ops.enumerated() {
+                guard let name = op["tool"]?.string, let e = edits[name], let opArgs = op["args"], opArgs.object != nil else { continue }
+                problems += Toolbox.unknownArguments(opArgs, schema: Toolbox.withDryRun(e.schema), path: "operations[\(i)].args.")
+                    .map { "\($0) (for \(name))" }
+            }
+        }
+        guard !problems.isEmpty else { return }
+        throw EditError("\(tool) doesn't take " + problems.joined(separator: "; ") + ".")
+    }
+
+    /// "name (did you mean x?)" for every key of `value` its schema doesn't declare.
+    static func unknownArguments(_ value: JSON, schema: JSON, path: String) -> [String] {
+        switch value {
+        case .object(let o):
+            guard let props = schema["properties"]?.object else { return [] }
+            var out: [String] = []
+            for (k, v) in o.sorted(by: { $0.key < $1.key }) {
+                if let sub = props[k] {
+                    out += unknownArguments(v, schema: sub, path: path + k + ".")
+                } else {
+                    let names = props.keys.sorted()
+                    let close = names.map { ($0, editDistance($0, k)) }.filter { $0.1 <= max(2, k.count / 3) || $0.0.hasPrefix(k) || k.hasPrefix($0.0) }.sorted { $0.1 < $1.1 }.prefix(3).map(\.0)
+                    out.append("'\(path)\(k)'" + (close.isEmpty ? " (arguments: \(names.joined(separator: ", ")))" : " (did you mean \(close.joined(separator: " or "))?)"))
+                }
+            }
+            return out
+        case .array(let a):
+            guard let items = schema["items"] else { return [] }
+            return a.enumerated().flatMap { unknownArguments($0.element, schema: items, path: String(path.dropLast()) + "[\($0.offset)].") }
+        default:
+            return []
+        }
+    }
+}
+
+extension Toolbox {
+    /// History label for effect_add: add, update, turn on/off, reorder or remove, named by the effect's type.
+    static func describeEffectEdit(_ a: Args, _ p: Project) -> String {
+        let target = targetLabel(a.raw["target"], p)
+        let id = a.optString("id")
+        let all = p.tracks.flatMap { $0.effects + $0.clips.flatMap(\.effects) } + p.master.effects
+        let existing = id.flatMap { id in all.first { $0.id == id } }
+        let name = (a.optString("type") ?? existing?.type).map { EffectCatalog.title($0) } ?? id ?? "effect"
+        if a.bool("remove", default: false) { return "Remove \(name) from \(target)" }
+        guard existing != nil else { return "Add \(name) to \(target)" }
+        let changes = Set(a.raw.keys).subtracting(["target", "id", "type", "dry_run"])
+        if changes == ["enabled"] { return (a.bool("enabled", default: true) ? "Turn on \(name) on " : "Turn off \(name) on ") + target }
+        if changes == ["index"] { return "Reorder \(name) on \(target)" }
+        if changes == ["mix"] { return "Set \(name) mix on \(target)" }
+        return "Adjust \(name) on \(target)"
+    }
+}
+
 // MARK: Formatting
 
 enum Describe {
@@ -148,7 +210,7 @@ enum Describe {
         var lines: [String] = []
         let history = bundle.loadHistory()
         lines.append("Project \"\(p.name)\" at \(bundle.url.path)")
-        lines.append("Canvas \(p.canvas.width)×\(p.canvas.height)" + (p.canvas.colorSpace == .rec709 ? "" : " \(p.canvas.colorSpace.rawValue)") + " @\(fmtFps(p.canvas.fps))fps, background \(p.canvas.background.hex), duration \(Frames.timecode(p.duration)) (\(fmt(p.duration))s)")
+        lines.append("Canvas \(p.canvas.width)×\(p.canvas.height)" + (p.canvas.colorSpace == .rec709 ? "" : " \(p.canvas.colorSpace.rawValue)") + " @\(fmtFps(p.canvas.fps))fps, background \(p.canvas.background.hex), duration \(Frames.timecode(p.duration)) (\(fmt(p.duration))s), start timecode \(p.canvas.startTimecode)")
         if let cur = history.current { lines.append("History \(cur.id) \"\(cur.label)\" (\(history.cursor + 1)/\(history.entries.count))") }
         lines.append("")
         lines.append("Media:")

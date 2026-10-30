@@ -5,11 +5,21 @@ import Foundation
 
 extension Toolbox {
     func registerExportTools() {
-        add(Tool(name: "export", description: "Render the timeline, or check it against a platform first. platform (youtube, youtube_shorts, tiktok, instagram_reels, instagram_feed, x, linkedin, broadcast) picks codec and checks shape, length, loudness and that text clears the app's UI. Writes subtitles (embedded track and/or .srt/.vtt), chapters from markers (embedded and a YouTube description list), and interchange files for finishing in other editors (otio for DaVinci Resolve/Premiere via OTIO, fcpxml for Final Cut Pro). Defaults to <project>/exports/<name>.mp4 with HEVC. Blocks until done.", schema: Schema.object([
+        add(Tool(name: "export", description: "Render the timeline, or check it against a platform first. platform (youtube, youtube_shorts, tiktok, instagram_reels, instagram_feed, x, linkedin, broadcast_eu, broadcast_us, broadcast) picks codec and checks shape, length, loudness, true peak and that text clears the app's UI; broadcast targets also check frame size, frame rate and mastering codec. .mov files carry a QuickTime timecode track starting at the canvas start timecode (01:00:00:00 unless canvas_set timecode_start); MP4 can't carry one. leader:true prepends bars and tone, a slate and a 2-pop so the program starts on the hour. Writes subtitles (embedded track and/or .srt/.vtt), chapters from markers (embedded and a YouTube description list), and interchange files for finishing in other editors (otio for DaVinci Resolve/Premiere via OTIO, fcpxml for Final Cut Pro). Defaults to <project>/exports/<name>.mp4 with HEVC. Blocks until done.", schema: Schema.object([
             "path": Schema.string("Output file path"),
-            "preset": Schema.string("hevc (default, small and sharp), h264 (most compatible), prores (editing master, .mov), prores4444 (with alpha)", values: ExportPreset.allCases.map(\.rawValue)),
+            "preset": Schema.string("hevc (default, small and sharp), hevc_10bit (Main 10), h264 (most compatible, 8-bit only), prores (422), prores_hq (broadcast master), prores_lt, prores_proxy (offline), prores4444 (with alpha), prores4444xq. ProRes writes .mov. DNxHR/DNxHD, XDCAM and 10-bit H.264 aren't available: macOS has no system encoder for them", values: ExportPreset.allCases.map(\.rawValue)),
             "platform": Schema.string("Delivery target; sets the preset and runs its checks", values: Platform.all.map(\.id)),
             "bitrate_mbps": Schema.number("Video bitrate in megabits per second; default high quality for the size"),
+            "container": Schema.string("File format for HEVC and H.264: mp4 (default) or mov (QuickTime, carries a timecode track); ProRes is always mov. A path ending .mov also picks mov", values: ["mp4", "mov"]),
+            "timecode_start": Schema.string("Timecode of the first program frame, \"hh:mm:ss:ff\"; default the canvas start timecode (01:00:00:00 unless set with canvas_set)"),
+            "leader": ["type": ["boolean", "object"], "description": "Broadcast leader before the program: true, or {bars, slate, black, pop, version}. SMPTE color bars with 1 kHz tone at −20 dBFS (bars seconds, default 10), a slate with title, date, duration, loudness, audio layout and version (slate seconds, default 10), then black (default 10) with a 2-pop 2 s before the program (pop, default true). The timecode track starts earlier so the program starts at timecode_start (bars at 00:59:30:00 by default)",
+                       "properties": [
+                           "bars": Schema.integer("Seconds of bars and tone, default 10"),
+                           "slate": Schema.integer("Seconds of slate, default 10"),
+                           "black": Schema.integer("Seconds of black after the slate, default 10"),
+                           "pop": Schema.bool("1 kHz 2-pop two seconds before the program, default true"),
+                           "version": Schema.string("Version shown on the slate, default the current history entry"),
+                       ]],
             "start": Schema.time("Export from this timeline time"),
             "end": Schema.time("Export until this timeline time"),
             "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (.srt and .vtt) or both", values: ["none", "embed", "sidecar", "both"]),
@@ -33,24 +43,28 @@ extension Toolbox {
             if let kind = args.optString("deliver"), kind != "video" {
                 return try await deliver(kind, args)
             }
-            let platform = try args.optString("platform").map { id -> Platform in
+            let platformChoice = try args.optString("platform").map { id -> Platform in
                 guard let pl = Platform.named(id) else { throw EditError("Unknown platform \(id). Platforms: \(Platform.all.map(\.id).joined(separator: ", "))") }
                 return pl
             }
-            let preset = try args.enumValue("preset", ExportPreset.self) ?? platform.flatMap { ExportPreset(rawValue: $0.preset) } ?? .hevc
+            if let name = args.optString("preset"), let why = ExportPreset.unavailable(name) { throw EditError(why) }
             let p0 = try session.project()
+            let platform = platformChoice.map { $0.resolved(for: p0) }
+            let preset = try args.enumValue("preset", ExportPreset.self) ?? platform.flatMap { ExportPreset(rawValue: $0.preset) } ?? .hevc
             guard p0.duration > 0 else { throw EditError("The timeline is empty") }
             var range: TimeRange?
             if args.has("start") || args.has("end") { range = TimeRange(try args.optTime("start") ?? 0, try args.optTime("end") ?? p0.duration) }
 
             var report: [String] = []
+            var loudness: LoudnessReport?
             if let platform {
-                var warnings = platform.check(p0)
+                var warnings = platform.check(p0, preset: args.has("preset") ? preset.rawValue : nil)
                 let mix = try await LoudnessMeter.measure(try await session.timeline(for: p0), range: range)
-                if mix.integrated.isFinite, abs(mix.integrated - platform.loudness) > 1 {
-                    warnings.append("Loudness is \(fmt1(mix.integrated)) LUFS; \(platform.name) normalizes to \(fmt1(platform.loudness)). Run recipe loudness_normalize target_lufs:\(Int(platform.loudness)).")
+                loudness = mix
+                if mix.integrated.isFinite, abs(mix.integrated - platform.loudness) > platform.loudnessTolerance {
+                    warnings.append("Loudness is \(fmt1(mix.integrated)) LUFS; \(platform.name) needs \(fmt1(platform.loudness)) ±\(fmt1(platform.loudnessTolerance)). Run recipe loudness_normalize target_lufs:\(Int(platform.loudness)).")
                 }
-                if mix.truePeakDb > -0.9 { warnings.append("True peak \(fmt1(mix.truePeakDb)) dBTP is above −1; add a limiter (recipe loudness_normalize limit:true).") }
+                if mix.truePeakDb > platform.truePeak + 0.1 { warnings.append("True peak \(fmt1(mix.truePeakDb)) dBTP is above \(fmt1(platform.truePeak)); add a limiter (recipe loudness_normalize ceiling_db:\(fmt1(platform.truePeak - 0.5))).") }
                 let text = try await measureText(p0, range: range, platform: platform)
                 warnings += text.filter { $0.contains("outside") || $0.contains("hard to read") }.map { $0.trimmingCharacters(in: .whitespaces) }
                 report.append("\(platform.name) check: " + (warnings.isEmpty ? "ready." : "\(warnings.count) issue(s)"))
@@ -63,8 +77,12 @@ extension Toolbox {
 
             let built = try await session.timeline()
             let p = built.scene.project
-            var url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + (platform.map { "-" + $0.id } ?? "")).appendingPathExtension(preset.fileExtension)
-            if url.pathExtension.isEmpty { url.appendPathExtension(preset.fileExtension) }
+            let container = try args.enumValue("container", Container.self)
+            let ext = preset.isProRes ? "mov" : container?.rawValue ?? preset.fileExtension
+            var url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + (platform.map { "-" + $0.id } ?? "")).appendingPathExtension(ext)
+            if url.pathExtension.isEmpty { url.appendPathExtension(ext) }
+            if preset.isProRes, url.pathExtension.lowercased() != "mov" { url = url.deletingPathExtension().appendingPathExtension("mov"); report.append("ProRes is QuickTime, so the file is \(url.lastPathComponent).") }
+            if container == .mov, url.pathExtension.lowercased() != "mov" { throw EditError("container mov needs a path ending .mov") }
             let base = url.deletingPathExtension()
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let transcripts = b.transcripts(for: p)
@@ -115,6 +133,33 @@ extension Toolbox {
             let project = b.url.path
             var options = ExportOptions(preset: preset, bitrateMbps: args.optDouble("bitrate_mbps"), range: range, subtitles: subs == "embed" || subs == "both" ? cues : [], chapters: chapters)
             options.closedCaptions = closed
+            let tcFormat = TimecodeFormat(fps: p.canvas.fps)
+            if let tc = args.optString("timecode_start") {
+                guard let f = tcFormat.frames(tc) else { throw EditError("timecode_start is hh:mm:ss:ff with frames below \(tcFormat.nominal), e.g. 01:00:00:00") }
+                options.timecodeStart = tcFormat.string(f)
+            }
+            let programTC = options.timecodeStart ?? p.canvas.startTimecode
+            if let leader = try leaderSpec(args.raw["leader"]) {
+                var l = leader
+                let mix: LoudnessReport
+                if let loudness { mix = loudness } else { mix = try await LoudnessMeter.measure(built, range: range) }
+                let length = (range?.end ?? p.duration) - (range?.start ?? 0)
+                let date = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .none)
+                let version = args.raw["leader"]?["version"]?.string ?? b.loadHistory().current?.id ?? "1"
+                l.title = p.name
+                l.slate = [
+                    .init("Date", date),
+                    .init("Version", version),
+                    .init("Program start", programTC),
+                    .init("Duration", tcFormat.string(tcFormat.frameCount(length))),
+                    .init("Picture", "\(p.canvas.width)×\(p.canvas.height) \(Describe.fmtFps(p.canvas.fps))p \(preset.title)"),
+                    .init("Audio", "\(p.master.layout.title), 48 kHz" + (preset.isProRes ? " 24-bit PCM" : "")),
+                    .init("Loudness", mix.integrated.isFinite ? "\(fmt1(mix.integrated)) LUFS integrated, \(fmt1(mix.truePeakDb)) dBTP true peak" : "silent"),
+                ] + (platform.map { [.init("Delivery", $0.name)] } ?? [])
+                options.leader = l
+                let start = tcFormat.string((tcFormat.frames(programTC) ?? 0) - l.frames(tcFormat))
+                report.append("Leader: \(l.barsSeconds)s bars and 1 kHz tone at −20 dBFS from \(start), \(l.slateSeconds)s slate, \(l.blackSeconds)s black" + (l.pop && l.blackSeconds >= 2 ? " with a 2-pop" : "") + "; program at \(programTC)")
+            }
             try await Exporter.export(built, to: url, options: options) { fraction in
                 DistributedNotificationCenter.default().postNotificationName(PreviewControl.notification, object: nil, userInfo: ["action": "export", "state": "progress", "progress": fraction, "project": project], deliverImmediately: true)
             }
@@ -129,9 +174,31 @@ extension Toolbox {
             }
             let seconds = check.duration
             let mbps = seconds > 0 ? Double(size) * 8 / seconds / 1_000_000 : 0
-            report.insert("Exported \(url.path)\n\(check.width)×\(check.height), \(fmt2(seconds))s, \(String(format: "%.1f", Double(size) / 1_048_576)) MB (\(fmt1(mbps)) Mb/s), \(preset.rawValue), \(p.master.layout.title) audio, took \(fmt1(Date().timeIntervalSince(started)))s", at: 0)
+            let timecode = try await TimecodeTrack.read(url)
+            report.insert("Exported \(url.path)\n\(check.width)×\(check.height), \(fmt2(seconds))s, \(String(format: "%.1f", Double(size) / 1_048_576)) MB (\(fmt1(mbps)) Mb/s), \(preset.title), \(p.master.layout.title) audio, took \(fmt1(Date().timeIntervalSince(started)))s", at: 0)
+            report.insert(timecode.map { "Timecode track starts at \($0)" + (tcFormat.dropFrame ? " (drop frame)" : "") } ?? "No timecode track: MP4 can't carry one; export with container:\"mov\" for a timecode track.", at: 1)
             return .text(report.joined(separator: "\n"))
         })
+    }
+}
+
+extension Toolbox {
+    enum Container: String { case mp4, mov }
+
+    /// The `leader` argument: true, false, or {bars, slate, black, pop, version}.
+    func leaderSpec(_ j: JSON?) throws -> Leader? {
+        guard let j, !j.isNull else { return nil }
+        if let b = j.bool { return b ? Leader() : nil }
+        guard j.object != nil else { throw EditError("leader is true or {bars, slate, black, pop, version}") }
+        let a = Args(j)
+        func seconds(_ k: String, _ d: Int) throws -> Int {
+            guard let v = a.optDouble(k) else { return d }
+            guard v >= 0, v <= 120, v.rounded() == v else { throw EditError("leader.\(k) is whole seconds from 0 to 120") }
+            return Int(v)
+        }
+        let l = Leader(barsSeconds: try seconds("bars", 10), slateSeconds: try seconds("slate", 10), blackSeconds: try seconds("black", 10), pop: a.bool("pop", default: true))
+        guard l.totalSeconds > 0 else { return nil }
+        return l
     }
 }
 
@@ -155,7 +222,7 @@ extension Toolbox {
             o["name"] = nil
             if o["path"] == nil {
                 let p = try session.project()
-                let ext = (o["preset"]?.string).flatMap(ExportPreset.init(rawValue:))?.fileExtension ?? "mp4"
+                let ext = (o["preset"]?.string ?? base.optString("preset")).flatMap(ExportPreset.init(rawValue:))?.fileExtension ?? o["container"]?.string ?? base.optString("container") ?? "mp4"
                 o["path"] = .string(b.exportsURL.appendingPathComponent(Toolbox.safeName(p.name) + "-" + Toolbox.safeName(name)).appendingPathExtension(ext).path)
             }
             for (k, val) in base.raw where k != "variants" && o[k] == nil { o[k] = val }
