@@ -21,6 +21,8 @@ enum EffectRenderer {
         var gradeSpace: CGColorSpace = ColorCubes.space
         /// The clip's crop of its source frame, for effects that place source-frame boxes in the picture.
         var crop = Crop()
+        /// The clip's media file, for effects that read other frames of it.
+        var mediaPath: String? = nil
     }
 
     static let masks = MaskCache()
@@ -277,7 +279,14 @@ enum EffectRenderer {
             return Segmentation.apply(mask: mask, to: img, feather: n("feather") * ctx.unit, invert: invert, expand: (n("expand") - n("choke")) * ctx.unit, threshold: n("threshold")).cropped(to: e)
         case "key.chroma":
             let color = v("color").string.flatMap { $0 == "auto" ? nil : RGBA(hex: $0) }
-            return ChromaKey.key(img, color: color, tolerance: Double(n("tolerance")), softness: Double(n("softness")), spill: Double(n("spill")), edgeFeather: n("feather") * ctx.unit).cropped(to: e)
+            return ChromaKey.key(img, color: color, tolerance: Double(n("tolerance")), softness: Double(n("softness")), spill: Double(n("spill")), edgeFeather: n("feather") * ctx.unit, cleanup: KeyCleanup(n, unit: ctx.unit)).cropped(to: e)
+        case "key.luma":
+            return Keyers.luma(img, low: Double(n("low")), high: Double(n("high")), softness: Double(n("softness")), invert: v("invert").bool ?? false, cleanup: KeyCleanup(n, unit: ctx.unit))
+        case "key.difference":
+            guard let plate = CleanPlates.plate(path: v("plate").string ?? "", at: v("plate_at").number ?? -1, mediaPath: ctx.mediaPath) else { return img }
+            return Keyers.difference(img, plate: cropped(plate, ctx.crop), threshold: Double(n("threshold")), softness: Double(n("softness")), invert: v("invert").bool ?? false, cleanup: KeyCleanup(n, unit: ctx.unit))
+        case "mask.sky":
+            return SkyMask.render(img, ctx, n, v)
         case "distort.corner_pin":
             func pt(_ x: String, _ y: String) -> CIVector { CIVector(x: e.minX + n(x) * e.width, y: e.maxY - n(y) * e.height) }
             // Keep the frame's extent so placing the layer doesn't recenter the pinned quad.
@@ -340,6 +349,14 @@ enum EffectRenderer {
         default:
             return img
         }
+    }
+
+    /// `img` with the clip's crop applied, origin at zero.
+    static func cropped(_ img: CIImage, _ c: Crop) -> CIImage {
+        let e = img.extent
+        guard !c.isEmpty else { return img }
+        let r = CGRect(x: e.minX + e.width * c.left, y: e.minY + e.height * c.bottom, width: e.width * max(0.01, 1 - c.left - c.right), height: e.height * max(0.01, 1 - c.top - c.bottom))
+        return img.cropped(to: r).transformed(by: CGAffineTransform(translationX: -r.minX, y: -r.minY))
     }
 
     /// White where the clip is kept, black elsewhere, covering the image extent.

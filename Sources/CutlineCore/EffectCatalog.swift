@@ -100,6 +100,14 @@ public enum EffectCatalog {
         ParamSpec("choke", .number, .number(0), min: 0, max: 0.03, unit: "of frame height", "Pulls the hardened edge inward to drop background fringe"),
     ]
 
+    /// Matte cleanup shared by the keyers.
+    static let keyCleanup: [ParamSpec] = [
+        ParamSpec("clean_black", .number, .number(0), min: 0, max: 0.49, animatable: false, "Matte cleanup: matte values up to this become fully transparent, removing faint noise in the background"),
+        ParamSpec("clean_white", .number, .number(0), min: 0, max: 0.49, animatable: false, "Matte cleanup: matte values above 1 minus this become fully opaque, filling a see-through subject"),
+        ParamSpec("denoise", .number, .number(0), min: 0, max: 0.02, unit: "of frame height", animatable: false, "Matte cleanup: removes specks and fills pinholes smaller than this (open, then close)"),
+        ParamSpec("choke", .number, .number(0), min: -0.03, max: 0.03, unit: "of frame height", "Shrinks (positive) or grows the kept area's edge, dropping fringe"),
+    ]
+
     static let wheelSpecs: [ParamSpec] = {
         let wheels: [(String, Double, Double, String)] = [
             ("lift", -0.5, 0.5, "Blacks: moves black up (positive) or down while white stays put"),
@@ -314,6 +322,32 @@ public enum EffectCatalog {
             ParamSpec("softness", .number, .number(0.25), min: 0, max: 1, "Width of the partly transparent edge"),
             ParamSpec("spill", .number, .number(0.8), min: 0, max: 1, "Removes screen-colored light on the subject"),
             ParamSpec("feather", .number, .number(0.001), min: 0, max: 0.02, unit: "of frame height", "Edge softening"),
+        ] + keyCleanup),
+        EffectType(id: "key.luma", category: "mask", summary: "Luma key: keeps pixels whose brightness lies between low and high and makes the rest transparent, e.g. fire, smoke or titles shot on black (low 0.1) or on white (high 0.9); put a background on the track below", params: [
+            ParamSpec("low", .number, .number(0.1), min: 0, max: 1, "Darker pixels than this are keyed out (Rec. 709 luma of the display picture)"),
+            ParamSpec("high", .number, .number(1), min: 0, max: 1, "Brighter pixels than this are keyed out; 1 keeps every highlight"),
+            ParamSpec("softness", .number, .number(0.1), min: 0, max: 1, "Luma range over which the key fades out beyond low and high"),
+            ParamSpec("feather", .number, .number(0.001), min: 0, max: 0.02, unit: "of frame height", "Edge softening"),
+            ParamSpec("invert", .bool, .bool(false), "Keep the keyed-out range instead"),
+        ] + keyCleanup),
+        EffectType(id: "key.difference", category: "mask", summary: "Difference key: keeps what differs from a clean plate of the empty set (an image file, or plate_at a frame of the same media), for a locked-off camera without a green screen; put the new background on the track below", params: [
+            ParamSpec("plate", .text, .string(""), animatable: false, "Image file of the empty set from the same locked-off camera"),
+            ParamSpec("plate_at", .number, .number(-1), min: -1, max: 1_000_000, unit: "source seconds", animatable: false, "Frame of this clip's media showing the empty set, used as the plate when plate is empty; -1 for none"),
+            ParamSpec("threshold", .number, .number(0.08), min: 0, max: 1, "Largest per-channel difference from the plate still keyed out; raise it for noisy footage"),
+            ParamSpec("softness", .number, .number(0.08), min: 0.001, max: 1, "Difference range over which pixels fade from keyed out to kept"),
+            ParamSpec("feather", .number, .number(0.002), min: 0, max: 0.02, unit: "of frame height", "Edge softening"),
+            ParamSpec("invert", .bool, .bool(false), "Keep what matches the plate instead"),
+        ] + keyCleanup.map { $0.name == "denoise" ? ParamSpec("denoise", .number, .number(0.002), min: 0, max: 0.02, unit: "of frame height", animatable: false, $0.summary) : $0 }),
+        EffectType(id: "mask.sky", category: "mask", summary: "Sky matte (heuristic, not a trained model): the bright, smooth, blue, gray or sunset-colored region connected to the top of the frame plus sky seen through gaps, refined to edges and smoothed over time; invert to keep the foreground for recipe sky_replace. Fails on night skies, skies without a clear horizon and sky-colored walls or water touching it; check with timeline_frames view:\"matte\"", params: [
+            ParamSpec("sensitivity", .number, .number(0.5), min: 0, max: 1, animatable: false, "How readily pixels count as sky; raise it when hazy sky is missed, lower it when walls or water join"),
+            ParamSpec("smoothness", .number, .number(0.5), min: 0, max: 1, animatable: false, "How smooth sky must be; lower it for clouds with texture"),
+            ParamSpec("colors", .choice(["auto", "blue", "overcast", "sunset"]), .string("auto"), "Sky colors accepted: auto (blue, gray-white and warm), blue, overcast (gray-white) or sunset (warm and blue)"),
+            ParamSpec("bottom", .number, .number(0.9), min: 0.05, max: 1, animatable: false, "Lowest the sky may reach, fraction of the frame from the top"),
+            ParamSpec("refine", .number, .number(0.6), min: 0, max: 1, animatable: false, "Snaps the matte to picture edges (guided filter): rooftops, branches"),
+            ParamSpec("feather", .number, .number(0.003), min: 0, max: 0.05, unit: "of frame height", "Soft edge"),
+            ParamSpec("expand", .number, .number(0), min: -0.05, max: 0.05, unit: "of frame height", "Grow (positive) or shrink the sky"),
+            ParamSpec("smoothing", .number, .number(0.6), min: 0, max: 0.95, animatable: false, "Blends each frame's matte with the last to stop flicker"),
+            ParamSpec("invert", .bool, .bool(false), "Keep the foreground instead of the sky"),
         ]),
         EffectType(id: "video.denoise", category: "video", summary: "Temporal noise reduction like Resolve's Temporal NR: removes grain and sensor noise by aligning neighbouring frames with optical flow and averaging them, leaving out pixels that moved; optional spatial pass. Rendered in the background (the preview shows the unprocessed picture until it's ready; export waits)", params: [
             ParamSpec("temporal_frames", .number, .number(2), min: 1, max: 5, animatable: false, "Neighbouring frames each side averaged into each frame; more removes more noise and takes longer"),
@@ -396,7 +430,7 @@ public enum EffectCatalog {
         let titles = [
             "blur.gaussian": "blur", "blur.motion": "motion blur", "blur.zoom": "zoom blur", "blur.sharpen": "sharpening",
             "color.adjust": "color correction", "color.grade": "color wheels", "color.wheels": "primary grade", "color.curves": "curves", "color.hsl": "HSL", "color.hue_curves": "hue curves", "color.hdr_zones": "HDR zones", "color.look": "look", "color.lut": "LUT", "color.cdl": "CDL", "color.monochrome": "black and white", "color.invert": "invert",
-            "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask", "mask.person": "person mask", "mask.subject": "subject mask", "key.chroma": "chroma key",
+            "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask", "mask.person": "person mask", "mask.subject": "subject mask", "key.chroma": "chroma key", "key.luma": "luma key", "key.difference": "difference key", "mask.sky": "sky mask",
             "distort.bulge": "bulge", "distort.twirl": "twirl",
             "mask.object": "object mask", "video.denoise": "noise reduction", "video.remove_object": "object removal",
             "distort.lens": "lens correction", "distort.chromatic_aberration": "chromatic aberration", "color.vignette_correct": "vignette correction", "video.rolling_shutter": "rolling shutter repair",

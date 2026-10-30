@@ -36,6 +36,7 @@ extension Toolbox {
             "signal_range": Schema.string("Whether log code values are legal (video, default) or full range", values: ["video", "full"]),
             "channel": Schema.string("Source channel(s) transcript, speakers, beats, sounds and sync listen to, kept for later analysis: \"ch3\", \"ch3+ch4\", \"mix:1,3\", left, right; \"auto\" (default) uses the first track, or for multichannel files every channel with sound. media_list shows each file's channels"),
             "enroll": Schema.bool("Speakers: true pins every word you named (transcript_edit rename or speaker) and labels the rest of each named voice from them; false analyzes afresh, dropping names and pins; default keeps pins and names"),
+            "proxy": Schema.bool("Make (or remake) the preview proxy of each video at the project's proxy_size, whatever its size; media_organize proxy and canvas_set playback choose what the preview plays"),
             "vocabulary": Schema.strings("Names and terms the transcript should spell this way (characters, products), kept for later analysis; [] clears. Caption replacement targets and named speakers are added automatically. The recognizer's alternative readings that contain a term are preferred, and sound-alike names are respelled"),
         ], required: ["media_id"])) { [unowned self] args in
             if let log = args.optString("log") {
@@ -51,6 +52,10 @@ extension Toolbox {
             var p = try session.project()
             var ids = args.strings("media_id") ?? []
             if ids == ["all"] { ids = p.media.map(\.id) }
+            if args.bool("proxy", default: false) {
+                if ids.count > 1 || args.has("features") { ids = ids.filter { p.mediaAsset($0).map { $0.hasVideo && !$0.isImage } ?? true } }
+                return .text(try await rebuildProxies(ids, p).joined(separator: "\n"))
+            }
             if let raw = args.optString("channel") {
                 let routing: ChannelRouting?
                 if raw == "auto" { routing = nil } else {

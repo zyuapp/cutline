@@ -406,7 +406,7 @@ extension Toolbox {
             lines.append("  \(cat): \(summary)")
             for t in EffectCatalog.listed where t.category == cat { lines.append("    \(t.id): \(t.summary)") }
         }
-        lines.append("Generators (clip_add generator:<id>, params; animate fx.gen.<param>):")
+        lines.append("Generators (clip_add generator:<id>, params; animate fx.gen.<param>, and a shape layer's shapes as fx.gen.<shape id>.<property>, e.g. fx.gen.ring.trim_end):")
         for t in GeneratorCatalog.all { lines.append("    \(t.id): \(t.summary)") }
         lines.append("Transitions (transition_set; catalog type=<id> for parameters):")
         for t in TransitionCatalog.all { lines.append("    \(t.id): \(t.summary)") }

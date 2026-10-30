@@ -13,7 +13,7 @@ struct HowTo {
 
 /// One searchable thing: a how-to, effect, transition, generator, recipe, tool or effect parameter.
 struct SearchEntry {
-    enum Kind: String { case howTo = "how-to", effect, transition, generator, recipe, tool, param }
+    enum Kind: String { case howTo = "how-to", term, effect, transition, generator, recipe, tool, param }
     let kind: Kind
     let name: String
     let keywords: String
@@ -125,7 +125,7 @@ enum CatalogSearch {
         for i in indexed { for t in i.name.union(i.keywords).union(i.text) { df[t, default: 0] += 1 } }
         func idf(_ t: String) -> Double { log(1 + Double(entries.count) / Double(1 + (df[t] ?? 0))) }
         let phrase = q.joined(separator: " ")
-        let kindWeight: [SearchEntry.Kind: Double] = [.howTo: 1.5, .recipe: 1.2, .effect: 1.1, .transition: 1, .generator: 1, .tool: 0.9, .param: 0.6]
+        let kindWeight: [SearchEntry.Kind: Double] = [.howTo: 1.5, .term: 1.5, .recipe: 1.2, .effect: 1.1, .transition: 1, .generator: 1, .tool: 0.9, .param: 0.6]
         var scored: [(Double, Int)] = []
         for (n, i) in indexed.enumerated() {
             var total = 0.0, matched = 0
@@ -157,6 +157,9 @@ extension Toolbox {
     func searchEntries() -> [SearchEntry] {
         var out = Toolbox.howTos.map { h in
             SearchEntry(kind: .howTo, name: h.title, keywords: h.keywords, text: h.summary, examples: h.calls.map { "\($0.0) \($0.1)" })
+        }
+        for t in Toolbox.editorTerms {
+            out.append(SearchEntry(kind: .term, name: t.term, keywords: t.aliases, text: t.summary, examples: t.calls.map { "\($0.0) \($0.1)" }))
         }
         for t in EffectCatalog.listed {
             let first = t.params.first { $0.name != "limit" }
@@ -194,7 +197,7 @@ extension Toolbox {
         var lines = ["Best matches for \"\(query)\" (placeholders in <>):"]
         for h in hits {
             let summary = h.kind == .tool ? (Toolbox.briefs[h.name]?.text ?? h.text) : h.text
-            lines.append("\(h.kind.rawValue) \(h.name): " + Toolbox.excerpt(summary, h.kind == .howTo ? 240 : 160))
+            lines.append("\(h.kind.rawValue) \(h.name): " + Toolbox.excerpt(summary, h.kind == .howTo || h.kind == .term ? 320 : 160))
             lines += h.examples.map { "  " + $0 }
         }
         return lines.joined(separator: "\n")

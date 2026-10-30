@@ -13,8 +13,8 @@ public enum ChromaKey {
     /// - tolerance, softness: CbCr distance from the key relative to the key's own saturation. Closer than
     ///   `tolerance` is removed, beyond `tolerance + softness` kept. Shadows on the screen down to half its brightness still key.
     /// - spill: 0…1, how far the key channel is pulled down toward the mean of the other two.
-    /// - edgeFeather: matte blur in pixels.
-    public static func key(_ image: CIImage, color: RGBA? = nil, tolerance: Double = 0.35, softness: Double = 0.25, spill: Double = 0.8, edgeFeather: CGFloat = 1) -> CIImage {
+    /// - edgeFeather: matte blur in pixels, after `cleanup`.
+    static func key(_ image: CIImage, color: RGBA? = nil, tolerance: Double = 0.35, softness: Double = 0.25, spill: Double = 0.8, edgeFeather: CGFloat = 1, cleanup: KeyCleanup?) -> CIImage {
         guard let k = color ?? detectKeyColor(image) else { return image }
         let e = image.extent
         let luts = Luts.get(SIMD3(Float(k.r), Float(k.g), Float(k.b)), Float(max(tolerance, 0)), Float(max(softness, 0.001)), Float(min(max(spill, 0), 1)))
@@ -24,10 +24,18 @@ public enum ChromaKey {
             ]).cropped(to: e)
         }
         var matte = cube(luts.matte)
+        if var cleanup {
+            cleanup.feather = 0
+            matte = cleanup.apply(matte, extent: e)
+        }
         if edgeFeather >= 0.25 {
             matte = matte.clampedToExtent().applyingGaussianBlur(sigma: Double(edgeFeather) / 2).cropped(to: e)
         }
         return cube(luts.color).applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(), kCIInputMaskImageKey: matte])
+    }
+
+    public static func key(_ image: CIImage, color: RGBA? = nil, tolerance: Double = 0.35, softness: Double = 0.25, spill: Double = 0.8, edgeFeather: CGFloat = 1) -> CIImage {
+        key(image, color: color, tolerance: tolerance, softness: softness, spill: spill, edgeFeather: edgeFeather, cleanup: nil)
     }
 
     /// The dominant green or blue of the image border, or nil when the border isn't a screen.

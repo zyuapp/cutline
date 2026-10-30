@@ -46,7 +46,7 @@ public enum GeneratorCatalog {
         pos("y2", 0.4, "End, vertical"),
     ]
 
-    public static let all: [EffectType] = basic + motion + textGenerators
+    public static let all: [EffectType] = basic + motion + textGenerators + review
 
     static let basic: [EffectType] = [
         EffectType(id: "shape.rect", category: "generator", summary: "Rectangle with optional rounded corners and outline", params: box + [

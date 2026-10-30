@@ -91,13 +91,15 @@ extension Toolbox {
 
         addEdit(EditTool(name: "canvas_set", description: "Change the canvas size, frame rate or background. Media clips refit automatically; text and captions scale with the canvas. A new frame rate conforms the timeline: cuts, sound edges, transitions, markers, keyframes and caption offsets snap to the new frame grid (cuts that met still meet), or keep their frame counts with conform:\"keep_frames\".", schema: Schema.object(canvasProps.merging([
             "conform": Schema.string("With fps: snap (default) moves every time to the nearest new frame and keeps the edit's length; keep_frames keeps frame counts, like a sequence frame-rate change, so the edit runs longer or shorter", values: FrameRateConform.allCases.map(\.rawValue)),
-        ]) { a, _ in a }), label: { a, _ in a.optString("preset").map { "Make it \($0)" } ?? "Change canvas" }) { [unowned self] p, args in
+        ].merging(Toolbox.playbackArgs) { a, _ in a }) { a, _ in a }), label: { a, _ in a.optString("preset").map { "Make it \($0)" } ?? "Change canvas" }) { [unowned self] p, args in
+            let playbackNote = try Toolbox.applyPlayback(&p, args)
+            if let playbackNote, Set(args.raw.keys).isSubset(of: ["playback", "proxy_size", "dry_run"]) { return playbackNote }
             let mode = try args.enumValue("conform", FrameRateConform.self) ?? .snap
             let old = p.canvas.fps
             let oldAspect = Double(p.canvas.width) / Double(max(1, p.canvas.height))
             try Toolbox.applyCanvas(&p.canvas, args)
             p.canvasSet = true
-            var lines = ["Canvas is \(p.canvas.width)×\(p.canvas.height) @\(Describe.fmtFps(p.canvas.fps))fps"]
+            var lines = ["Canvas is \(p.canvas.width)×\(p.canvas.height) @\(Describe.fmtFps(p.canvas.fps))fps"] + [playbackNote].compactMap { $0 }
             if abs(Double(p.canvas.width) / Double(max(1, p.canvas.height)) - oldAspect) > 1e-6 {
                 let shots = session.bundle.map { Toolbox.shotIndex($0, p) } ?? [:]
                 let refit = p.refitPictures(fromAspect: oldAspect) { c, q in Toolbox.fillFraming(c, q, shots) }

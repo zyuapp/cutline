@@ -36,7 +36,7 @@ extension Toolbox {
             "drop_frame": "Drop-frame timecode in interchange files",
             "timecode_start": "\"hh:mm:ss:ff\" of the first frame",
             "width": "", "height": "", "fps": "", "background": "Hex",
-        ], hide: ["master_peak_nits"]),
+        ], hide: ["master_peak_nits", "playback", "proxy_size"]),
         "history": ToolBrief(text: "Edit history: list, undo, redo, restore an entry, diff against a version, or fork into a separate copy.", args: [
             "id": "Entry for restore or diff", "path": "For fork: the new .cutline", "steps": "For undo/redo, default 1", "limit": "For list, default 20", "action": "",
         ]),
@@ -59,7 +59,7 @@ extension Toolbox {
             "features": "Default all the media allows",
             "channel": "Channel(s) analysis listens to: \"ch3\", \"ch3+ch4\", \"mix:1,3\", auto",
             "background": "Return at once", "language": "Default en-US", "vocabulary": "Names/terms to spell; kept",
-        ], hide: ["log", "signal_range", "enroll"]),
+        ], hide: ["log", "signal_range", "enroll", "proxy"]),
         "media_remove": ToolBrief(text: "Remove unused media.", args: ["media_id": ""]),
         "media_transcript": ToolBrief(text: "What a media file says, in SOURCE time with word ids (for source_cut, assemble, source_in/out); fillers *um*, unsure [word?], pauses ≥0.4 s.", args: [
             "media_id": "", "start": "Source time", "end": "Source time", "words": "Every word with its time", "low_confidence": "Only unsure words",
@@ -242,11 +242,11 @@ extension Toolbox {
             "media_id": "", "from": "\"wN\"", "to": "Default from", "text": "Replacement", "insert": "{start, end, text}",
             "insert.end": "", "insert.start": "", "insert.text": "", "speaker": "", "rename": "{\"S1\": \"Anna\"}",
         ]),
-        "media_organize": ToolBrief(text: "Bins, metadata columns, names, camera log or RAW and scan of media.", args: [
+        "media_organize": ToolBrief(text: "Bins, metadata, names, log/RAW, scan and proxy of media.", args: [
             "media_ids": "", "bin": "\"A/B\"; \"\" removes", "metadata": "{column: value}; \"\" removes", "name": "One media only",
             "log": "Camera log encoding, or none", "signal_range": "Log code values: video (default) or full",
             "deinterlace": "", "field_order": "", "raw": "RAW defaults (catalog type=raw)",
-        ]),
+        ], hide: ["proxy"]),
         "media_list": ToolBrief(text: "List media with bins, metadata, tags, format, channels and use; filter and sort.", args: [
             "bin": "", "search": "Names, metadata, tags, transcripts", "keyword": "", "rating": "", "kind": "", "unused": "", "sort": "Any column",
         ]),

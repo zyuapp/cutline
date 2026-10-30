@@ -5,9 +5,15 @@ import Foundation
 extension Session {
     func analyzePerception(_ media: MediaAsset, _ want: Set<Feature>, bundle b: ProjectBundle, heard: URL? = nil, progress: (@Sendable (Double) -> Void)?, finished: (Feature, [String]) -> Void = { _, _ in }) async throws -> [String] {
         var notes: [String] = []
-        if want.contains(.proxy), media.hasVideo, !media.isImage, Proxies.cached(media, quality: .half) == nil,
-           Proxies.shouldProxy(media, format: await Proxies.format(of: media)) {
-            let made = try await Proxies.transcode(media, quality: .half) { p in progress?(0.65 * p) }
+        let project = try? self.project()
+        let quality = Proxies.Quality(project?.playbackSettings.proxySize ?? .half)
+        var needsProxy = false
+        if want.contains(.proxy), media.hasVideo, !media.isImage, Proxies.cached(media, quality: quality) == nil, project?.previewUsesProxy(media) ?? true {
+            if project?.wantsProxy(media, heavy: false) == true { needsProxy = true }
+            else { needsProxy = Proxies.shouldProxy(media, format: await Proxies.format(of: media)) }
+        }
+        if needsProxy {
+            let made = try await Proxies.transcode(media, quality: quality) { p in progress?(0.65 * p) }
             try? sendPreview(["action": "rebuild"])
             notes.append("proxy: \(Int(made.size.width))×\(Int(made.size.height)) ProRes Proxy for smooth preview (\(String(format: "%.1f", made.realtimeFactor))× realtime); export uses the original")
             finished(.proxy, [notes.last!])

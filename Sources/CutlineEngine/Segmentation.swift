@@ -21,12 +21,15 @@ public enum Segmentation {
         /// grown by `padding` (fraction of the image height); the box itself when `fallback` and no instance matches.
         /// `id` names the followed object, so temporal smoothing joins its frames although the box moves.
         case object(NormRect, padding: Double, fallback: Bool, id: String)
+        /// The heuristic sky matte with `SkyMask.Settings` encoded as their key.
+        case sky(String)
 
         public var description: String {
             switch self {
             case .person(let q): return "person.\(q.rawValue)"
             case .subject: return "subject"
             case .object(let b, let pad, let fallback, let id): return String(format: "object.%@.%.4f,%.4f,%.4f,%.4f,%.4f,%d", id, b.x, b.y, b.width, b.height, pad, fallback ? 1 : 0)
+            case .sky(let s): return "sky.\(s)"
             }
         }
 
@@ -97,6 +100,7 @@ public enum Segmentation {
 
     /// Runs Vision on a downscaled copy and returns its mask at Vision's resolution.
     static func lowRes(_ kind: Kind, _ image: CIImage) -> MaskBuffer? {
+        if case .sky(let s) = kind { return SkyMask.lowRes(image, SkyMask.Settings(key: s)) }
         guard let buffer = pixelBuffer(image) else { return nil }
         let handler = VNImageRequestHandler(cvPixelBuffer: buffer, options: [:])
         switch kind {
@@ -130,6 +134,8 @@ public enum Segmentation {
             let region = box.padded(padding * Double(h) / Double(max(w, 1)), padding)
             guard let picked else { return fallback ? MaskBuffer.box(box, width: w, height: h) : .empty }
             return picked.limited(to: region)
+        case .sky:
+            return nil
         }
     }
 

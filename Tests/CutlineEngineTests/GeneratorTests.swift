@@ -48,7 +48,7 @@ private func render(_ type: String, _ params: [String: ParamValue] = [:], canvas
 }
 
 @Test func everyGeneratorRendersSomething() throws {
-    #expect(GeneratorCatalog.all.count == 24)
+    #expect(GeneratorCatalog.all.count == 26)
     for type in GeneratorCatalog.all where type.id != "camera" {
         #expect(type.category == "generator")
         let px = try #require(GeneratorRenderer.render(type: type.id, params: [:], canvas: canvas, time: 2, duration: 5).map(Pixels.init), "\(type.id) rendered nil")

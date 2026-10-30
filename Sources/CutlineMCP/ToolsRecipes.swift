@@ -227,6 +227,8 @@ extension Toolbox {
             return try await matchColorRecipe(a, dry: dry)
         case "qualify":
             return try await qualifyRecipe(a, dry: dry)
+        case "sky_replace":
+            return try await skyReplaceRecipe(a, dry: dry)
         case "split_at_shots":
             return try splitAtShotsRecipe(a, dry: dry)
         case "safe_zone_fix":

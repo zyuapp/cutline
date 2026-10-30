@@ -15,6 +15,23 @@ public enum Proxies {
         case half
         /// Fits 1920×1080 (1080×1920 for portrait), never larger than the original.
         case hd
+        /// Fits 1280×720, never larger than the original.
+        case sd
+
+        public init(_ size: ProxySize) {
+            switch size {
+            case .half: self = .half
+            case .quarter: self = .quarter
+            case .hd: self = .hd
+            case .sd: self = .sd
+            }
+        }
+    }
+
+    /// The proxy the preview plays for `media` under the project's playback settings, if it is made.
+    public static func preview(_ media: MediaAsset, in project: Project) -> URL? {
+        guard project.previewUsesProxy(media) else { return nil }
+        return cached(media, quality: Quality(project.playbackSettings.proxySize))
     }
 
     /// What one transcode did.
@@ -119,9 +136,10 @@ public enum Proxies {
         switch quality {
         case .quarter: s = 0.25
         case .half: s = 0.5
-        case .hd:
+        case .hd, .sd:
             let long = max(natural.width, natural.height), short = min(natural.width, natural.height)
-            s = min(1, 1920 / max(long, 1), 1080 / max(short, 1))
+            let (l, sh): (CGFloat, CGFloat) = quality == .hd ? (1920, 1080) : (1280, 720)
+            s = min(1, l / max(long, 1), sh / max(short, 1))
         }
         let even = { (v: CGFloat) in CGFloat(max(2, Int((v * s).rounded()) / 2 * 2)) }
         return CGSize(width: even(natural.width), height: even(natural.height))
