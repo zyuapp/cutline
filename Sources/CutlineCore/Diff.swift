@@ -93,6 +93,7 @@ extension Clip {
         }
         if a.mediaId != b.mediaId { f.append("media \(a.mediaId ?? "–")→\(b.mediaId ?? "–")") }
         if a.raw != b.raw, b.raw == nil { f.append("raw development cleared") }
+        if a.multicam != b.multicam { f.append("angle switching (\(b.multicam?.cuts.count ?? 0) cuts\(b.multicam?.audioFollowsVideo == true ? ", sound follows picture" : ""))") }
         let ea = Dictionary(uniqueKeysWithValues: a.effects.map { ($0.id, $0) })
         let eb = Dictionary(uniqueKeysWithValues: b.effects.map { ($0.id, $0) })
         for e in b.effects where ea[e.id] == nil { f.append("+fx \(e.id) (\(e.type))") }

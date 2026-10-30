@@ -8,6 +8,8 @@ public struct NestedSequence: Codable, Equatable, Sendable {
     public var name: String
     public var tracks: [Track]
     public var transitions: [Transition]
+    /// Set for a multicam source: one inner track per synced angle, played through the clip's angle switching.
+    public var multicam: MulticamSetup?
 
     public init(id: String, name: String, tracks: [Track], transitions: [Transition] = []) {
         self.id = id
@@ -33,7 +35,7 @@ extension Project {
 
     /// A sequence clip's contents placed on this timeline, trimmed to the clip, with ids "<clip>/<inner>".
     public func expanded(_ clip: Clip) -> [(kind: TrackKind, clip: Clip)] {
-        guard clip.kind == .sequence, let seq = clip.mediaId.flatMap({ sequence($0) }) else { return [] }
+        guard clip.kind == .sequence, let seq = contents(of: clip) else { return [] }
         let window = TimeRange(clip.sourceIn, clip.sourceIn + clip.duration)
         var out: [(TrackKind, Clip)] = []
         for track in seq.tracks where !(track.muted && track.kind == .audio) && !(track.hidden && track.kind == .video) {
@@ -96,7 +98,7 @@ extension Project {
     public mutating func unnest(_ id: String) throws -> [String] {
         guard let loc = locateClip(id), tracks[loc.track].clips[loc.clip].kind == .sequence else { throw EditError("\(id) is not a nested sequence clip") }
         let clip = tracks[loc.track].clips[loc.clip]
-        guard let seq = clip.mediaId.flatMap({ sequence($0) }) else { throw EditError("Missing sequence \(clip.mediaId ?? "")") }
+        guard let seq = contents(of: clip) else { throw EditError("Missing sequence \(clip.mediaId ?? "")") }
         tracks[loc.track].clips.remove(at: loc.clip)
         var placed: [String] = []
         var idMap: [String: String] = [:]

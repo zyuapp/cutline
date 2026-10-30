@@ -425,6 +425,8 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public var role: String?
     /// Camera RAW development on top of the media's own settings (raw.* parameters).
     public var raw: RawSettings?
+    /// A multicam clip's angle switching.
+    public var multicam: MulticamSwitch?
 
     public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), blend: BlendMode = .normal, effects: [Effect] = [], anim: [String: Curve] = [:], text: TextSpec? = nil, color: RGBA? = nil) {
         self.id = id
@@ -452,7 +454,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, mediaId, start, duration, sourceIn, speed, volume, audioFadeIn, audioFadeOut, audioLead, audioLag
-        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure, surround, channels, role, raw
+        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure, surround, channels, role, raw, multicam
     }
 
     public init(from decoder: Decoder) throws {
@@ -478,6 +480,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         channels = try c.decodeIfPresent(ChannelRouting.self, forKey: .channels)
         role = try c.decodeIfPresent(String.self, forKey: .role)
         raw = try c.decodeIfPresent(RawSettings.self, forKey: .raw)
+        multicam = try c.decodeIfPresent(MulticamSwitch.self, forKey: .multicam)
         audioLag = try c.decodeIfPresent(Double.self, forKey: .audioLag) ?? 0
         fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
         fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
@@ -533,6 +536,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(channels, forKey: .channels)
         try c.encodeIfPresent(role, forKey: .role)
         try c.encodeIfPresent(raw, forKey: .raw)
+        try c.encodeIfPresent(multicam, forKey: .multicam)
     }
 
     public var end: Seconds { start + duration }

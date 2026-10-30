@@ -197,8 +197,11 @@ extension Toolbox {
             .init("end", .time, "Or the timeline time to end on"),
             .init("fade_out", .number, "Seconds, default 1.5"),
         ]),
-        RecipeSpec(name: "multicam_switch", group: "Rhythm", summary: "Syncs angles by their sound and cuts per speaker turn in the pause before each new speaker, never inside a word; with shot analysis, each speaker goes to the angle where their face is seen talking. Or pass cuts to switch angles by hand: splits there and plays that angle in sync from then on.", args: [
-            .init("angles", .ids, "Media ids"),
+        RecipeSpec(name: "multicam_switch", group: "Rhythm", summary: "Cuts a multicam clip per speaker turn in the pause before each new speaker, never inside a word; with shot analysis, each speaker goes to the angle where their face is seen talking. clip re-cuts a multicam clip (multicam_create); angles syncs those media by sound into a new multicam clip first. The angles stay inside the clip, so multicam_cut can change any range. Or pass cuts to switch angles by hand from each time on.", args: [
+            .init("clip", .string, "A multicam clip to re-cut"),
+            .init("angles", .ids, "Media ids (or, with clip, angle names/numbers to use)"),
+            .init("flat", .bool, "With angles: separate clips per shot instead of a multicam clip"),
+            .init("title", .string, "Name of the new multicam"),
             .init("audio", .string, "Media with the main sound; default the first angle"),
             .init("signal", .string, "auto (default: whose own mic is loudest when each angle records its person, else speaker analysis), mics or speakers"),
             .init("speakers", .object, "{\"S1\": media, …}; default S1→first angle, S2→second…"),
@@ -214,7 +217,7 @@ extension Toolbox {
             .init("audio_channel", .string, "The main sound's channel to sync to"),
             .init("cuts", .objects, "Switch by hand instead", fields: [
                 .init("at", .time, "Timeline time"),
-                .init("angle", .string, "Media id"),
+                .init("angle", .string, "Media id, or angle name/number on a multicam clip"),
             ]),
         ]),
         RecipeSpec(name: "look", group: "Style", summary: "Adds a look on an adjustment layer.", args: [

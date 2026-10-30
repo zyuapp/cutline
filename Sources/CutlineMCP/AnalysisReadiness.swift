@@ -66,8 +66,9 @@ extension Toolbox {
             let id = target.dropFirst(5).split(separator: ":").first.map(String.init)?.split(separator: ".").first.map(String.init) ?? ""
             return p.mediaAsset(id) == nil ? [] : [AnalysisNeed(mediaId: id, feature: .shots, without: "there are no face tracks to follow and the clip stays where it is")]
         case "multicam_switch":
-            guard a.value("cuts") == nil, let angles = a.strings("angles") else { return [] }
-            let audio = a.optString("audio") ?? angles.first ?? ""
+            let setup = a.optString("clip").flatMap { p.clip($0) }.flatMap { p.multicamSetup($0) }
+            guard a.value("cuts") == nil, let angles = a.strings("angles") ?? setup?.videoAngles.map(\.mediaId) else { return [] }
+            let audio = a.optString("audio").map { setup?.angle($0)?.mediaId ?? $0 } ?? setup?.audio.first.flatMap { setup?.angle($0)?.mediaId } ?? angles.first ?? ""
             var needs = [AnalysisNeed(mediaId: audio, feature: .transcript, without: "there are no speaker turns to cut on")]
             if a.optString("signal") != "mics" {
                 needs.append(AnalysisNeed(mediaId: audio, feature: .speakers, without: "voices are told apart only by which mic is loudest"))

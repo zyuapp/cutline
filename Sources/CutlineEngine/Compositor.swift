@@ -274,7 +274,7 @@ public final class RenderScene: @unchecked Sendable {
 
     /// The scene inside a sequence clip, sharing this scene's frames and images.
     func child(for clip: Clip) -> RenderScene? {
-        guard let seq = clip.mediaId.flatMap({ project.sequence($0) }) else { return nil }
+        guard let seq = project.contents(of: clip) else { return nil }
         return childLock.withLock {
             if let c = children[clip.id] { return c }
             let prefix = clip.id + "/"

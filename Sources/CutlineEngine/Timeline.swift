@@ -59,7 +59,7 @@ public enum TimelineBuilder {
             if let id = w.transition.to { heads[id] = max(heads[id] ?? 0, w.head) }
         }
         for c in project.tracks.flatMap(\.clips) where c.kind == .sequence {
-            guard let seq = c.mediaId.flatMap({ project.sequence($0) }) else { continue }
+            guard let seq = project.contents(of: c) else { continue }
             for w in project.inside(seq).transitionWindows where w.transition.hasVideo {
                 if let id = w.transition.from { tails["\(c.id)/\(id)"] = w.tail }
                 if let id = w.transition.to { heads["\(c.id)/\(id)"] = w.head }
