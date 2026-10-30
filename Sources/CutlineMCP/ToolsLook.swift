@@ -331,8 +331,9 @@ extension Toolbox {
             let e = stack.remove(at: index)
             stack.insert(e, at: min(max(0, target), stack.count))
         }
+        let effectType = EffectCatalog.type(stack[index].type)
         for (name, v) in (args.raw["params"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
-            plan.values.append(("fx.\(plan.effectId).\(name)", try paramValue(v)))
+            plan.values.append(("fx.\(plan.effectId).\(effectType?.paramName(for: name) ?? name)", try paramValue(v)))
         }
         if let m = args.optDouble("mix") { plan.values.append(("fx.\(plan.effectId).mix", .number(m))) }
         if let en = args.optBool("enabled") { plan.values.append(("fx.\(plan.effectId).enabled", .bool(en))) }

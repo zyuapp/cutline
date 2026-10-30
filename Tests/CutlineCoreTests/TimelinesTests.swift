@@ -45,3 +45,13 @@ import Testing
     #expect(p.tracks[0].clips.map(\.mediaId) == ["a", "a-2"])
     #expect(p.mediaAsset("a-2")?.path == "/y/other.mov")
 }
+
+@Test func effectParamNamesForgiveCommonGuesses() throws {
+    let lut = try #require(EffectCatalog.type("color.lut"))
+    #expect(lut.paramName(for: "path") == "file")
+    #expect(lut.paramName(for: "file") == "file")
+    #expect(lut.paramName(for: "mix") == "mix")
+    let blur = try #require(EffectCatalog.type("blur.gaussian"))
+    #expect(blur.paramName(for: "radus") == "radius")
+    #expect(blur.paramName(for: "zzzzzz") == nil)
+}

@@ -259,6 +259,28 @@ public struct EffectType: Sendable {
     }
 
     public func spec(_ name: String) -> ParamSpec? { params.first { $0.name == name } }
+
+    static let synonyms: [String: [String]] = [
+        "file": ["path", "lut", "lut_file", "file_path", "cube", "url"],
+        "amount": ["strength", "intensity", "level"],
+        "strength": ["amount", "intensity"],
+        "intensity": ["amount", "strength"],
+        "radius": ["size", "blur_radius"],
+        "color": ["colour", "tint_color"],
+        "angle": ["rotation", "direction"],
+    ]
+
+    /// The parameter an agent most likely meant: the name itself, a known synonym, or the one unambiguous
+    /// near-miss (edit distance ≤ 2); nil when there's no confident match.
+    public func paramName(for name: String) -> String? {
+        if spec(name) != nil || ["mix", "enabled"].contains(name) { return name }
+        let lower = name.lowercased().replacingOccurrences(of: "-", with: "_")
+        if spec(lower) != nil { return lower }
+        let viaSynonym = params.map(\.name).filter { Self.synonyms[$0]?.contains(lower) == true }
+        if viaSynonym.count == 1 { return viaSynonym[0] }
+        let near = params.map(\.name).filter { editDistance($0, lower) <= 2 }
+        return near.count == 1 ? near[0] : nil
+    }
 }
 
 extension RGBA {

@@ -27,6 +27,7 @@ extension Toolbox {
         "animation_out": Schema.string("Exit", values: TextAnimation.allCases.map(\.rawValue)),
         "spans": Schema.array(Schema.object([
             "match": Schema.string("Restyle every occurrence of this text (case-insensitive)"),
+            "text": Schema.string("Same as match"),
             "from": Schema.integer("Or: first character index"),
             "to": Schema.integer("Character index after the last"),
             "color": Schema.string("Hex"),
@@ -698,7 +699,7 @@ extension Toolbox {
         if let list = args.raw["spans"]?.array {
             s.spans = try list.map { j in
                 let a = Args(j)
-                let span = TextSpan(match: a.optString("match"), from: a.optInt("from"), to: a.optInt("to"), color: try a.color("color"), font: a.optString("font"), weight: a.optInt("weight"), scale: a.optDouble("scale"), italic: a.optBool("italic"), underline: a.optBool("underline"), highlight: try a.color("highlight"))
+                let span = TextSpan(match: a.optString("match") ?? a.optString("text"), from: a.optInt("from"), to: a.optInt("to"), color: try a.color("color"), font: a.optString("font"), weight: a.optInt("weight"), scale: a.optDouble("scale"), italic: a.optBool("italic"), underline: a.optBool("underline"), highlight: try a.color("highlight"))
                 guard span.match != nil || span.from != nil || span.to != nil else { throw EditError("Each span needs match or from/to") }
                 return span
             }
