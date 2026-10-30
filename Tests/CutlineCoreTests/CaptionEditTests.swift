@@ -102,3 +102,26 @@ private func scene() -> (Project, [String: Transcript]) {
     // Spans are entered at their middle, not their first frames.
     #expect(clips[0].sourceIn > 4)
 }
+
+@Test func musicFitsByCuttingOrRepeatingBars() throws {
+    let bars = stride(from: 1.0, to: 60, by: 2.0).map { $0 }
+    let short = try MusicFit.plan(song: TimeRange(0, 60), downbeats: bars, target: 44)
+    #expect(short.pieces.count == 2 && abs(short.length - 44) < 1e-9 && short.overshoot == 0)
+    #expect(bars.contains(short.pieces[0].end) && bars.contains(short.pieces[1].start))
+    #expect(short.pieces[1].end == 60)
+
+    let odd = try MusicFit.plan(song: TimeRange(0, 60), downbeats: bars, target: 44.3)
+    #expect(odd.length >= 44.3 && odd.overshoot < 2)
+
+    let long = try MusicFit.plan(song: TimeRange(0, 60), downbeats: bars, target: 100)
+    #expect(long.length >= 100 && long.length - 100 < 2 && long.pieces.last?.end == 60)
+
+    var p = Project(name: "Music")
+    p.media = [MediaAsset(id: "song", path: "/tmp/s.m4a", name: "s", duration: 60, width: 0, height: 0, fps: 0, hasVideo: false, hasAudio: true)]
+    p.tracks[1].clips = [Clip(id: "mu", kind: .media, mediaId: "song", start: 2, duration: 60)]
+    _ = try p.fitMusic(clipId: "mu", length: 30, downbeats: bars)
+    let clips = p.tracks[1].clips
+    #expect(clips.first?.id == "mu" && clips.first?.start == 2)
+    #expect(abs(clips.last!.end - 32) < 0.05)
+    for (a, b) in zip(clips, clips.dropFirst()) { #expect(abs(a.end - b.start) < 1e-6) }
+}

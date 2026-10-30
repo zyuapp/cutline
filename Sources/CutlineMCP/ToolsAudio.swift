@@ -34,7 +34,7 @@ extension Toolbox {
             return r
         })
 
-        add(Tool(name: "recipe", description: "Common multi-step edits, each one undoable step that reports exactly what it changed (dry_run:true previews). Sound: duck, loudness_normalize, split_edit. Time: speed_ramp, freeze_frame. Framing: punch_in, pip, split_screen, reframe. Rhythm: beat_cut. Style: look, glitch, whip_pan, kinetic_text. Reuse: template, multicam_switch. catalog recipe=<name> gives each recipe's arguments.", schema: Schema.object([
+        add(Tool(name: "recipe", description: "Common multi-step edits, each one undoable step that reports exactly what it changed (dry_run:true previews). Sound: duck, loudness_normalize, split_edit. Time: speed_ramp, freeze_frame. Framing: punch_in, pip, split_screen, reframe. Rhythm: beat_cut, music_fit. Style: look, glitch, whip_pan, kinetic_text. Reuse: template, multicam_switch. catalog recipe=<name> gives each recipe's arguments.", schema: Schema.object([
             "name": Schema.string("Recipe", values: Toolbox.recipeNames),
             "args": ["type": "object", "description": "The recipe's arguments; catalog recipe=<name> lists them"],
             "dry_run": Schema.bool("Report what would change without applying it"),

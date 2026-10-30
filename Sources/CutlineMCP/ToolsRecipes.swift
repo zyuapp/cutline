@@ -4,7 +4,7 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color"]
+    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "music_fit", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color"]
 
     static let recipeDocs = """
         duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
@@ -17,6 +17,7 @@ extension Toolbox {
         split_screen: {clips: [ids], layout: lr|tb|grid, gap: 0.01}. \
         reframe: {aspect: "9:16"|"1:1"|"4:5"|"16:9", height: 1920}; follows faces or the salient subject when shots are analyzed. \
         beat_cut: {media: [ids] (uses analyzed shots, best first) or sources: [{media, start, end}], start, end (timeline), every: 1|2|4 beats, track: "new"}. \
+        music_fit: {clip (music clip), length (seconds) or end (timeline time or anchor to end on), fade_out: 1.5}; cuts out or repeats whole bars at downbeats so the song keeps its own ending. \
         look: {look: teal_orange|warm_film|cool_night|bleach_bypass|vintage_fade|high_contrast_bw|golden_hour|matrix_green|pastel|noir, amount: 0.8, grain: 0.2, vignette: 0.4, start, end}; adds an adjustment layer. \
         glitch: {at: [times or anchors], duration: 0.3, amount: 0.8}; adds glitch hits on an adjustment track. \
         whip_pan: {cut: "clip_a|clip_b", direction: left, duration: 0.35}. \
@@ -112,6 +113,15 @@ extension Toolbox {
                 var trackId = a.optString("track") ?? "new"
                 if trackId == "new" { trackId = p.addTrack(kind: .video, name: "Beat cut").id }
                 return try p.beatCut(pool: pool, beats: beats, every: a.optInt("every") ?? 2, trackId: trackId)
+            }
+        case "music_fit":
+            let clipId = try a.string("clip")
+            guard let clip = current.clip(clipId), let mid = clip.mediaId else { throw EditError("No media clip \(clipId)") }
+            guard let beats = b.analysis(BeatAnalysis.self, mid, "beats") else { throw EditError("No beat analysis for \(mid); run media_analyze features:[\"beats\"]") }
+            let length: Seconds
+            if let l = a.optDouble("length") { length = l } else if let e = try a.optTime("end") { length = e - clip.start } else { throw EditError("Pass length or end") }
+            return try runEdit("Fit music to \(fmt2(length))s", dry: dry) { p in
+                try p.fitMusic(clipId: clipId, length: length, downbeats: beats.downbeats, fadeOut: a.optDouble("fade_out") ?? 1.5)
             }
         case "look":
             let look = a.optString("look") ?? "teal_orange"
