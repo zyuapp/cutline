@@ -82,7 +82,7 @@ extension Toolbox {
         }
         let made = files, strength = plan.strength
         let refText = plan.refAt.map { "\(refId) at \(fmt2($0))s" } ?? refId
-        return try runEdit("Match \(made.count) shot(s) to \(Toolbox.clipName(refId, current))", dry: dry) { p in
+        let result = try runEdit("Match \(made.count) shot(s) to \(Toolbox.clipName(refId, current))", dry: dry) { p in
             for (id, url) in made {
                 guard let loc = p.locateClip(id) else { continue }
                 p.tracks[loc.track].clips[loc.clip].effects.removeAll { $0.id == "match" }
@@ -91,6 +91,8 @@ extension Toolbox {
             return (["Matched to \(refText) at strength \(fmt2(strength)):"] + report.map { "  " + $0 } + warnings).joined(separator: "\n")
                 + "\nTune with param_set fx.match.mix; check continuity with timeline_measure what:[\"compare\"] reference:\(refId)."
         }
+        // Returned through a local: returning the call directly trips the async task allocator in debug builds.
+        return result
     }
 
     /// Writes one shot's match LUT and describes it.
