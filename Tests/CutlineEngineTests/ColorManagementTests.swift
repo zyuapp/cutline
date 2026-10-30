@@ -269,9 +269,13 @@ private func lumaFrame(code: UInt16, width: Int = 64, height: Int = 64) -> CVPix
     let size = CGSize(width: 512, height: 256)
     for kind in Scopes.Kind.allCases {
         _ = Scopes.render(hd, kind: kind, size: size, context: context)
-        let start = Date()
-        for _ in 0..<5 { _ = try #require(Scopes.render(hd, kind: kind, size: size, context: context)) }
-        let ms = Date().timeIntervalSince(start) / 5 * 1000
+        // The fastest of five, so a busy machine running other tests doesn't fail it.
+        var ms = Double.infinity
+        for _ in 0..<5 {
+            let start = Date()
+            _ = try #require(Scopes.render(hd, kind: kind, size: size, context: context))
+            ms = min(ms, Date().timeIntervalSince(start) * 1000)
+        }
         print("scope \(kind.rawValue): \(String(format: "%.1f", ms)) ms")
         #expect(ms < 500)
     }
