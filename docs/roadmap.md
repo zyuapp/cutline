@@ -103,9 +103,16 @@ Goal: an editor coming from Final Cut Pro, Premiere or Resolve can bring their t
   - **Finishing aids:** shot color matching; active-speaker detection from lip movement, so reframing follows whoever is talking; sync groups so multicam angles can be swapped later without losing sync.
   - **Surround:** mono, 5.1 and 7.1 mixes with per-clip panning (`audio.pan_x`, `audio.pan_y`, center, LFE), multichannel BS.1770 loudness, AAC 5.1 or PCM 7.1 export, and stereo fold-down for preview.
   - **Scale:** a 1,429-clip timeline validates, diffs and quality-checks in milliseconds and rebuilds in about 1.2 s.
-  - **Delivery:** stills, image sequences and GIFs.
+  - **Delivery:** stills, image sequences and GIFs; ProRes HQ/LT/Proxy/4444 XQ and 10-bit HEVC; QuickTime timecode tracks; bars, tone, slate and 2-pop leaders; regional broadcast checks; interlaced (top or bottom field first) ProRes masters.
+  - **Captions:** dialogue tracks only by default, sidecars clipped to the export range, per-cue edits (`caption_edit`), transcript and speaker corrections (`transcript_edit`), overlapping speech flagged (`captions_list`).
+  - **Titles:** styled spans inside one title (color, font, weight, size, italic, underline, highlight).
+  - **Organizing:** bins and metadata columns (`media_organize`, `media_list`); several timelines per project (`timelines`).
+  - **Color:** `color.wheels` (lift/gamma/gain/offset per channel), window and qualifier combined, matte view, grade groups, letterbox-safe effects and matching, CDL in every interchange format.
+  - **Tracking:** planar surface tracking (`media_track corners`) with corner pinning through `recipe follow`.
+  - **Rhythm:** `recipe music_fit` cuts or repeats bars at downbeats to fit a length.
 - **Still open:**
   - **Captions:** CEA-708 and 608 inside the video bitstream (SEI); 608 tracks and SCC files are done.
+  - **Recording:** voice-over recording in the preview app.
   - **Interchange:** AAF (needs an outside reader such as pyaaf2 to verify; not yet allowed here).
   - **Validation in the real apps:** opening Cutline's exports in Final Cut Pro, Premiere and Resolve themselves (none are installed here).
 
