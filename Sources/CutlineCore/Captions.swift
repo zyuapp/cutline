@@ -262,6 +262,7 @@ extension Clip {
             t.rotateX = number("transform.rotate_x", at: local, default: t.rotateX)
             t.rotateY = number("transform.rotate_y", at: local, default: t.rotateY)
             t.perspective = number("transform.perspective", at: local, default: t.perspective)
+            t.z = number("transform.z", at: local, default: t.z)
         }
         var fade = 1.0
         if fadeIn > 0 { fade = min(fade, local / fadeIn) }

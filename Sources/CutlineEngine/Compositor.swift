@@ -74,8 +74,18 @@ public final class RenderScene: @unchecked Sendable {
         // Where pictures lie, so adjustment layers leave a black background (letterbox bars) black.
         let bg = project.canvas.background
         var cover = background && max(bg.r, bg.g, bg.b) > 0.02 ? out : CIImage(color: .clear).cropped(to: canvas)
+        // 3D layers on neighbouring tracks are held back and drawn far to near.
+        var depthSorted: [(depth: Double, order: Int, image: CIImage, blend: BlendMode)] = []
+        func flush() {
+            for item in depthSorted.sorted(by: { $0.depth != $1.depth ? $0.depth > $1.depth : $0.order < $1.order }) {
+                out = EffectRenderer.blend(item.image, over: out, mode: item.blend).cropped(to: canvas)
+                cover = item.image.composited(over: cover)
+            }
+            depthSorted = []
+        }
         for (ti, track) in project.tracks.enumerated() where ti < limit && track.kind == .video && !track.hidden {
             if let w = windows[track.id]?.first(where: { $0.contains(t) }) {
+                flush()
                 let a = w.transition.from.flatMap { project.clip($0) }
                 let b = w.transition.to.flatMap { project.clip($0) }
                 let p = w.progress(at: t)
@@ -93,6 +103,7 @@ public final class RenderScene: @unchecked Sendable {
                 let local = t - clip.start
                 let opacity = clip.resolvedTransform(at: local).opacity
                 guard opacity > 0.001 else { continue }
+                flush()
                 let ctx = EffectRenderer.Context(unit: unit, time: t, opaque: true, gradeSpace: gradeSpace)
                 var adjusted = EffectRenderer.apply(clip.effects, to: out, context: ctx) { e, name in clip.anim["fx.\(e.id).\(name)"]?.value(at: local) }
                 adjusted = EffectRenderer.apply(track.effects, to: adjusted, context: ctx) { _, _ in nil }
@@ -108,9 +119,15 @@ public final class RenderScene: @unchecked Sendable {
             if !track.effects.isEmpty {
                 placed = EffectRenderer.apply(track.effects, to: placed, context: EffectRenderer.Context(unit: unit, time: t, opaque: false, gradeSpace: gradeSpace)) { _, _ in nil }
             }
+            if clip.transform.threeD {
+                depthSorted.append((depth3D(clip, at: t, camera: camera(at: t)), ti, placed, clip.blend))
+                continue
+            }
+            flush()
             out = EffectRenderer.blend(placed, over: out, mode: clip.blend).cropped(to: canvas)
             cover = placed.composited(over: cover)
         }
+        flush()
         if project.captions.enabled, let caption = captionImage(at: t) {
             out = caption.composited(over: out)
         }
@@ -204,10 +221,7 @@ public final class RenderScene: @unchecked Sendable {
             return nil
         case .generator:
             guard let gen = clip.effects.first(where: { GeneratorCatalog.type($0.type) != nil }) else { return nil }
-            let value: (String) -> ParamValue = { name in
-                clip.anim["fx.\(gen.id).\(name)"]?.value(at: local) ?? gen.params[name] ?? GeneratorCatalog.type(gen.type)?.spec(name)?.defaultValue ?? .number(0)
-            }
-            guard let cg = GeneratorRenderer.render(type: gen.type, value: value, canvas: canvas.size) else { return nil }
+            guard let cg = GeneratorRenderer.render(type: gen.type, value: { clip.generatorValue($0, at: local) ?? .number(0) }, canvas: canvas.size, time: local, duration: clip.duration, history: { clip.generatorValue($0, at: $1) ?? .number(0) }) else { return nil }
             layer = CIImage(cgImage: cg)
         case .sequence:
             guard let child = child(for: clip) else { return nil }
@@ -228,6 +242,7 @@ public final class RenderScene: @unchecked Sendable {
         } else if !clip.effects.isEmpty {
             layer = EffectRenderer.apply(clip.effects, to: layer, context: ctx, param: param)
         }
+        if xf.threeD { return place3D(layer, center: center, xf: xf, camera: camera(at: t)) }
         return place(layer, center: center, xf: xf)
     }
 

@@ -674,6 +674,10 @@ public struct Transform: Codable, Equatable, Hashable, Sendable {
     public var perspective: Double = 2
     /// Shutter angle in degrees for motion blur on moving layers; 0 is off, 180 is film-like.
     public var motionBlur: Double = 0
+    /// Whether the layer sits in 3D space and is seen through the scene camera.
+    public var threeD: Bool = false
+    /// Depth of a 3D layer in frame heights; positive is farther from the camera.
+    public var z: Double = 0
 
     public init(fit: FitMode = .fit, scale: Double = 1, x: Double = 0, y: Double = 0, rotation: Double = 0, opacity: Double = 1, crop: Crop = Crop()) {
         self.fit = fit
@@ -685,7 +689,7 @@ public struct Transform: Codable, Equatable, Hashable, Sendable {
         self.crop = crop
     }
 
-    enum CodingKeys: String, CodingKey { case fit, scale, x, y, rotation, opacity, crop, anchorX, anchorY, rotateX, rotateY, perspective, motionBlur }
+    enum CodingKeys: String, CodingKey { case fit, scale, x, y, rotation, opacity, crop, anchorX, anchorY, rotateX, rotateY, perspective, motionBlur, threeD, z }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -702,6 +706,8 @@ public struct Transform: Codable, Equatable, Hashable, Sendable {
         rotateY = try c.decodeIfPresent(Double.self, forKey: .rotateY) ?? 0
         perspective = try c.decodeIfPresent(Double.self, forKey: .perspective) ?? 2
         motionBlur = try c.decodeIfPresent(Double.self, forKey: .motionBlur) ?? 0
+        threeD = try c.decodeIfPresent(Bool.self, forKey: .threeD) ?? false
+        z = try c.decodeIfPresent(Double.self, forKey: .z) ?? 0
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -719,6 +725,8 @@ public struct Transform: Codable, Equatable, Hashable, Sendable {
         if rotateY != 0 { try c.encode(rotateY, forKey: .rotateY) }
         if perspective != 2 { try c.encode(perspective, forKey: .perspective) }
         if motionBlur != 0 { try c.encode(motionBlur, forKey: .motionBlur) }
+        if threeD { try c.encode(threeD, forKey: .threeD) }
+        if z != 0 { try c.encode(z, forKey: .z) }
     }
 
     /// Whether the picture needs the 3D path.

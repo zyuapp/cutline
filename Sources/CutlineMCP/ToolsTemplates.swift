@@ -115,6 +115,7 @@ extension Toolbox {
                 tr.to = tr.to.flatMap { idMap[$0] }
                 p.transitions.append(tr)
             }
+            p.relink(idMap)
             return "Inserted \(tpl.name) at \(fmt2(at))s: " + made.joined(separator: ", ")
         }
     }

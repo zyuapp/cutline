@@ -64,6 +64,7 @@ final class Session {
         let before = p
         try body(&p)
         p.pruneTransitions()
+        p.refreshLinks()
         guard p != before else { return p }
         try b.commit(p, label: label)
         return p

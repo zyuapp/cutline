@@ -45,8 +45,8 @@ extension Toolbox {
             "media_id": Schema.string("Media to place"),
             "color": Schema.string("Hex color for a solid color clip"),
             "adjustment": Schema.bool("Make an adjustment layer"),
-            "generator": Schema.string("Draw a graphic: shape.rect, shape.ellipse, shape.line, shape.arrow, shape.highlight, callout, lower_third, progress_bar, counter, gradient, grid_overlay (catalog type=<id> for params; animate them as fx.gen.<param>)"),
-            "params": ["type": "object", "description": "Generator parameters, e.g. {\"title\": \"Ada Lovelace\", \"subtitle\": \"Mathematician\"}"],
+            "generator": Schema.string("Draw a graphic: \(GeneratorCatalog.all.map(\.id).joined(separator: ", ")). shape is a shape layer (paths, strokes, trim paths, morphs, repeaters), particles an emitter, title.* designed titles that build on and off by themselves, camera the 3D camera for layers with transform.3d. catalog type=<id> for params; animate them as fx.gen.<param>"),
+            "params": ["type": "object", "description": "Generator parameters, e.g. {\"title\": \"Ada Lovelace\", \"subtitle\": \"Mathematician\"}; shape takes {\"shapes\": [{\"id\": \"ring\", \"type\": \"ellipse\", \"width\": 0.3, \"height\": 0.3, \"stroke\": \"#FFFFFF\", \"stroke_width\": 0.01, \"trim_end\": 0}]}"],
             "track": Schema.string("Track id, or \"new\" for a new layer on top"),
             "start": Schema.time("Timeline start (seconds or anchor)"),
             "end": Schema.time("Timeline end, instead of duration"),
@@ -106,9 +106,13 @@ extension Toolbox {
             } else if let gen = args.optString("generator") {
                 guard let spec = GeneratorCatalog.type(gen) else { throw EditError("No generator \(gen). Generators: \(GeneratorCatalog.all.map(\.id).joined(separator: ", "))") }
                 var params: [String: ParamValue] = [:]
-                for (k, v) in args.raw["params"]?.object ?? [:] {
-                    guard let ps = spec.spec(k) else { throw EditError("\(gen) has no parameter \(k). Parameters: \(spec.params.map(\.name).joined(separator: ", "))") }
-                    params[k] = try ps.validate(try Toolbox.paramValue(v), path: k)
+                let given = args.raw["params"]?.object ?? [:]
+                // The shape list goes first: shape properties are looked up in it.
+                for (k, v) in given.sorted(by: { ($0.key == "shapes" ? 0 : 1, $0.key) < ($1.key == "shapes" ? 0 : 1, $1.key) }) {
+                    guard let ps = GeneratorCatalog.spec(type: gen, name: k, params: params) else { throw EditError("\(gen) has no parameter \(k). Parameters: \(spec.params.map(\.name).joined(separator: ", "))") }
+                    let value = try ps.validate(try Toolbox.paramValue(v), path: k)
+                    try Effect.checkResource(type: gen, param: k, value: value)
+                    params[k] = value
                 }
                 clip = Clip(id: Project.newClipId(), kind: .generator, name: args.optString("name") ?? (gen.split(separator: ".").last.map(String.init) ?? gen).replacingOccurrences(of: "_", with: " "), start: 0, duration: try span ?? args.optTime("duration") ?? 5, effects: [Effect(id: "gen", type: gen, params: params)])
                 defaultTrack = "new"
@@ -701,6 +705,8 @@ extension Toolbox {
         case .number(let n): return .number(n)
         case .bool(let b): return .bool(b)
         case .string(let s): return .string(s)
+        // Lists and objects (a shape layer's shapes) are kept as their JSON text.
+        case .array, .object: return .string(j.encoded())
         default: throw EditError("Parameter values are numbers, booleans or strings; got \(j.encoded())")
         }
     }
