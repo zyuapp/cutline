@@ -4,7 +4,7 @@ import Foundation
 
 extension Toolbox {
     func registerLookTools() {
-        let targetSchema: JSON = ["type": ["string", "array"], "items": ["type": "string"], "description": "Clip id, track id, \"V1/*\" for every clip on a track, \"master\" (param_set gain_db and layout), or a list of these"]
+        let targetSchema: JSON = ["type": ["string", "array"], "items": ["type": "string"], "description": "Clip id, track id, \"V1/*\" for every clip on a track, \"master\" (param_set gain_db and layout), \"bus:<id>\" (effect_add), or a list of these"]
 
         addEdit(EditTool(name: "param_set", description: "Set or animate any parameter of clips or tracks by path: transform.scale/x/y/rotation/opacity/fit/crop.*, blend, fade.in/out, audio.volume, audio.channels (stereo, left, right, mono_mix, swap: left or right plays one mic of a two-channel recording on both sides; \"ch3\", \"ch3+ch4\" or \"mix:1,3\" pick any source channels across a multitrack file's audio tracks), surround panning (audio.pan_x/pan_y/center/lfe, heard when the master layout is 5.1 or 7.1), text.*, color, and fx.<effect id>.<param> for effects. Animate with keys [time, value, ease?]; times are timeline seconds or anchors (\"talk.w12\", \"clip_x.end-0.5\"), or seconds from the clip start with relative:true. Eases: linear, easeIn, easeOut, easeInOut (default), hold, back, elastic, bounce, or \"bezier(x1, y1, x2, y2)\" for a custom curve. Numbers and colors interpolate. project_status with target lists a clip's paths and values; catalog explains every effect parameter.", schema: Schema.object([
             "target": targetSchema,
@@ -64,6 +64,8 @@ extension Toolbox {
                         p.master.gainDb = n
                         lines.append("master gain_db \(fmt1(before))→\(fmt1(n))")
                     }
+                case .bus(let id):
+                    throw EditError("param_set doesn't reach buses; audio_bus bus:\"\(id)\" sets its fader (volume, gain_db, volume_keys), mute, solo and effect params")
                 }
             }
             return Toolbox.compactTargets(lines, p)
@@ -92,6 +94,14 @@ extension Toolbox {
                     for (path, v) in plan.values { try probe.set(path, v) }
                     p.master.effects = probe.effects
                     lines.append(Toolbox.describePlan(plan, effects: probe.effects, owner: "master"))
+                case .bus(let id):
+                    if let t = args.optString("type"), !EffectCatalog.isAudio(t) { throw EditError("Buses take audio effects (audio.* or an Audio Unit); \(t) isn't one") }
+                    guard let bi = p.buses.firstIndex(where: { $0.id == id }) else { continue }
+                    var probe = Track(id: id, kind: .audio, name: p.buses[bi].name, effects: p.buses[bi].effects)
+                    let plan = try Toolbox.planEffect(&probe.effects, args, owner: "bus \(id)")
+                    for (path, v) in plan.values { try probe.set(path, v) }
+                    p.buses[bi].effects = probe.effects
+                    lines.append(Toolbox.describePlan(plan, effects: probe.effects, owner: "bus \(id)").replacingOccurrences(of: " Animate with param_set path fx.\(plan.effectId).<param>.", with: ""))
                 case .clip(let id):
                     guard let loc = p.locateClip(id) else { continue }
                     var c = p.tracks[loc.track].clips[loc.clip]
@@ -152,6 +162,20 @@ extension Toolbox {
         case clip(String)
         case track(Int)
         case master
+        case bus(String)
+    }
+
+    /// The bus `name` names: "bus:<id>", a bus id or name, or a role whose DME bus exists ("bus:dialogue" → DIA).
+    static func busTarget(_ name: String, _ p: Project) throws -> String? {
+        let explicit = name.lowercased().hasPrefix("bus:")
+        let key = explicit ? String(name.dropFirst(4)) : name
+        let role = ["dialogue": "dialogue", "dialog": "dialogue", "dia": "dialogue", "music": "music", "mus": "music", "effects": "effects", "fx": "effects", "sfx": "effects"][key.lowercased()]
+        if let b = p.buses.first(where: { $0.id == key }) ?? p.buses.first(where: { $0.id.lowercased() == key.lowercased() || $0.name.lowercased() == key.lowercased() })
+            ?? role.flatMap({ r in p.buses.first { $0.id == Project.dmeBus(r) } }) {
+            return b.id
+        }
+        guard explicit else { return nil }
+        throw EditError("No bus \(key)." + (p.buses.isEmpty ? " The project has no buses: add one with audio_bus bus:\"\(role.map(Project.dmeBus) ?? key.uppercased())\" (or recipe dme_buses for DIA/MUS/FX), then route tracks with track_update output." : " Buses: " + p.buses.map { "\($0.id) \"\($0.name)\"" }.joined(separator: ", ")))
     }
 
     static func resolveTargets(_ j: JSON?, _ p: Project) throws -> [Target] {
@@ -171,8 +195,10 @@ extension Toolbox {
                 out.append(.clip(n))
             } else if let i = p.trackIndex(n) {
                 out.append(.track(i))
+            } else if let bus = try busTarget(n, p) {
+                out.append(.bus(bus))
             } else {
-                throw EditError("No clip or track \(n). Clips look like clip_ab12cd, tracks like V1 or A1.")
+                throw EditError("No clip, track or bus \(n). Clips look like clip_ab12cd, tracks like V1 or A1, buses like \"bus:DIA\"" + (p.buses.isEmpty ? "." : " (buses: \(p.buses.map(\.id).joined(separator: ", "))).") + " Master: \"master\".")
             }
         }
         return out

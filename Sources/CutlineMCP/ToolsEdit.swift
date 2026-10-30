@@ -594,7 +594,7 @@ extension Toolbox {
                 "end": Schema.time("Ranged marker or tag end"),
                 "rating": Schema.string("For media tags", values: ["favorite", "reject"]),
             ], required: ["time", "label"]), "Markers or tags to add"),
-            "update": Schema.array(Schema.object(["id": Schema.string("Marker id or label"), "kind": Schema.string("New kind"), "label": Schema.string("New label"), "note": Schema.string("New note")], required: ["id"]), "Change markers, e.g. mark a to-do done"),
+            "update": Schema.array(Schema.object(["id": Schema.string("Marker id or label"), "kind": Schema.string("New kind", values: ["standard", "chapter", "todo", "done", "comment"]), "label": Schema.string("New label"), "note": Schema.string("New note")], required: ["id"]), "Change markers, e.g. mark a to-do done"),
             "remove": Schema.strings("Marker ids or labels (or tag labels with media_id) to remove"),
             "remove_all": Schema.bool("Remove every marker (or every tag of media_id) first"),
             "media_id": Schema.string("Tag this media file's source ranges instead of the timeline"),

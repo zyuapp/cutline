@@ -43,7 +43,7 @@ extension Toolbox {
         ArgAliasGroup(["id", "effect_id", "effect"], only: ["effect_add"]),
         ArgAliasGroup(["id", "transition_id", "transition"], only: ["transition_set"]),
         ArgAliasGroup(["operations", "ops", "steps", "edits", "patch", "patches"], only: ["batch", "project_patch"]),
-        ArgAliasGroup(["cut", "cuts"], only: ["transition_set", "whip_pan"]),
+        ArgAliasGroup(["cut", "cuts", "edit", "edit_point"], only: ["transition_set", "whip_pan", "split_edit"]),
         ArgAliasGroup(["edge", "side"], only: ["transition_set"]),
         ArgAliasGroup(["args", "arguments", "parameters"], only: ["recipe"]),
         ArgAliasGroup(["type", "transition_type", "kind"], only: ["transition_set"]),
@@ -61,6 +61,13 @@ extension Toolbox {
         ArgAliasGroup(["scope", "per"], only: ["qualify", "match_color", "effect_add"]),
         ArgAliasGroup(["timing", "on", "sync"], only: ["kinetic_text"]),
         ArgAliasGroup(["amount_db", "amount", "depth", "depth_db"], only: ["duck"]),
+        ArgAliasGroup(["start", "from", "in"], only: ["range_delete", "timeline_transcript", "media_transcript", "captions_list", "timeline_measure", "media_frames", "timeline_frames", "analysis_read"]),
+        ArgAliasGroup(["end", "to", "out"], only: ["range_delete", "timeline_transcript", "media_transcript", "captions_list", "timeline_measure", "media_frames", "timeline_frames", "analysis_read"]),
+        ArgAliasGroup(["angles", "media_ids", "cameras", "media", "sources"], only: ["multicam_create"]),
+        ArgAliasGroup(["music", "song", "track_music", "music_clip"], only: ["beat_cut"]),
+        ArgAliasGroup(["target_lufs", "target", "lufs", "integrated", "loudness", "target_loudness"], only: ["loudness_normalize"]),
+        ArgAliasGroup(["ceiling_db", "true_peak", "true_peak_db", "ceiling", "peak", "max_true_peak", "tp"], only: ["loudness_normalize"]),
+        ArgAliasGroup(["audio_layout", "layout", "master_layout", "channel_layout"], only: ["canvas_set"]),
     ]
 
     /// Every alias `tool` accepts and the declared argument it stands for.
@@ -87,6 +94,7 @@ extension Toolbox {
         guard case .object(var o) = args, let props = schema["properties"]?.object else { return args }
         let declared = Set(props.keys)
         let table = argAliases(tool, declared: declared)
+        if tool == "markers" { try markerShorthand(&o) }
         func move(_ from: String, to: String) throws {
             guard let v = o.removeValue(forKey: from) else { return }
             if let have = o[to], have != v { throw EditError("'\(from)' is another name for '\(to)'; pass one of them") }
@@ -109,7 +117,43 @@ extension Toolbox {
                 o[into] = .object(dict)
             }
         }
+        for (k, v) in o { if let sub = props[k] { o[k] = normalizingValues(v, schema: sub, name: k) } }
         return .object(o)
+    }
+
+    /// markers {action, at|time, label, …} for one marker, and a single object for add or update, as the lists
+    /// markers takes.
+    static func markerShorthand(_ o: inout [String: JSON]) throws {
+        for k in ["add", "update"] { if case .object? = o[k] { o[k] = .array([o[k]!]) } }
+        let fields = ["time", "at", "label", "name", "text", "title", "kind", "color", "note", "end", "rating", "id"]
+        guard o["action"] != nil || fields.contains(where: { o[$0] != nil }) else { return }
+        let given = o.removeValue(forKey: "action")?.string
+        var m: [String: JSON] = [:]
+        for k in fields { if let v = o.removeValue(forKey: k) { m[k] = v } }
+        if let v = m.removeValue(forKey: "at") {
+            if let t = m["time"], t != v { throw EditError("'at' is another name for 'time'; pass one of them") }
+            m["time"] = v
+        }
+        for k in ["name", "text", "title"] { if let v = m.removeValue(forKey: k), m["label"] == nil { m["label"] = v } }
+        let actions = ["add", "update", "remove", "remove_all"]
+        let synonyms = ["create": "add", "set": "add", "edit": "update", "change": "update", "delete": "remove", "clear": "remove_all"]
+        let action = given.map { canonicalValue($0, valid: actions, name: "action") ?? synonyms[enumKey($0)] ?? $0 }
+            ?? (m["id"] != nil && m["time"] == nil ? "update" : "add")
+        switch action {
+        case "add":
+            o["add"] = .array((o["add"]?.array ?? []) + [.object(m)])
+        case "update":
+            guard m["id"] != nil else { throw EditError("markers action update needs id (the marker's id or label)") }
+            m["time"] = nil
+            o["update"] = .array((o["update"]?.array ?? []) + [.object(m)])
+        case "remove":
+            guard let key = m["id"] ?? m["label"] else { throw EditError("markers action remove needs id or label") }
+            o["remove"] = .array((o["remove"]?.array ?? o["remove"].map { [$0] } ?? []) + [key])
+        case "remove_all":
+            o["remove_all"] = true
+        default:
+            throw EditError(invalidValueMessage(given ?? action, name: "action", valid: actions) + " (project_status lists markers)")
+        }
     }
 
     /// The call's arguments with aliases resolved for the tool, each batch operation's edit tool and the recipe.

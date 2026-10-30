@@ -34,8 +34,9 @@ private let recipeSynonyms: [(String, String, String)] = [
     var misses: [String] = []
     for (tool, alias, canonical) in toolSynonyms {
         let schema = try #require(box.tools[tool]?.schema, "no tool \(tool)")
-        let out = try box.resolvingAliases(tool, [alias: "x"], schema: schema)
-        if out?[canonical]?.string != "x" { misses.append("\(tool) \(alias)→\(canonical): \(out?.encoded() ?? "nil")"); continue }
+        let v = sampleValue(schema, canonical)
+        let out = try box.resolvingAliases(tool, [alias: .string(v)], schema: schema)
+        if out?[canonical]?.string != v { misses.append("\(tool) \(alias)→\(canonical): \(out?.encoded() ?? "nil")"); continue }
         do { try box.checkArguments(tool, out, schema: schema) } catch { misses.append("\(tool) \(alias): \(error.localizedDescription)") }
     }
     for (recipe, alias, canonical) in recipeSynonyms {

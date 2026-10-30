@@ -69,6 +69,60 @@ extension Toolbox {
         var faceBox: CGRect?
         var hit: Double
         var coverage: Double
+        /// Why the sample is from another time than asked.
+        var note: String?
+    }
+
+    /// Timeline times inside `range` where analyzed faces show, best first: at least n + 1 faces at once, the
+    /// largest n-th face first, at most `limit` times at least half a second apart.
+    static func faceSearchTimes(_ faces: [FaceTrack], clip c: Clip, range: TimeRange, n: Int, limit: Int = 5) -> [Seconds] {
+        let span = c.sourceSpan
+        var byTime: [Seconds: [Double]] = [:]
+        for f in faces {
+            for s in f.samples where s.t >= span.start - 1e-6 && s.t < span.end {
+                let t = c.timelineTime(atSource: s.t)
+                guard t >= range.start - 1e-6, t < range.end else { continue }
+                byTime[(t * 100).rounded() / 100, default: []].append(s.box.width * s.box.height)
+            }
+        }
+        let ranked = byTime.compactMap { t, areas -> (Seconds, Double)? in
+            let sorted = areas.sorted(by: >)
+            return sorted.count > n ? (t, sorted[n]) : nil
+        }.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }
+        var out: [Seconds] = []
+        for (t, _) in ranked where !out.contains(where: { abs($0 - t) < 0.5 }) {
+            out.append(min(max(t, c.start), c.end - 0.01))
+            if out.count == limit { break }
+        }
+        return out
+    }
+
+    /// qualifySample with face:true that looks elsewhere in `range` when no face shows at `at`, inside `shot` first:
+    /// at the analyzed faces (largest first), else at evenly spaced frames, keeping the largest face found.
+    static func faceSample(_ c: Clip, _ m: MediaAsset, before existing: String?, at: Seconds, explicit: Bool, range: TimeRange, shot: TimeRange? = nil, faces: [FaceTrack]?, _ a: Args) async throws -> QualifySample {
+        let firstError: Error
+        do { return try await qualifySample(c, m, before: existing, at: at, a) } catch { firstError = error }
+        guard a.bool("face", default: false), !m.isImage else { throw firstError }
+        let n = a.optInt("n") ?? 0
+        func inShot(_ t: Seconds) -> Bool { shot.map { t >= $0.start && t < $0.end } ?? false }
+        let analyzed: [Seconds] = faces.map { f -> [Seconds] in
+            let all = faceSearchTimes(f, clip: c, range: range, n: n)
+            return all.filter(inShot) + all.filter { !inShot($0) }
+        } ?? []
+        let times = analyzed.isEmpty ? Frames.spread(8, from: range.start, to: max(range.start + 0.01, range.end - 0.01)) : analyzed
+        var best: QualifySample?
+        func score(_ s: QualifySample) -> Double { (s.faceBox.map { $0.width * $0.height } ?? 0) + (inShot(s.at) ? 10 : 0) }
+        for t in times where abs(t - at) > 0.04 {
+            guard let s = try? await qualifySample(c, m, before: existing, at: t, a), s.faceBox != nil else { continue }
+            if !analyzed.isEmpty { best = s; break }
+            if score(s) > best.map(score) ?? 0 { best = s }
+        }
+        guard var found = best else {
+            throw EditError("No face\(n > 0 ? " \(n)" : "") found in \(c.id) at \(fmt2(at))s nor \(analyzed.isEmpty ? "at \(times.count) frames across" : "where shot analysis saw faces in") \(fmt2(range.start))–\(fmt2(range.end))s; pass x and y of a skin area instead")
+        }
+        let place = shot == nil ? "" : inShot(found.at) ? " in the same shot" : " in another shot (none in this one)"
+        found.note = "No face\(n > 0 ? " \(n)" : "") at \(fmt2(at))s\(explicit ? "" : " (the default, the clip's middle)"); sampled at \(fmt2(found.at))s\(place) instead, " + (analyzed.isEmpty ? "the largest face among \(times.count) frames checked" : "where shot analysis shows the largest face") + "."
+        return found
     }
 
     /// The eyedropper at timeline time `at`: the qualifier covering a face's skin (face) or the patch at x, y, sampled
@@ -138,7 +192,8 @@ extension Toolbox {
         let current = try session.project()
         let clipId = try a.string("clip")
         guard let c = current.clip(clipId), c.kind == .media, let m = c.mediaId.flatMap({ current.mediaAsset($0) }), m.hasVideo else { throw EditError("clip must be a media clip with a picture") }
-        let at = try a.optTime("at") ?? (c.start + c.duration / 2)
+        let given = try a.optTime("at")
+        let at = given ?? (c.start + c.duration / 2)
         guard at >= c.start - 1e-6, at <= c.end + 1e-6 else { throw EditError("at \(fmt2(at))s is outside \(clipId) (\(fmt2(c.start))–\(fmt2(c.end))s)") }
         let effectId = a.optString("effect")
         let existing = effectId.flatMap { id in c.effects.first { $0.id == id } }
@@ -148,6 +203,7 @@ extension Toolbox {
         let scope = try Toolbox.gradeScope(a, shots: shots.count, each: true)
         if scope == .each_shot, effectId != nil { throw EditError("scope each_shot adds one effect per shot; leave out effect") }
         let faces = a.bool("face", default: false) ? session.bundle?.analysis(ShotAnalysis.self, m.id, "shots")?.faces : nil
+        let search = TimeRange(c.start, c.end)
         let window = a.bool("window", default: a.bool("face", default: false))
         func keys(_ s: QualifySample, shot i: Int) -> [String: [CurveKey]]? {
             guard window, let box = s.faceBox, let faces else { return nil }
@@ -161,7 +217,7 @@ extension Toolbox {
                 let t = at >= span.start && at < span.end ? at : (span.start + span.end) / 2
                 let label = Toolbox.shotLabel(shots, i, clip: c)
                 do {
-                    let s = try await Toolbox.qualifySample(c, m, before: nil, at: t, a)
+                    let s = try await Toolbox.faceSample(c, m, before: nil, at: t, explicit: t == given, range: span, faces: faces, a)
                     plans.append(QualifyPlan(sample: s, range: shots.count > 1 ? .set(shots[i]) : .clear, shotText: label, keys: keys(s, shot: i)))
                 } catch {
                     skipped.append("\(label) skipped: \(error.localizedDescription)")
@@ -169,8 +225,8 @@ extension Toolbox {
             }
             guard !plans.isEmpty else { throw EditError("No shot of \(clipId) could be qualified: " + skipped.joined(separator: "; ")) }
         } else {
-            let i = Toolbox.shotIndex(shots, clip: c, at: at)
-            let s = try await Toolbox.qualifySample(c, m, before: existing?.id, at: at, a)
+            let s = try await Toolbox.faceSample(c, m, before: existing?.id, at: at, explicit: given != nil, range: search, shot: shots.count > 1 ? c.timelineSpan(ofSource: shots[Toolbox.shotIndex(shots, clip: c, at: at)]) : nil, faces: faces, a)
+            let i = Toolbox.shotIndex(shots, clip: c, at: s.at)
             let range: QualifyPlan.Range = existing != nil && !a.has("scope") ? .keep : scope == .shot ? .set(shots[i]) : .clear
             var text: String?
             if case .set = range { text = Toolbox.shotLabel(shots, i, clip: c) }
@@ -207,7 +263,7 @@ extension Toolbox {
                 }
                 if let i = clip.effects.firstIndex(where: { $0.id == e.id }) { clip.effects[i] = e } else { clip.effects.append(e) }
                 let place = s.faceBox.map { String(format: "face %d (%.2f, %.2f, %.2f×%.2f)", a.optInt("n") ?? 0, $0.minX, $0.minY, $0.width, $0.height) } ?? String(format: "(%.2f, %.2f)", s.region.midX, s.region.midY)
-                var text = "Qualifier on \(clipId) effect \(e.id) (\(e.type), limit \(e.params["limit"]!.string!))" + (plan.shotText.map { ", only in \($0)" } ?? "") + " sampled from \(s.sampled) pixels at \(place), \(fmt2(s.at))s: \(s.q.summary). "
+                var text = (s.note.map { $0 + "\n" } ?? "") + "Qualifier on \(clipId) effect \(e.id) (\(e.type), limit \(e.params["limit"]!.string!))" + (plan.shotText.map { ", only in \($0)" } ?? "") + " sampled from \(s.sampled) pixels at \(place), \(fmt2(s.at))s: \(s.q.summary). "
                 text += String(format: "%.0f%% of the sampled area keys fully; the colors cover %.0f%% of the whole frame.", s.hit * 100, s.coverage * 100)
                 if let n = plan.keys?["limit_x"]?.count { text += " The ellipse window follows the face through the shot (\(n) keys)." }
                 else if shape != nil && window && s.faceBox != nil { text += " An ellipse window on the face keeps the key there" + (faces == nil ? "; run media_analyze features:[\"shots\"] for face tracks and qualify again to make it follow the face." : ".") }
@@ -216,7 +272,7 @@ extension Toolbox {
                 last = e.id
             }
             p.tracks[loc.track].clips[loc.clip] = clip
-            if defaulted { lines.append("\(clipId) plays \(shots.count) shots, so the grade acts only in the shot at \(fmt2(at))s; scope:\"each_shot\" keys every shot, scope:\"clip\" the whole clip.") }
+            if defaulted { lines.append("\(clipId) plays \(shots.count) shots, so the grade acts only in the shot at \(fmt2(plans.first?.sample.at ?? at))s; scope:\"each_shot\" keys every shot, scope:\"clip\" the whole clip.") }
             lines += skipped
             return lines.joined(separator: "\n") + "\nCheck it with timeline_frames view:\"matte\" clip:\(clipId) effect:\(last); refine with q_clean_black, q_clean_white, q_denoise and q_blur."
         }

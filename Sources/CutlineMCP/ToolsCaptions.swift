@@ -3,6 +3,17 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
+    /// "ja: 18 subtitles re-timed to 4 characters/s (lines of 13 full-width); 2 still read too fast: #3 at 10.20s …".
+    static func readingReport(_ p: Project, _ lang: String, transcripts: [String: Transcript]) -> String {
+        let r = p.readingSpeedProblems(language: lang, transcripts: transcripts)
+        let rules = "\(fmt1(r.rules.charsPerSecond)) characters/s, lines of \(r.rules.maxCharsPerLine)\(r.rules.wide ? " full-width" : "")"
+        guard !r.tooFast.isEmpty else { return "\(r.cues) subtitles re-timed to \(rules); all read in time." }
+        let worst = r.tooFast.prefix(4).map { c in
+            "\(fmt2(c.start))s (\(fmt1(Double(Project.readChars(c)) / max(0.001, c.end - c.start))) chars/s)"
+        }
+        return "\(r.cues) subtitles re-timed to \(rules); \(r.tooFast.count) still read too fast: " + worst.joined(separator: ", ") + (r.tooFast.count > 4 ? ", …" : "") + ". Shorten them (captions_translate cues) or give them more time."
+    }
+
     func registerCaptionTools() {
         add(Tool(name: "captions_list", description: "List the caption cues on the timeline with their times, text (uncertain words marked [word?]) and the source words they cover (\"<media>.wN\"), which tracks are captioned, and where two people talk over each other. Burned-in captions, subtitles (SRT/VTT, embedded) and closed captions share these cues; a cue with more words than the caption style's max_words_per_line × max_lines shows burned-in as consecutive pages (noted per cue). Use the word anchors with caption_edit.", schema: Schema.object([
             "start": Schema.time("Only from this timeline time"),
@@ -102,12 +113,13 @@ extension Toolbox {
             return "Caption edit on \(media).w\(first)–w\(last) (\"\(old)\")"
         })
 
-        add(Tool(name: "captions_translate", description: "Translate the caption cues into other languages for subtitles. With only language (or languages: [..] for several at once), Apple's on-device Translation framework translates every cue (each language must be installed in System Settings › General › Language & Region › Translation Languages; a server can't download one); with several languages, one that can't be translated is reported and the rest are stored. cues [{id, text}] stores your own translation per cue (ids from captions_list), and file imports an .srt or .vtt, matching its cues to these by time; both take one language. Translations are keyed by each cue's source words, so they follow later edits; timing stays the spoken cues' and the text is rewrapped to each output's line limits. Export them with export subtitle_languages; captions_set language burns one in; captions_list language shows them. clear:true removes the language(s).", schema: Schema.object([
+        add(Tool(name: "captions_translate", description: "Translate the caption cues into other languages for subtitles. With only language (or languages: [..] for several at once), Apple's on-device Translation framework translates every cue (each language must be installed in System Settings › General › Language & Region › Translation Languages; a server can't download one); with several languages, one that can't be translated is reported and the rest are stored. cues [{id, text}] stores your own translation per cue (ids from captions_list), and file imports an .srt or .vtt, matching its cues to these by time; both take one language. Translations are keyed by each cue's source words, so they follow later edits; subtitles are rewrapped to each language's line limits and re-timed to its reading speed (into the pauses around a cue and spare time of its neighbours), and the result lists cues still too fast to read. Export them with export subtitle_languages; captions_set language burns one in; captions_list language shows them. clear:true removes the language(s).", schema: Schema.object([
             "language": Schema.string("Target language tag, e.g. fr, de, pt-BR"),
             "languages": Schema.strings("Several target languages translated in one call, e.g. [\"fr\", \"de\", \"ja\"]"),
             "cues": Schema.array(Schema.object(["id": Schema.integer("Cue number from captions_list"), "text": Schema.string("Translated text; \"\" removes")], required: ["id", "text"]), "Your translation of these cues"),
             "file": Schema.string("An .srt or .vtt in that language to import"),
             "clear": Schema.bool("Remove these languages' translations"),
+            "condense": Schema.bool("On-device: cues still too fast to read after re-timing are translated again from a condensed source (fillers, hedges and repeats dropped) and the shorter text kept; default true"),
         ])) { [unowned self] args in
             let b = try session.requireBundle()
             var langs: [String] = []
@@ -166,6 +178,21 @@ extension Toolbox {
             }
             let done = langs.filter { texts[$0] != nil }
             guard !done.isEmpty else { throw EditError(failed.map { "\($0.0): \($0.1)" }.joined(separator: "\n")) }
+            var condensed: [String: Int] = [:]
+            if args.raw["cues"] == nil, !args.has("file"), args.bool("condense", default: true) {
+                let source = p0.spokenLanguage(transcripts: transcripts)
+                for lang in done {
+                    var q = p0
+                    try q.setCaptionTranslations(lang, texts: texts[lang]!, transcripts: transcripts)
+                    let sources = q.tooFastCaptionCues(language: lang, transcripts: transcripts).compactMap { i in Project.condensedForSubtitles(cues[i].text).map { (i, $0) } }
+                    guard !sources.isEmpty, let out = try? await Translator.translate(sources.map(\.1), from: source, to: lang) else { continue }
+                    let now = q.cueTranslations(lang, cues: cues).texts
+                    for ((i, _), t) in zip(sources, out) where !t.isEmpty && t.count < (now[i]?.count ?? 0) {
+                        texts[lang]![i] = t
+                        condensed[lang, default: 0] += 1
+                    }
+                }
+            }
             var stored: [String: Int] = [:]
             let p = try session.edit("Translate captions to \(done.joined(separator: ", "))") { p in
                 for lang in done { stored[lang] = try p.setCaptionTranslations(lang, texts: texts[lang]!, transcripts: transcripts) }
@@ -175,6 +202,7 @@ extension Toolbox {
                 let now = p.cueTranslations(lang, cues: cues).texts
                 let missing = now.indices.filter { now[$0] == nil }
                 lines.append("\(lang): \(stored[lang] ?? 0) cue(s) translated \(how[lang] ?? ""); \(cues.count - missing.count)/\(cues.count) cues have \(lang) text" + (missing.isEmpty ? "." : " (untranslated #" + missing.prefix(10).map(String.init).joined(separator: ", #") + ")."))
+                lines.append("  " + Toolbox.readingReport(p, lang, transcripts: transcripts) + (condensed[lang].map { " \($0) cue(s) condensed to read in time." } ?? ""))
                 if done.count == 1 {
                     for i in now.indices.prefix(3) { lines.append("#\(i) \(cues[i].text) → \(now[i] ?? "—")") }
                 } else if let first = now.first {

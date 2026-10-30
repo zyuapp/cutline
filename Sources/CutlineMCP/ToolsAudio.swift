@@ -18,7 +18,11 @@ extension Toolbox {
             guard p.duration > 0 else { throw EditError("The timeline is empty") }
             var range: TimeRange?
             if args.has("start") || args.has("end") { range = TimeRange(try args.optTime("start") ?? 0, try args.optTime("end") ?? p.duration) }
-            let what = Set(args.strings("what") ?? ["sound", "picture", "text"])
+            let kinds = ["sound", "picture", "text", "scopes", "compare"]
+            let what = Set(try (args.strings("what") ?? ["sound", "picture", "text"]).map { w in
+                guard let v = Toolbox.canonicalValue(w, valid: kinds, name: "what") else { throw EditError(Toolbox.invalidValueMessage(w, name: "what", valid: kinds)) }
+                return v
+            })
             var lines: [String] = []
             var sheet: Data?
             if what.contains("scopes") {

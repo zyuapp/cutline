@@ -20,17 +20,21 @@ struct RecipeArg {
     var fields: [RecipeArg]? = nil
     /// Accepted (an alias) but not listed.
     var hidden = false
+    /// The only values a string argument takes.
+    var values: [String]? = nil
 
-    init(_ name: String, _ kind: Kind, _ doc: String, fields: [RecipeArg]? = nil, hidden: Bool = false) {
+    init(_ name: String, _ kind: Kind, _ doc: String, fields: [RecipeArg]? = nil, hidden: Bool = false, values: [String]? = nil) {
         self.name = name
         self.kind = kind
         self.doc = doc
         self.fields = fields
         self.hidden = hidden
+        self.values = values
     }
 
     var schema: JSON {
         var o: [String: JSON] = ["description": .string(doc)]
+        if let values { o["enum"] = .array(values.map { .string($0) }) }
         if let fields {
             let props = JSON.object(Dictionary(uniqueKeysWithValues: fields.map { ($0.name, $0.schema) }))
             if kind == .objects { o["items"] = ["type": "object", "properties": props] } else { o["properties"] = props }
@@ -105,16 +109,16 @@ extension Toolbox {
         RecipeSpec(name: "room_tone", group: "Sound", summary: "Fills a range with room tone, looped from varied start points with short crossfades so the repeat isn't heard. Its clips get role dialogue.room tone (dialogue stem and bus).", args: [
             .init("start", .time, "Range start"),
             .init("end", .time, "Range end"),
-            .init("media", .string, "Media with the room tone"),
-            .init("source_start", .sourceTime, "Start of a quiet stretch of that media's sound (2 s or more sounds best)"),
+            .init("media", .string, "Media with the room tone; default the dialogue clip's nearest the range"),
+            .init("source_start", .sourceTime, "Start of a quiet stretch of that media's sound (2 s or more sounds best); default picked from analysis: the longest steady quiet stretch without words, music or sound events"),
             .init("source_end", .sourceTime, "End of the quiet stretch"),
             .init("track", .string, "Audio track; default a new \"Room tone\" track"),
             .init("crossfade", .number, "Seconds, default 0.25"),
         ]),
         RecipeSpec(name: "fill_gaps", group: "Sound", summary: "Fills every gap between a dialogue track's sounds with room tone so the background never drops out.", args: [
             .init("track", .string, "The dialogue track"),
-            .init("media", .string, "Media with the room tone"),
-            .init("source_start", .sourceTime, "Start of a quiet stretch, as room_tone"),
+            .init("media", .string, "Media with the room tone; default the media most heard on track"),
+            .init("source_start", .sourceTime, "Start of a quiet stretch, as room_tone; default picked from analysis"),
             .init("source_end", .sourceTime, "End of the quiet stretch"),
             .init("into", .string, "Audio track for the fill; default a new \"Room tone\" track"),
             .init("min_gap", .number, "Shortest gap filled, default 0.04"),
@@ -151,7 +155,7 @@ extension Toolbox {
         ]),
         RecipeSpec(name: "pip", group: "Framing", summary: "Picture-in-picture in a corner.", args: [
             .init("clip", .string, "Clip id"),
-            .init("corner", .string, "top_left, top_right, bottom_left, bottom_right (default) or center"),
+            .init("corner", .string, "top_left, top_right, bottom_left, bottom_right (default) or center", values: ["top_left", "top_right", "bottom_left", "bottom_right", "center"]),
             .init("size", .number, "Fraction of the frame, default 0.3"),
             .init("margin", .number, "Default 0.04"),
             .init("roundness", .number, "Corner rounding, default 0.12"),
@@ -159,7 +163,7 @@ extension Toolbox {
         ]),
         RecipeSpec(name: "split_screen", group: "Framing", summary: "Shows clips side by side.", args: [
             .init("clips", .ids, "Clip ids"),
-            .init("layout", .string, "lr (default), tb or grid"),
+            .init("layout", .string, "lr (default), tb or grid", values: ["lr", "tb", "grid"]),
             .init("gap", .number, "Default 0.01"),
         ]),
         RecipeSpec(name: "reframe", group: "Framing", summary: "Changes the canvas aspect, following faces or the salient subject when shots are analyzed.", args: [
@@ -188,8 +192,9 @@ extension Toolbox {
             .init("start", .time, "Timeline start, default 0"),
             .init("end", .time, "Timeline end, default the timeline's end"),
             .init("every", .integer, "Beats per shot: 1, 2 (default) or 4"),
+            .init("music", .ids, "Music clips, tracks or media (on the timeline) whose beats to cut to; default every music clip"),
             .init("track", .string, "Default \"new\""),
-            .init("align", .string, "fill (default: the first shot also covers the time before the first beat, so nothing is black), zero (same) or first_beat (trims the music's head so its first beat lands at start)"),
+            .init("align", .string, "fill (default: the first shot also covers the time before the first beat, so nothing is black), zero (same) or first_beat (trims the music's head so its first beat lands at start)", values: ["fill", "zero", "first_beat"]),
         ]),
         RecipeSpec(name: "music_fit", group: "Rhythm", summary: "Cuts out or repeats whole bars at downbeats so the song keeps its own ending.", args: [
             .init("clip", .string, "The music clip"),
@@ -203,7 +208,7 @@ extension Toolbox {
             .init("flat", .bool, "With angles: separate clips per shot instead of a multicam clip"),
             .init("title", .string, "Name of the new multicam"),
             .init("audio", .string, "Media with the main sound; default the first angle"),
-            .init("signal", .string, "auto (default: whose own mic is loudest when each angle records its person, else speaker analysis), mics or speakers"),
+            .init("signal", .string, "auto (default: whose own mic is loudest when each angle records its person, else speaker analysis), mics or speakers", values: ["auto", "mics", "speakers"]),
             .init("speakers", .object, "{\"S1\": media, …}; default S1→first angle, S2→second…"),
             .init("wide", .string, "Media for long turns"),
             .init("reaction", .any, "true or seconds: cut to the listener in turns longer than that (default 5)"),
@@ -221,7 +226,7 @@ extension Toolbox {
             ]),
         ]),
         RecipeSpec(name: "look", group: "Style", summary: "Adds a look on an adjustment layer.", args: [
-            .init("look", .string, ColorMath.looks.joined(separator: ", ") + "; default teal_orange"),
+            .init("look", .string, ColorMath.looks.joined(separator: ", ") + "; default teal_orange", values: ColorMath.looks),
             .init("amount", .number, "Default 0.8"),
             .init("grain", .number, "Default 0.2"),
             .init("vignette", .number, "Default 0.4"),
@@ -242,7 +247,7 @@ extension Toolbox {
             .init("start", .time, "Timeline time or word anchor"),
             .init("end", .time, "Timeline time or word anchor; with text, default 0.5 s per word"),
             .init("text", .any, "Your own words (a string or a list) instead of the transcript"),
-            .init("timing", .string, "With text: even (default), beats or downbeats (one word per beat of the timeline's music)"),
+            .init("timing", .string, "With text: even (default), beats or downbeats (one word per beat of the timeline's music)", values: ["even", "beats", "downbeats"]),
             .init("preset", .string, "Word animation, default pop"),
             .init("size", .number, "Default 0.09"),
             .init("y", .number, "Default 0.5"),
@@ -264,7 +269,7 @@ extension Toolbox {
             .init("reference_at", .time, "Timeline time of the exact reference frame (picks the clip there when reference is omitted)"),
             .init("strength", .number, "0…1, default 0.8"),
             .init("allow_large", .bool, "Lift the lightness cap, default false"),
-            .init("scope", .string, "shot (default): a clip that plays several shots (scene cuts) gets one LUT per shot, and a reference spanning several is measured in the shot at reference_at (else its middle); clip: one LUT per clip"),
+            .init("scope", .string, "shot (default): a clip that plays several shots (scene cuts) gets one LUT per shot, and a reference spanning several is measured in the shot at reference_at (else its middle); clip: one LUT per clip", values: ["shot", "clip"]),
             .init("include_reference_shots", .bool, "Also match the reference clip's other shots; default false leaves the reference clip untouched"),
         ]),
         RecipeSpec(name: "grade_group", group: "Color", summary: "Adds one shared effect with that id to every clip (clips added to an existing group copy its settings). Change the group with param_set target \"group:<id>\" and fx.<id>.<param>; effect_add target \"group:<id>\" works too.", args: [
@@ -288,7 +293,7 @@ extension Toolbox {
             .init("effect", .string, "Existing effect id to key; default a new one"),
             .init("type", .string, "Type of a new effect, default color.wheels"),
             .init("window", .bool, "With face: an ellipse window on the face (default true); with shot analysis it follows that face through the shot"),
-            .init("scope", .string, "shot: act only in the shot (scene cuts) at at, the default when the clip plays several; each_shot: sample and key every shot on its own (face windows per shot); clip: the whole clip"),
+            .init("scope", .string, "shot: act only in the shot (scene cuts) at at, the default when the clip plays several; each_shot: sample and key every shot on its own (face windows per shot); clip: the whole clip", values: ["shot", "each_shot", "clip"]),
         ]),
         RecipeSpec(name: "split_at_shots", group: "Color", summary: "Splits clips at their media's analyzed scene cuts (like Resolve's scene cut detector) so each shot can be graded on its own; linked sound splits with its picture.", args: [
             .init("clips", .ids, "Clips to split; default every media clip on V1"),
@@ -306,7 +311,7 @@ extension Toolbox {
             .init("padding", .number, "Fraction of frame height, default 0.02"),
             .init("window", .number, "Seconds searched each side, default 1.5"),
             .init("feather", .number, "Default 0.004"),
-            .init("fill", .string, "patch (default) or smooth, for pixels no frame shows"),
+            .init("fill", .string, "patch (default) or smooth, for pixels no frame shows", values: ["patch", "smooth"]),
             .init("clean_plate", .string, "Image of the background without the object"),
             .init("clean_plate_at", .time, "Or a timeline time where the background shows"),
         ]),
@@ -322,11 +327,11 @@ extension Toolbox {
         RecipeSpec(name: "track_mask", group: "Finishing", summary: "Tracked roto: makes a mask.shape follow the footage by keyframing its points (fx.<id>.points) from the clip's source in and out. planar: the homography of the flat surface the shape lies on (a screen, sign, card; perspective included), from the shape's bounding box or corners; points: each control point tracked on its own; translate: the shape moves with its tracked bounding box. refine snaps every point to the nearest edge of Apple's subject or person matte (magnetic roto). Check with timeline_frames view:\"matte\".", args: [
             .init("clip", .string, "Video clip with the mask.shape"),
             .init("effect", .string, "The mask.shape effect id; default the clip's first"),
-            .init("mode", .string, "planar (default), points or translate"),
+            .init("mode", .string, "planar (default), points or translate", values: ["planar", "points", "translate"]),
             .init("at", .time, "Timeline time where the shape's points are right, default the clip's start"),
             .init("track", .string, "Use an existing media_track track (\"track:<id>\"; surface tracks drive planar, box tracks translate) instead of tracking now"),
             .init("corners", .any, "planar: the surface's [[x,y]×4] TL, TR, BR, BL in the clip's frame at at, when the shape isn't its outline"),
-            .init("refine", .string, "Snap points to matte edges: subject, person or none (default)"),
+            .init("refine", .string, "Snap points to matte edges: subject, person or none (default)", values: ["subject", "person", "none"]),
             .init("snap", .number, "Reach of refine, frame heights, default 0.02"),
             .init("size", .number, "points: tracked patch side, frame heights, default 0.08"),
         ]),
@@ -361,7 +366,7 @@ extension Toolbox {
         for a in spec.args {
             if let v = o[a.name], let why = a.mismatch(v) { out.append(why) }
         }
-        return out
+        return out + invalidValues(args, schema: spec.schema, path: "", name: "")
     }
 
     /// The recipe call's `args`, recording which names the recipe reads.

@@ -4,13 +4,91 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
+    /// The media clips `names` names: clip ids, tracks (their media clips) or media ids (the clips playing them).
+    static func musicClips(_ names: [String], _ p: Project) throws -> [Clip] {
+        var out: [Clip] = []
+        for n in names {
+            if let c = p.clip(n), c.kind == .media {
+                out.append(c)
+            } else if let i = p.trackIndex(n) {
+                out += p.tracks[i].clips.filter { $0.kind == .media }
+            } else if p.mediaAsset(n) != nil {
+                let placed = p.tracks.filter { !$0.muted }.flatMap(\.clips).filter { $0.kind == .media && $0.mediaId == n }
+                guard !placed.isEmpty else { throw EditError("music \(n) isn't on the timeline; place it first, e.g. clip_add media_id:\"\(n)\" track:\"new\" start:0") }
+                out += placed
+            } else {
+                throw EditError("music \(n) is no media clip, track or media id")
+            }
+        }
+        return out
+    }
+
+    /// Timeline times of the analyzed beats inside `clips`.
+    static func beats(of clips: [Clip], _ index: AnchorIndex, downbeats: Bool = false) -> [Seconds] {
+        var out: [Seconds] = []
+        for c in clips {
+            guard let id = c.mediaId, let b = index.beats[id] else { continue }
+            for t in downbeats ? b.downbeats : b.beats where t >= c.sourceIn - 1e-6 && t < c.sourceOut - 1e-6 { out.append(c.timelineTime(atSource: t)) }
+        }
+        return Array(Set(out.map { ($0 * 1000).rounded() / 1000 })).sorted()
+    }
+
+    /// The media, source span and channels room_tone and fill_gaps loop: as given, else the dialogue's media
+    /// (the clip with sound nearest the ranges, or the most heard on `track`) and its best room-tone span from
+    /// analysis, with a note saying what was picked.
+    func roomToneSource(_ a: Args, _ p: Project, _ b: ProjectBundle, near ranges: [TimeRange], track: String?) throws -> (media: String, source: TimeRange, channels: ChannelRouting?, note: String?) {
+        let music = b.anchorIndex(for: p).music
+        let start = try a.optSourceTime("source_start"), end = try a.optSourceTime("source_end")
+        guard (start == nil) == (end == nil) else { throw EditError("Pass both source_start and source_end, or neither to pick the room tone from analysis") }
+        var heard: [(clip: Clip, track: Track)] = []
+        for t in p.tracks where !t.muted && (track == nil || t.id == track) {
+            for c in t.clips where c.kind == .media && c.role != Project.roomToneRole {
+                guard let id = c.mediaId, let m = p.mediaAsset(id), m.hasAudio, !m.isImage, !music.contains(id), c.volume > 0 else { continue }
+                heard.append((c, t))
+            }
+        }
+        let mid: String
+        var channels: ChannelRouting?
+        var why = ""
+        if let given = a.optString("media") {
+            mid = given
+            channels = heard.first { $0.clip.mediaId == given }?.clip.channels
+        } else if let track {
+            let byMedia = Dictionary(grouping: heard, by: { $0.clip.mediaId ?? "" })
+            guard let top = byMedia.max(by: { $0.value.reduce(0) { $0 + $1.clip.duration } < $1.value.reduce(0) { $0 + $1.clip.duration } }) else { throw EditError("\(track) plays no media with sound; pass media, source_start and source_end") }
+            mid = top.key
+            channels = top.value.first?.clip.channels
+            why = "the media most heard on \(track)"
+        } else {
+            func distance(_ c: Clip) -> Double { ranges.map { r in max(0, max(r.start - c.end, c.start - r.end)) }.min() ?? 0 }
+            let speech = heard.filter { $0.track.role.map { $0.hasPrefix("dialogue") } ?? true }
+            guard let nearest = (speech.isEmpty ? heard : speech).min(by: { distance($0.clip) < distance($1.clip) }), let id = nearest.clip.mediaId else {
+                throw EditError("No dialogue clip with sound to take room tone from; pass media, source_start and source_end")
+            }
+            mid = id
+            channels = nearest.clip.channels
+            why = "the dialogue clip \(nearest.clip.id) nearest the range"
+        }
+        guard p.mediaAsset(mid) != nil else { throw EditError("No media \(mid)") }
+        if let start, let end { return (mid, TimeRange(start, end), channels, nil) }
+        guard let au = b.audioAnalysis(mid) else { throw EditError("\(mid) has no level analysis to find room tone in; run media_analyze media_id:\"\(mid)\", or pass source_start and source_end of a quiet stretch") }
+        guard !music.contains(mid) else { throw EditError("\(mid) is music; pass the media with the room's sound, or source_start and source_end") }
+        let words = b.transcript(mid)?.words ?? []
+        let events = b.analysis(SoundEvents.self, mid, "sounds")?.events ?? []
+        guard let span = au.roomToneSpan(words: words, events: events) else {
+            throw EditError("\(mid) has no quiet stretch of 0.5 s or more without words or sound events; pass source_start and source_end, or media with a pause")
+        }
+        let basis = [words.isEmpty ? nil : "transcript", events.isEmpty ? nil : "sound events", "levels"].compactMap { $0 }.joined(separator: ", ")
+        var note = "Room tone picked from \(mid)" + (why.isEmpty ? "" : " (\(why))") + ": \(span.summary), the longest steady quiet stretch without words, music or other sounds among \(span.candidates) (from \(basis)); pass source_start and source_end to choose another."
+        if span.range.duration < 2 { note += " It is short, so the loop may be heard; a longer pause in this or another take sounds better." }
+        return (mid, span.range, channels, note)
+    }
+
     func moreRecipes(_ name: String, _ a: Args, dry: Bool) async throws -> ToolResult {
         let b = try session.requireBundle()
         let current = try session.project()
         switch name {
         case "room_tone", "fill_gaps":
-            let mid = try a.string("media")
-            let source = TimeRange(try a.sourceTime("source_start"), try a.sourceTime("source_end"))
             let crossfade = a.optDouble("crossfade") ?? 0.25
             var ranges: [TimeRange]
             if name == "room_tone" {
@@ -22,6 +100,8 @@ extension Toolbox {
                 guard !ranges.isEmpty else { throw EditError("\(dialogue) has no gaps between its sounds") }
             }
             let fill = ranges
+            let tone = try roomToneSource(a, current, b, near: fill, track: name == "fill_gaps" ? a.optString("track") : nil)
+            let mid = tone.media, source = tone.source
             return try runEdit(name == "room_tone" ? "Room tone \(fmt2(fill[0].start))–\(fmt2(fill[0].end))s" : "Fill \(fill.count) gap(s) with room tone", dry: dry) { p in
                 var trackId = a.optString(name == "room_tone" ? "track" : "into") ?? ""
                 if p.trackIndex(trackId) == nil { trackId = p.addTrack(kind: .audio, name: "Room tone").id }
@@ -30,11 +110,12 @@ extension Toolbox {
                 for r in fill {
                     let ids = try p.fillRoomTone(r, mediaId: mid, source: source, trackId: trackId, crossfade: crossfade)
                     if ids.isEmpty { skipped += 1; continue }
+                    if let ch = tone.channels { for id in ids { if let loc = p.locateClip(id) { p.tracks[loc.track].clips[loc.clip].channels = ch } } }
                     let x = Project.roomToneCrossfade(crossfade, range: r, fps: p.canvas.fps)
                     lines.append("\(fmt2(r.start))–\(fmt2(r.end))s: \(ids.count) clip(s)" + (x < crossfade - 1e-9 ? ", crossfade \(fmt(x))s to fit" : abs(x - crossfade) > 1e-9 ? ", crossfade \(fmt(x))s on the frame grid" : ""))
                 }
                 if skipped > 0 { lines.append("\(skipped) gap(s) shorter than a frame left as they are") }
-                return "Room tone from \(mid) \(fmt2(source.start))–\(fmt2(source.end))s on \(trackId), crossfaded \(fmt2(crossfade))s: " + lines.joined(separator: "; ") + ". Set its level with param_set target \(trackId)/* audio.volume or track_update volume."
+                return (tone.note.map { $0 + "\n" } ?? "") + "Room tone from \(mid) \(fmt2(source.start))–\(fmt2(source.end))s on \(trackId), crossfaded \(fmt2(crossfade))s: " + lines.joined(separator: "; ") + ". Set its level with param_set target \(trackId)/* audio.volume or track_update volume."
             }
         case "speed_ramp":
             let id = try a.string("clip")
@@ -83,7 +164,12 @@ extension Toolbox {
         case "beat_cut":
             let index = b.anchorIndex(for: current)
             let lo = try a.optTime("start") ?? 0, hi = try a.optTime("end") ?? current.duration
-            let beats = current.timelineBeats(index).filter { $0 >= lo - 1e-3 && $0 <= hi + 1e-3 }
+            let chosen = try a.strings("music").map { try Toolbox.musicClips($0, current) }
+            let beats = (chosen.map { Toolbox.beats(of: $0, index) } ?? current.timelineBeats(index)).filter { $0 >= lo - 1e-3 && $0 <= hi + 1e-3 }
+            if let chosen, beats.count < 2 {
+                let unanalyzed = Set(chosen.compactMap(\.mediaId).filter { index.beats[$0] == nil })
+                throw EditError("No beats in \(chosen.map(\.id).joined(separator: ", ")) between \(fmt2(lo)) and \(fmt2(hi))" + (unanalyzed.isEmpty ? "" : "; run media_analyze media_id:\(unanalyzed.sorted().joined(separator: ",")) features:[\"beats\"]"))
+            }
             guard beats.count >= 2 else { throw EditError("No analyzed music beats between \(fmt2(lo)) and \(fmt2(hi)); put music on the timeline and run media_analyze features:[\"beats\"]") }
             var spans: [(mediaId: String, range: TimeRange?)] = []
             if let sources = a.value("sources")?.array {
@@ -105,8 +191,8 @@ extension Toolbox {
                 guard let al = BeatAlign(rawValue: v) else { throw EditError("align is fill, zero or first_beat") }
                 return al
             } ?? .fill
-            var music: [String] = []
-            for t in current.tracks where !t.muted {
+            var music: [String] = chosen.map { $0.filter { $0.end > lo && $0.start < hi }.map(\.id) } ?? []
+            for t in current.tracks where !t.muted && chosen == nil {
                 for c in t.clips where c.kind == .media && c.end > lo && c.start < hi {
                     if let id = c.mediaId, index.music.contains(id), index.beats[id] != nil { music.append(c.id) }
                 }

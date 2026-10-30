@@ -34,10 +34,12 @@ private let french = [
     try p.setCaptionTranslations("fr", texts: Dictionary(uniqueKeysWithValues: french.enumerated().map { ($0.offset, $0.element) }), transcripts: tr)
     let fr = p.subtitleCues(transcripts: tr, language: "fr")
     let en = p.subtitleCues(transcripts: tr)
-    // The long third line is split into two cues inside its own time; the others keep the spoken cue's time.
+    // The long third line is split at a clause into two cues two frames apart, run on into the pauses around it to
+    // read better; cues that read in time keep the spoken cue's time.
     #expect(fr.count == 5)
-    #expect(fr[0].startMs == en[0].startMs && fr[0].endMs == en[0].endMs && fr[1].startMs == en[1].startMs)
-    #expect(fr[2].startMs == en[2].startMs && fr[3].endMs == en[2].endMs && fr[3].startMs == fr[2].endMs)
+    #expect(fr[0].startMs == en[0].startMs && fr[0].endMs == en[0].endMs && fr[1].startMs == en[1].startMs && fr[1].endMs == en[1].endMs)
+    #expect(fr[2].startMs == en[2].startMs - 250 && fr[3].endMs == en[3].startMs - 67 && fr[3].startMs - fr[2].endMs == 67)
+    #expect(fr[2].lines.last?.hasSuffix(",") == true)
     #expect(fr[4].startMs == en[3].startMs && fr[4].lines == ["Fini."])
     #expect(fr.allSatisfy { $0.lines.count <= 2 && $0.lines.allSatisfy { $0.count <= 42 } })
     #expect(fr[0].lines.joined(separator: " ") == french[0])

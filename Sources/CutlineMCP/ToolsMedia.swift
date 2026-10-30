@@ -204,12 +204,14 @@ extension Toolbox {
             "start": Schema.time("Range start for count"),
             "end": Schema.time("Range end for count"),
             "size": Schema.string("small (default) or large for detail checks such as text legibility", values: ["small", "large"]),
-            "view": Schema.string("picture (default), or matte: white where one clip effect acts and black where it doesn't (its limit window and/or qualifier, mask, chroma key or person/subject/object mask), to check a key or secondary; needs clip, and effect unless the clip has one masked effect", values: ["picture", "matte"]),
-            "clip": Schema.string("For view matte: the clip whose effect to show; for multicam: the multicam clip"),
-            "effect": Schema.string("For view matte: the effect id on that clip"),
+            "view": Schema.string("picture (default); matte: white where one clip effect acts and black where it doesn't (its limit window and/or qualifier, mask, chroma key or person/subject/object mask), to check a key or secondary; needs clip, and effect unless the clip has one masked effect; compare (before_after): each frame side by side without and with effect (on clip, a track or the master), without every effect of clip (its grade), or as history entry version rendered it, with how much the picture changed", values: ["picture", "matte", "compare"]),
+            "clip": Schema.string("For view matte or compare: the clip whose effect to show (compare samples its range); for multicam: the multicam clip"),
+            "effect": Schema.string("For view matte: the effect id on that clip; for compare: the effect to show off and on"),
+            "version": Schema.string("For view compare: a history entry id (history lists them) shown beside the current edit"),
             "multicam": Schema.bool("Angle viewer: every angle of the multicam clip at each time (default one frame at the clip's middle), the live angle outlined in red"),
         ])) { [unowned self] args in
             if args.optString("view") == "matte" { return try await self.matteFrames(args) }
+            if args.optString("view") == "compare" { return try await self.compareFrames(args) }
             if args.bool("multicam", default: false) { return try await self.multicamFrames(args) }
             let built = try await session.timeline()
             let p = built.scene.project
@@ -331,6 +333,84 @@ extension Toolbox {
         var r = ToolResult.text(lines.joined(separator: "\n"))
         r.addImage(jpeg)
         return r
+    }
+
+    /// timeline_frames view:"compare": each time rendered before (effect or grade off, or an earlier version) and
+    /// after (the current edit), side by side.
+    func compareFrames(_ args: Args) async throws -> ToolResult {
+        let b = try session.requireBundle()
+        let now = try session.project()
+        var before = now
+        let what: String
+        var range = TimeRange(0, now.duration)
+        let clipId = args.optString("clip")
+        if let clipId {
+            guard let c = now.clip(clipId) else { throw EditError("No clip \(clipId)") }
+            range = TimeRange(c.start, c.end)
+        }
+        if let version = args.optString("version") {
+            let ids = b.loadHistory().entries.map(\.id)
+            guard ids.contains(version) else { throw EditError("No history entry \(version); history lists them (latest: \(ids.suffix(3).joined(separator: ", ")))") }
+            before = try b.snapshot(version)
+            what = "version \(version)"
+        } else if let effectId = args.optString("effect") {
+            var found = false
+            func off(_ effects: inout [Effect]) { for i in effects.indices where effects[i].id == effectId { effects[i].enabled = false; found = true } }
+            for t in before.tracks.indices {
+                if clipId == nil { off(&before.tracks[t].effects) }
+                for c in before.tracks[t].clips.indices where clipId == nil || before.tracks[t].clips[c].id == clipId { off(&before.tracks[t].clips[c].effects) }
+            }
+            if clipId == nil { off(&before.master.effects) }
+            guard found else { throw EditError("No effect \(effectId)" + (clipId.map { " on \($0). Effects: " + (now.clip($0)?.effects.map(\.id).joined(separator: ", ").ifEmptyText("none") ?? "") } ?? "")) }
+            if clipId == nil, let c = now.tracks.flatMap(\.clips).first(where: { $0.effects.contains { $0.id == effectId } }) { range = TimeRange(c.start, c.end) }
+            what = "\(effectId) off"
+        } else if let clipId, let loc = now.locateClip(clipId) {
+            guard !now.tracks[loc.track].clips[loc.clip].effects.isEmpty else { throw EditError("\(clipId) has no effects to compare; pass effect or version") }
+            for i in before.tracks[loc.track].clips[loc.clip].effects.indices { before.tracks[loc.track].clips[loc.clip].effects[i].enabled = false }
+            what = "\(clipId) effects off"
+        } else {
+            throw EditError("view compare needs effect (shown off and on), clip (its effects off and on) or version (a history entry beside the current edit)")
+        }
+        guard now.duration > 0 else { throw EditError("The timeline is empty") }
+        let frame = 1 / now.canvas.fps
+        let times = try Toolbox.sampleTimes(args, start: range.start, end: max(range.start + frame, range.end - frame), defaultCount: 3)
+        let large = args.optString("size") == "large"
+        let cell = large ? (now.canvas.width >= now.canvas.height ? 960.0 : 540.0) : Toolbox.cellWidth(width: now.canvas.width, height: now.canvas.height, count: 2)
+        let size = CGSize(width: cell * 1.5, height: cell * 1.5)
+        let a = try await Frames.timeline(try await session.timeline(for: before, shared: false), times: times.map { min($0, max(0, before.duration - frame)) }, maxSize: size)
+        let c = try await Frames.timeline(try await session.timeline(for: now, shared: false), times: times, maxSize: size)
+        var sheet: [LabeledFrame] = []
+        var lines = ["Left: \(what); right: now."]
+        for (x, y) in zip(a, c) {
+            var l = x, r = y
+            l.label += " " + what
+            r.label += " now"
+            sheet += [l, r]
+            let d = Toolbox.pictureDifference(x.image, y.image)
+            lines.append("\(fmt2(y.time))s  " + (d < 0.002 ? "no visible change" : "changed: mean \(fmt1(d * 100))% per pixel"))
+        }
+        guard let jpeg = Frames.contactSheet(sheet, columns: 2, cellWidth: cell) else { throw EditError("Could not render frames") }
+        var r = ToolResult.text(lines.joined(separator: "\n"))
+        r.addImage(jpeg)
+        return r
+    }
+
+    /// Mean absolute difference of two pictures, 0…1, compared at a small size.
+    static func pictureDifference(_ a: CGImage, _ b: CGImage) -> Double {
+        let w = 96, h = 54
+        func pixels(_ img: CGImage) -> [UInt8]? {
+            var out = [UInt8](repeating: 0, count: w * h * 4)
+            let ok = out.withUnsafeMutableBytes { buf -> Bool in
+                guard let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+                ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+                return true
+            }
+            return ok ? out : nil
+        }
+        guard let pa = pixels(a), let pb = pixels(b) else { return 0 }
+        var sum = 0
+        for i in 0..<(w * h) { for k in 0..<3 { sum += abs(Int(pa[i * 4 + k]) - Int(pb[i * 4 + k])) } }
+        return Double(sum) / Double(w * h * 3 * 255)
     }
 
     /// Shares of a gray image above 0.9 and between 0.1 and 0.9.

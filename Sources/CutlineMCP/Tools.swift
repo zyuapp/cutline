@@ -171,6 +171,14 @@ extension Toolbox {
             }
         }
         if !problems.isEmpty { throw EditError("\(tool) doesn't take " + problems.joined(separator: "; ") + ".") }
+        var invalid = Toolbox.invalidValues(args ?? [:], schema: schema, path: "", name: "")
+        if tool == "batch", let ops = args?["operations"]?.array {
+            for (i, op) in ops.enumerated() {
+                guard let name = op["tool"]?.string, let e = edits[name], let opArgs = op["args"] else { continue }
+                invalid += Toolbox.invalidValues(opArgs, schema: e.schema, path: "", name: "").map { "operations[\(i)] (\(name)): " + $0 }
+            }
+        }
+        if !invalid.isEmpty { throw EditError(invalid.joined(separator: "\n")) }
         if tool == "recipe", let name = args?["name"]?.string {
             let issues = Toolbox.recipeArgumentProblems(name, args?["args"])
             if !issues.isEmpty { throw EditError("recipe \(name): " + issues.joined(separator: "; ") + (Toolbox.recipe(name) == nil ? "." : ". catalog recipe=\(name) lists its arguments.")) }

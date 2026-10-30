@@ -75,7 +75,8 @@ extension Project {
     /// The shared `captionCues`, each wrapped to `maxCharsPerLine`. A cue that needs more than `maxLines` lines at that
     /// width is split into the fewest consecutive cues that fit, with their characters evened out; otherwise cue
     /// boundaries and timing are the shared ones. In a translation (`language`) the translated text is wrapped the
-    /// same way, and a cue too long for its lines is split within its own time. `maxCharsPerLine` is in columns (a
+    /// same way, a cue too long for its lines is split within its own time (at clause ends where they fit), and cues are
+    /// re-timed to the language's reading speed (`retimedForReading`). `maxCharsPerLine` is in columns (a
     /// full-width character takes two); nil uses the language's line length (`SubtitleRules`, 42 for most languages,
     /// 13 full-width characters for Japanese), and Chinese and Japanese lines break between characters by `textUnits`.
     public func subtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int? = nil, maxLines: Int = 2, range: TimeRange? = nil, language: String? = nil) -> [SubtitleCue] {
@@ -88,7 +89,7 @@ extension Project {
             cues = shared.flatMap { c -> [SubtitleCue] in
                 // A cue left untranslated keeps its own script's line length.
                 let width = rules.wide && maxCharsPerLine == nil && SubtitleRules.forText(c.text) == nil ? SubtitleRules.standard.columns : width
-                let parts = Self.splitToFit(c.words, width: width, lines: rows)
+                let parts = Self.clauseAligned(Self.splitToFit(c.words, width: width, lines: rows), width: width, lines: rows)
                 let total = Double(max(1, parts.reduce(0) { $0 + Self.columns(Self.joinWords($1.map(\.text))) }))
                 var at = Double(c.startMs)
                 return parts.map { g in
@@ -97,6 +98,7 @@ extension Project {
                     return SubtitleCue(startMs: Int(at.rounded()), endMs: Int((at + d).rounded()), lines: Self.balancedLines(g.map(\.text), width: width), anchors: g.compactMap(\.anchor))
                 }
             }
+            cues = Self.retimedForReading(cues, rules: { rules.wide && SubtitleRules.forText($0.text) == nil ? .standard : rules }, gapMs: max(1, Self.ms(2 * canvas.frameDuration)), durationMs: Self.ms(duration))
         } else if shared.allSatisfy({ Self.fits($0.words, width: width, lines: rows) }) {
             cues = shared.map { SubtitleCue(startMs: $0.startMs, endMs: $0.endMs, lines: Self.balancedLines($0.words.map(\.text), width: width), anchors: $0.words.compactMap(\.anchor)) }
         } else {

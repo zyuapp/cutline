@@ -30,8 +30,8 @@ private func recipeCases(_ file: String, from start: String, to end: String) thr
 
 @Test func recipeArgumentsAreChecked() async {
     let box = Toolbox()
-    let loud = await box.call("recipe", ["name": "loudness_normalize", "args": ["target": -23]])
-    #expect(loud.isError && loud.plainText.contains("'args.target' (did you mean target_lufs?)"), "\(loud.plainText)")
+    let loud = await box.call("recipe", ["name": "loudness_normalize", "args": ["target_luf": -23]])
+    #expect(loud.isError && loud.plainText.contains("'args.target_luf' (did you mean target_lufs?)"), "\(loud.plainText)")
     let ramp = await box.call("recipe", ["name": "speed_ramp", "args": ["clip": "c", "from": 1, "to": 2]])
     #expect(ramp.isError && ramp.plainText.contains("'args.from'") && ramp.plainText.contains("'args.to'"), "\(ramp.plainText)")
     let duck = await box.call("recipe", ["name": "duck", "args": ["bogus_arg": 1]])

@@ -66,7 +66,7 @@ private func openProject(fps: Double = 30, _ body: (inout Project) -> Void = { _
     var m = try #require(try box.session.project().mediaAsset("img"))
     #expect(m.log == .slog3 && m.signalRange == .full)
     let bad = await box.call("media_organize", ["media_ids": ["img"], "log": "slog9"])
-    #expect(bad.isError && bad.plainText.contains("log is none or one of"), "\(bad.plainText)")
+    #expect(bad.isError && bad.plainText.contains("Invalid value 'slog9' for 'log' (did you mean slog3"), "\(bad.plainText)")
     let audio = await box.call("media_organize", ["media_ids": ["tone"], "log": "slog3"])
     #expect(audio.isError && audio.plainText.contains("no picture"), "\(audio.plainText)")
     let old = await box.call("media_analyze", ["media_id": "img", "log": "none"])

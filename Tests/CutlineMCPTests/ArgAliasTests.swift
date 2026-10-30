@@ -5,6 +5,9 @@ import Testing
 
 private func declared(_ schema: JSON) -> Set<String> { Set(schema["properties"]?.object?.keys.map { $0 } ?? []) }
 
+/// A value `name` takes: its first enum value, else "x".
+func sampleValue(_ schema: JSON, _ name: String) -> String { schema["properties"]?[name]?["enum"]?.array?.first?.string ?? "x" }
+
 @Test func everyToolAcceptsItsAliasesAndNoneShadowsARealArgument() throws {
     let box = Toolbox()
     var checked = 0
@@ -14,8 +17,9 @@ private func declared(_ schema: JSON) -> Set<String> { Set(schema["properties"]?
         for (alias, canonical) in Toolbox.argAliases(name, declared: names) {
             #expect(!names.contains(alias), "\(name): alias \(alias) is a real argument")
             #expect(names.contains(canonical), "\(name): \(alias) maps to undeclared \(canonical)")
-            let out = try #require(try box.resolvingAliases(name, [alias: "x"], schema: schema))
-            #expect(out[alias] == nil && out[canonical]?.string == "x", "\(name): \(alias) → \(out.encoded())")
+            let v = sampleValue(schema, canonical)
+            let out = try #require(try box.resolvingAliases(name, [alias: .string(v)], schema: schema))
+            #expect(out[alias] == nil && out[canonical]?.string == v, "\(name): \(alias) → \(out.encoded())")
             #expect(throws: Never.self, "\(name) refuses \(alias)") { try box.checkArguments(name, out, schema: schema) }
             checked += 1
         }
@@ -27,10 +31,11 @@ private func declared(_ schema: JSON) -> Set<String> { Set(schema["properties"]?
     let box = Toolbox()
     for (name, e) in box.edits {
         for (alias, canonical) in Toolbox.argAliases(name, declared: declared(Toolbox.withDryRun(e.schema))) {
-            let args: JSON = ["operations": [["tool": .string(name), "args": [alias: "x"]]]]
+            let v = sampleValue(e.schema, canonical)
+            let args: JSON = ["operations": [["tool": .string(name), "args": [alias: .string(v)]]]]
             let out = try #require(try box.resolvingAliases("batch", args, schema: box.tools["batch"]!.schema))
             let op = out["operations"]?.array?.first?["args"]
-            #expect(op?[canonical]?.string == "x" && op?[alias] == nil, "batch \(name): \(alias)")
+            #expect(op?[canonical]?.string == v && op?[alias] == nil, "batch \(name): \(alias)")
             #expect(throws: Never.self) { try box.checkArguments("batch", out, schema: box.tools["batch"]!.schema) }
         }
     }

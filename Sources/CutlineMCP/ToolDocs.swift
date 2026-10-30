@@ -20,7 +20,7 @@ extension Toolbox {
             "path": "Where; .cutline is appended",
             "import": "Start from an .fcpxml(d), .otio, .edl or .aaf timeline",
             "preset": "landscape 1920×1080, vertical 1080×1920, square, portrait 1080×1350, uhd",
-            "color_space": "rec709 (default), p3, rec2020_hlg, rec2020_pq (HDR)",
+            "color_space": "Default rec709; rec2020_* are HDR",
             "drop_frame": "Drop-frame timecode in EDL/FCPXML/XML; default at 29.97/59.94",
             "timecode_start": "\"hh:mm:ss:ff\" of the first frame, default 01:00:00:00",
             "width": "", "height": "", "fps": "Default: first video's, else 30", "background": "Hex, default #000000", "name": "", "open_preview": "Default true",
@@ -31,12 +31,11 @@ extension Toolbox {
             "target": "Clip id", "detail": "",
         ]),
         "canvas_set": ToolBrief(text: "Change canvas size, frame rate, color space, timecode or background; media refits, text scales.", args: [
-            "preset": "landscape, vertical, square, portrait, uhd",
-            "color_space": "rec709, p3, rec2020_hlg, rec2020_pq",
+            "preset": "", "color_space": "",
             "drop_frame": "Drop-frame timecode in interchange files",
             "timecode_start": "\"hh:mm:ss:ff\" of the first frame",
             "width": "", "height": "", "fps": "", "background": "Hex",
-        ], hide: ["master_peak_nits", "playback", "proxy_size"]),
+        ], hide: ["master_peak_nits", "playback", "proxy_size", "audio_layout"]),
         "history": ToolBrief(text: "Edit history: list, undo, redo, restore an entry, diff against a version, or fork into a separate copy.", args: [
             "id": "Entry for restore or diff", "path": "For fork: the new .cutline", "steps": "For undo/redo, default 1", "limit": "For list, default 20", "action": "",
         ]),
@@ -52,7 +51,7 @@ extension Toolbox {
             "fps": "",
         ]),
         "media_relink": ToolBrief(text: "Relink offline media from a folder by file name and/or reel + timecode.", args: [
-            "folder": "", "match": "name, reel_tc or both (default)",
+            "folder": "", "match": "Default both",
         ]),
         "media_analyze": ToolBrief(text: "Run analysis: transcript, scenes, beats, speakers, shots (faces, saliency, shot size), sounds. Read it with analysis_read.", args: [
             "media_id": "Id, ids or \"all\"",
@@ -70,7 +69,7 @@ extension Toolbox {
         ]),
         "timeline_frames": ToolBrief(text: "Render timeline frames exactly as export will, with the clip visible at each time.", args: [
             "times": "Timeline times", "count": "Default 6, max 24", "start": "", "end": "", "size": "large for detail",
-            "view": "matte: white where clip's effect acts (keys, masks, qualifiers)", "clip": "For matte/multicam", "effect": "For matte",
+            "view": "matte: where clip's effect acts; compare: without/with effect, clip's effects or version", "clip": "", "effect": "", "version": "History id",
             "multicam": "Angle grid",
         ]),
         "multicam_create": ToolBrief(text: "Build a multicam clip of synced angles playing one live angle per range.", args: [
@@ -144,7 +143,7 @@ extension Toolbox {
             "volume": "", "gain_db": "", "volume_keys": "[{t, v}] timeline seconds", "muted": "", "solo": "",
             "type": "Effect type, as effect_add", "params": "", "effect_id": "", "index": "", "mix": "", "enabled": "", "remove_effect": "",
         ]),
-        "captions_set": ToolBrief(text: "Turn on and style live captions from the transcripts. Presets: karaoke, bold, clean, reveal, minimal.", args: [
+        "captions_set": ToolBrief(text: "Turn on and style live captions from the transcripts.", args: [
             "preset": "", "enabled": "Default true", "animation": "", "font": "", "size": "Fraction of the short side", "weight": "",
             "color": "Hex", "highlight_color": "Hex, spoken word", "background": "Hex or none", "stroke": "Hex or none", "stroke_width": "",
             "uppercase": "", "y": "Center, default 0.82", "max_width": "", "max_words_per_line": "", "max_lines": "Lines at once; longer cues page",
@@ -165,7 +164,7 @@ extension Toolbox {
             "bind": "{path: {source, map, smooth, offset, decay, keep_centered}}; sources beats, downbeats, audio:<media>, face:<media>[:n].x|y|size, track:<id>.x|y|width|height. catalog tool=param_set explains",
         ], hide: ["subframe"]),
         "effect_add": ToolBrief(text: "Add, update, reorder or remove an effect on clips, tracks, adjustment layers or the master; see catalog.", args: [
-            "target": "Clip, track, \"V1/*\", \"group:<id>\", \"master\" or a list",
+            "target": "Clip, track, \"V1/*\", \"group:<id>\", \"bus:<id>\", \"master\" or a list",
             "type": "Effect type (catalog)", "params": "", "id": "Default from type, e.g. vignette1", "index": "Stack position, 0 first",
             "mix": "0…1", "enabled": "", "remove": "Remove this id (or every effect of type)", "scope": "shot: only the shot at at", "at": "",
         ]),
@@ -176,7 +175,7 @@ extension Toolbox {
             "cut": "\"clip_a|clip_b\" or a list", "track": "Every cut on this track (skips misfits)", "from": "Alone: transition out", "to": "Alone: transition in",
             "type": "Default dissolve", "duration": "Default 0.5", "align": "Default center", "ease": "", "part": "Default both",
             "params": "e.g. {\"direction\": \"left\"}", "id": "Existing transition", "remove": "",
-            "clip": "With edge: the cut into or out of it", "edge": "in, out or both",
+            "clip": "With edge: the cut into or out of it", "edge": "",
         ], hide: ["subframe"]),
         "trim": ToolBrief(text: "Trim an edit: plain, ripple, roll, slip or slide; part audio moves only the sound edge (J/L cut). Give to or by.", args: [
             "clip_id": "", "mode": "Default plain", "edge": "Default end", "to": "Timeline time or anchor for the edge",
@@ -233,7 +232,7 @@ extension Toolbox {
         ]),
         "captions_translate": ToolBrief(text: "Translate caption cues (on-device, or your cues/.srt) for subtitles in other languages; follows edits.", args: [
             "language": "e.g. fr", "languages": "", "cues": "[{id, text}] your own", "cues[].id": "", "cues[].text": "", "file": ".srt/.vtt to import", "clear": "",
-        ]),
+        ], hide: ["condense"]),
         "caption_edit": ToolBrief(text: "Fix one caption cue (by at or from/to words): text, timing, hide, break_before, merge with the next, or clear edits.", args: [
             "at": "Time inside the cue", "from": "\"<media>.wN\"", "to": "Default from", "text": "", "start_offset": "", "end_offset": "",
             "hidden": "", "break_before": "New cue at the first word", "merge": "Join with the next cue", "clear": "Remove edits on those words",
