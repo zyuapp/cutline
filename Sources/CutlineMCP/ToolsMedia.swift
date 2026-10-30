@@ -34,6 +34,7 @@ extension Toolbox {
             "log": Schema.string("Set the camera log encoding instead of analyzing (\"none\" for normal video); log clips are converted into the canvas color space with input.tone and input.exposure", values: ["none"] + LogProfile.allCases.map(\.rawValue)),
             "signal_range": Schema.string("Whether log code values are legal (video, default) or full range", values: ["video", "full"]),
             "channel": Schema.string("Source channel(s) transcript, speakers, beats, sounds and sync listen to, kept for later analysis: \"ch3\", \"ch3+ch4\", \"mix:1,3\", left, right; \"auto\" (default) uses the first track, or for multichannel files every channel with sound. media_list shows each file's channels"),
+            "vocabulary": Schema.strings("Names and terms the transcript should spell this way (characters, products), kept for later analysis; [] clears. Caption replacement targets and named speakers are added automatically. The recognizer's alternative readings that contain a term are preferred, and sound-alike names are respelled"),
         ], required: ["media_id"])) { [unowned self] args in
             if let log = args.optString("log") {
                 let ids = args.strings("media_id") ?? []
@@ -64,6 +65,12 @@ extension Toolbox {
                     }
                 }
             }
+            if let terms = args.strings("vocabulary") {
+                for id in ids where p.mediaAsset(id) == nil { throw EditError("No media \(id)") }
+                p = try session.edit("Transcript vocabulary of \(ids.joined(separator: ", "))") { p in
+                    for id in ids { if let i = p.media.firstIndex(where: { $0.id == id }) { p.media[i].vocabulary = terms.isEmpty ? nil : terms } }
+                }
+            }
             let requested = try (args.strings("features") ?? Feature.allCases.map(\.rawValue)).map { f in
                 guard let v = Feature(rawValue: f) else { throw EditError("Unknown feature \(f). Features: \(Feature.allCases.map(\.rawValue).joined(separator: ", "))") }
                 return v
@@ -92,11 +99,12 @@ extension Toolbox {
             return .text("Removed \(id)\n" + footer(p))
         })
 
-        add(Tool(name: "media_transcript", description: "Read what is said in a media file, in SOURCE time (use these times with source_cut, assemble and clip source_in/source_out). Sentences show [start–end]; filler words are marked *um*; pauses ≥0.4s are noted. words=true lists every word with its time.", schema: Schema.object([
+        add(Tool(name: "media_transcript", description: "Read what is said in a media file, in SOURCE time (use these times with source_cut, assemble and clip source_in/source_out). Sentences show [start–end]; filler words are marked *um*; words the recognizer was unsure of (confidence under 0.5) are marked [word?]; pauses ≥0.4s are noted. words=true lists every word with its time and confidence; low_confidence=true lists only the unsure words with their sentence, to check by ear or media_frames and fix with transcript_edit.", schema: Schema.object([
             "media_id": Schema.string("Media id"),
             "start": Schema.time("Only from this source time"),
             "end": Schema.time("Only until this source time"),
             "words": Schema.bool("List individual words with times, default false"),
+            "low_confidence": Schema.bool("List only words under 0.5 confidence, with their sentence"),
         ], required: ["media_id"])) { [unowned self] args in
             let b = try session.requireBundle()
             let id = try args.string("media_id")
@@ -104,14 +112,31 @@ extension Toolbox {
             let lo = try args.optTime("start") ?? 0, hi = try args.optTime("end") ?? .infinity
             let words = t.words.enumerated().filter { $0.element.end > lo && $0.element.start < hi }
             guard !words.isEmpty else { return .text("No speech in that range.") }
+            if args.bool("low_confidence", default: false) {
+                let unsure = words.filter(\.element.isLowConfidence)
+                guard !unsure.isEmpty else { return .text(t.words.contains { $0.confidence != nil } ? "No low-confidence words in that range." : "This transcript has no confidence scores; run media_analyze features:[\"transcript\"] to get them.") }
+                return .text("\(unsure.count) of \(words.count) words under \(fmt1(Word.lowConfidence)) confidence:\n" + unsure.map { w in
+                    let around = t.words[max(0, w.offset - 4)...min(t.words.count - 1, w.offset + 4)].map(\.text).joined(separator: " ")
+                    return "w\(w.offset) \(fmt2(w.element.start))–\(fmt2(w.element.end)) \"\(w.element.text)\" \(fmt2(w.element.confidence ?? 0))  …\(around)…"
+                }.joined(separator: "\n"))
+            }
             if args.bool("words", default: false) {
-                return .text(words.map { "w\($0.offset) \(fmt2($0.element.start))–\(fmt2($0.element.end)) \($0.element.text)\($0.element.isFiller ? "  (filler)" : "")" }.joined(separator: "\n"))
+                return .text(words.map { "w\($0.offset) \(fmt2($0.element.start))–\(fmt2($0.element.end)) \($0.element.text)\($0.element.confidence.map { " (\(fmt2($0)))" } ?? "")\($0.element.isFiller ? "  (filler)" : "")" }.joined(separator: "\n"))
             }
             let speakers = b.analysis(SpeakerAnalysis.self, id, "speakers")
             let multi = (speakers?.speakers.count ?? 0) > 1
             func who(_ i: Int) -> String? { speakers.flatMap { $0.wordSpeakers.indices.contains(i) ? $0.wordSpeakers[i] : nil } }
+            var unsureTurns = 0
+            /// The speaker turn under most of a sentence was scored below 0.5.
+            func unsureTurn(_ a: Seconds, _ b: Seconds) -> Bool {
+                let mid = (a + b) / 2
+                guard let seg = speakers?.segments.first(where: { $0.start <= mid && mid < $0.end }), let c = seg.confidence, c < 0.5 else { return false }
+                unsureTurns += 1
+                return true
+            }
             func shown(_ w: (offset: Int, element: Word)) -> String {
                 if w.element.isFiller { return "*\(w.element.text)*" }
+                if w.element.isLowConfidence { return "[\(w.element.text)?]" }
                 if let e = speakers?.emphasis, e.indices.contains(w.offset), e[w.offset] >= 0.75 { return "**\(w.element.text)**" }
                 return w.element.text
             }
@@ -122,11 +147,11 @@ extension Toolbox {
             }
             let lines = runs.flatMap { run in
                 Describe.sentences(run, text: shown, start: \.element.start, end: \.element.end).map { s in
-                    "[w\(s.first.offset)–w\(s.last.offset)  \(fmt2(s.start))–\(fmt2(s.end))] " + (multi ? "\(who(s.first.offset) ?? "?"): " : "") + s.text + (s.pauseAfter.map { "   (pause \(fmt1($0))s)" } ?? "")
+                    "[w\(s.first.offset)–w\(s.last.offset)  \(fmt2(s.start))–\(fmt2(s.end))] " + (multi ? "\(who(s.first.offset) ?? "?")\(unsureTurn(s.start, s.end) ? "?" : ""): " : "") + s.text + (s.pauseAfter.map { "   (pause \(fmt1($0))s)" } ?? "")
                 }
             }
             let media = try session.project().mediaAsset(id)
-            let legend = (multi ? " S1, S2… are speakers." : "") + (speakers != nil ? " **word** is stressed." : "")
+            let legend = (multi ? " S1, S2… are speakers" + (unsureTurns > 0 ? "; S2? marks an uncertain turn (transcript_edit speaker fixes it)." : ".") : "") + (speakers != nil ? " **word** is stressed." : "") + (words.contains { $0.element.isLowConfidence } ? " [word?] is uncertain (low_confidence:true lists them)." : "")
             return .text("\(id) transcript (source time, \(fmt2(media?.duration ?? 0))s long).\(legend) Word ids work as anchors, e.g. \"\(id).w\(words[0].offset)\" or \"\(id).w\(words[0].offset).end\":\n" + lines.joined(separator: "\n"))
         })
 

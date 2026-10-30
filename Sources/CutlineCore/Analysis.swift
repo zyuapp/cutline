@@ -4,12 +4,20 @@ public struct Word: Codable, Equatable, Sendable {
     public var text: String
     public var start: Seconds
     public var end: Seconds
+    /// The recognizer's confidence in the word, 0–1; nil for words it didn't rate or that were typed in.
+    public var confidence: Double?
 
-    public init(text: String, start: Seconds, end: Seconds) {
+    public init(text: String, start: Seconds, end: Seconds, confidence: Double? = nil) {
         self.text = text
         self.start = start
         self.end = end
+        self.confidence = confidence
     }
+
+    /// Below this confidence a word is shown as uncertain.
+    public static let lowConfidence = 0.5
+
+    public var isLowConfidence: Bool { (confidence ?? 1) < Word.lowConfidence }
 
     /// Lowercased with surrounding punctuation removed.
     public var normalized: String {

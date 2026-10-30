@@ -21,6 +21,35 @@ public enum SoundEventDetector {
         }
     }
 
+    /// Classifier labels that are someone talking.
+    static let speechLabels: Set<String> = ["speech", "shout", "yell", "whispering", "battle cry", "children shouting", "chatter"]
+
+    /// Where the sound classifier hears talking in a mono PCM file (any rate), windows of speech labels at
+    /// `minConfidence` or more merged across gaps under 0.3 s.
+    public static func speech(pcmURL: URL, minConfidence: Double = 0.3) async throws -> [TimeRange] {
+        try await runBlocking { _ in
+            let file = try AVAudioFile(forReading: pcmURL)
+            let format = file.processingFormat
+            let analyzer = SNAudioStreamAnalyzer(format: format)
+            let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
+            request.windowDuration = window(for: request.windowDurationConstraint)
+            request.overlapFactor = overlap
+            let observer = Observer(minimum: minConfidence, labels: speechLabels)
+            try analyzer.add(request, withObserver: observer)
+            let chunk: AVAudioFrameCount = 1 << 16
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunk) else { throw EditError("Cannot allocate audio") }
+            while file.framePosition < file.length {
+                let at = file.framePosition
+                try file.read(into: buffer, frameCount: chunk)
+                guard buffer.frameLength > 0 else { break }
+                analyzer.analyze(buffer, atAudioFramePosition: at)
+            }
+            analyzer.completeAnalysis()
+            if let error = observer.error { throw error }
+            return TimeRange.merged(observer.windows.map { TimeRange($0.start, $0.end) }, tolerance: 0.3)
+        }
+    }
+
     static func classify(asset: AVAsset, track: AVAssetTrack, mediaId: String) throws -> [SoundEvent] {
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
@@ -84,6 +113,14 @@ public enum SoundEventDetector {
         private let lock = NSLock()
         private var _windows: [SoundEvent] = []
         private var _error: Error?
+        let minimum: Double
+        /// Only these labels, when set.
+        let labels: Set<String>?
+
+        init(minimum: Double = 0.5, labels: Set<String>? = nil) {
+            self.minimum = minimum
+            self.labels = labels
+        }
 
         var windows: [SoundEvent] { lock.withLock { _windows } }
         var error: Error? { lock.withLock { _error } }
@@ -92,9 +129,9 @@ public enum SoundEventDetector {
             guard let r = result as? SNClassificationResult else { return }
             let start = r.timeRange.start.seconds, end = r.timeRange.end.seconds
             guard start.isFinite, end.isFinite, end > start else { return }
-            let hits = r.classifications.filter { $0.confidence >= 0.5 }.map {
+            let hits = r.classifications.filter { $0.confidence >= minimum }.map {
                 SoundEvent(label: $0.identifier.replacingOccurrences(of: "_", with: " "), start: start, end: end, confidence: $0.confidence)
-            }
+            }.filter { labels?.contains($0.label) ?? true }
             lock.withLock { _windows += hits }
         }
 

@@ -33,6 +33,9 @@ extension Toolbox {
             "end": Schema.time("Export until this timeline time"),
             "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (subtitle_formats, default .srt and .vtt) or both; ttml, imsc or ebu-tt-d writes just that sidecar", values: ["none", "embed", "sidecar", "both"] + TimedTextFormat.allCases.map(\.rawValue)),
             "subtitle_formats": Schema.strings("Sidecar formats, from srt, vtt, ttml (TTML 2), imsc (IMSC 1.1 Text profile, e.g. Netflix) and ebu-tt-d (EBU-TT-D broadcast); default [\"srt\", \"vtt\"]. All share the same cues"),
+            "subtitle_languages": Schema.strings("Translations to deliver too (captions_translate first), e.g. [\"fr\", \"de\"]: an embedded subtitle track per language with its language tag (one alternate group with the spoken language) and sidecars <name>.<lang>.srt, .vtt, .imsc.ttml… Same cue times as the spoken subtitles"),
+            "subtitle_default": Schema.string("Language of the embedded subtitle track players pick first; default the spoken language"),
+            "subtitle_forced": Schema.strings("Languages whose embedded track is marked forced (all cues shown even with subtitles off)"),
             "subtitle_position": Schema.string("TTML-family sidecars: region at the bottom (default) or top of the title-safe area", values: ["bottom", "top"]),
             "subtitle_speakers": Schema.bool("TTML-family sidecars: color each speaker's lines (from speaker analysis) and name them as agents; default false"),
             "interlaced": Schema.string("Interlaced master (1080i broadcast): tff (HD) or bff; renders at the field rate and weaves. ProRes, DNxHR and XDCAM presets; ffmpeg's DNxHR is progressive only, so interlaced DNx is written as DNxHD 1080i (1920×1080 at 25 or 29.97 fps, tff only: hq → DNxHD 220/185, hqx → 220x/185x, sq → 145/120; lb has no interlaced tier)", values: ["tff", "bff"]),
@@ -145,17 +148,31 @@ extension Toolbox {
                 report += try await analysisWarnings(spoken.sorted().map { AnalysisNeed(mediaId: $0, feature: .speakers, without: "its subtitle lines aren't colored or named by speaker") }, wait: 0)
             }
 
-            let subs = args.optString("subtitles") ?? "none"
+            let languages = (args.strings("subtitle_languages") ?? []).map(Project.languageTag).filter { !$0.isEmpty }
+            let subs = args.optString("subtitles") ?? (languages.isEmpty ? "none" : "both")
+            let spoken = p.spokenLanguage(transcripts: transcripts)
             var cues: [TimedText] = []
+            var translatedTracks: [SubtitleTrack] = []
             if subs != "none" {
                 cues = p.subtitleCues(transcripts: transcripts).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                 if cues.isEmpty { report.append("No transcribed speech on the timeline, so no subtitles.") }
                 let overlaps = p.overlappingSpeech(transcripts: transcripts)
                 if !overlaps.isEmpty { report.append("Overlapping speech at " + overlaps.prefix(5).map { "\(fmt2($0.start))s" }.joined(separator: ", ") + " interleaves two voices in the subtitles; see captions_list.") }
+                let forced = Set((args.strings("subtitle_forced") ?? []).map(Project.languageTag))
+                let shared = p.captionCues(transcripts: transcripts)
+                for lang in languages where lang != spoken {
+                    guard p.captions.translations[lang] != nil else { throw EditError("No \(lang) translation; run captions_translate language:\"\(lang)\" first" + (p.captions.translations.isEmpty ? "" : " (translated: \(p.captions.translations.keys.sorted().joined(separator: ", ")))")) }
+                    let missing = p.cueTranslations(lang, cues: shared).texts.filter { $0 == nil }.count
+                    if missing > 0 { report.append("\(lang): \(missing) of \(shared.count) cues have no translation and keep the spoken text; captions_list language:\"\(lang)\" shows which.") }
+                    translatedTracks.append(SubtitleTrack(language: lang, cues: p.subtitleCues(transcripts: transcripts, language: lang).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }, forced: forced.contains(lang)))
+                }
                 if subs != "embed" {
                     // Zero is the file's first frame, so a leader delays them.
                     let lead = try leaderSpec(args.raw["leader"]).map { p.canvas.timecodeFormat.seconds($0.frames(p.canvas.timecodeFormat)) } ?? 0
-                    report += try writeSubtitleSidecars(p, args, transcripts: transcripts, range: range, base: base, bundle: b, offset: lead)
+                    report += try writeSubtitleSidecars(p, args, transcripts: transcripts, range: range, base: base, bundle: b, offset: lead, language: spoken)
+                    for t in translatedTracks {
+                        report += try writeSubtitleSidecars(p, args, transcripts: transcripts, range: range, base: base.appendingPathExtension(t.language), bundle: b, offset: lead, language: t.language, translation: t.language)
+                    }
                 }
             }
             var closed: [TimedText] = []
@@ -190,7 +207,13 @@ extension Toolbox {
             try? session.sendPreview(["action": "export", "state": "started", "path": url.path])
             let started = Date()
             let project = b.url.path
-            var options = ExportOptions(preset: preset, bitrateMbps: args.optDouble("bitrate_mbps"), range: range, subtitles: subs == "embed" || subs == "both" ? cues : [], chapters: chapters)
+            let embed = subs == "embed" || subs == "both"
+            var options = ExportOptions(preset: preset, bitrateMbps: args.optDouble("bitrate_mbps"), range: range, subtitles: embed ? cues : [], subtitleLanguage: spoken, chapters: chapters)
+            if embed {
+                options.subtitleTracks = translatedTracks
+                options.defaultSubtitleLanguage = args.optString("subtitle_default").map(Project.languageTag)
+                if !translatedTracks.isEmpty { report.append("Embedded subtitles: " + ([spoken] + translatedTracks.map { $0.language + ($0.forced ? " (forced)" : "") }).joined(separator: ", ") + ", default \(options.defaultSubtitleLanguage ?? spoken)") }
+            }
             options.interlaced = fields
             if options.interlaced != nil { report.append("Interlaced \(options.interlaced!.rawValue == "tff" ? "top" : "bottom") field first at \(fmt2(p.canvas.fps * 2)) fields/s") }
             options.closedCaptions = closed
@@ -240,9 +263,10 @@ extension Toolbox {
                 try CEA608.scc(sccCues, fps: p.canvas.fps, start: programFrame, format: tcFormat).write(to: base.appendingPathExtension("scc"), atomically: true, encoding: .utf8)
                 report.append("Closed captions: \(closed.count) cues embedded (CEA-608, CC1) and \(base.lastPathComponent).scc, timed on the file's timecode from \(tcFormat.string(programFrame))")
             }
-            if preset.needsFFmpeg, !options.subtitles.isEmpty || !options.closedCaptions.isEmpty || !options.chapters.isEmpty {
+            if preset.needsFFmpeg, !options.subtitles.isEmpty || !options.subtitleTracks.isEmpty || !options.closedCaptions.isEmpty || !options.chapters.isEmpty {
                 report.append("\(preset.title) files carry no subtitle, caption or chapter tracks; use the sidecar files.")
                 options.subtitles = []
+                options.subtitleTracks = []
                 options.closedCaptions = []
                 options.chapters = []
             }
@@ -469,10 +493,13 @@ extension Toolbox {
 
 extension Toolbox {
     /// Writes the subtitle sidecars an export asks for; returns report lines.
-    func writeSubtitleSidecars(_ p: Project, _ args: Args, transcripts: [String: Transcript], range: TimeRange?, base: URL, bundle b: ProjectBundle, offset: Seconds = 0) throws -> [String] {
+    /// `translation` writes that language's cue text; `language` tags the TTML documents.
+    func writeSubtitleSidecars(_ p: Project, _ args: Args, transcripts: [String: Transcript], range: TimeRange?, base: URL, bundle b: ProjectBundle, offset: Seconds = 0, language: String = "en", translation: String? = nil) throws -> [String] {
         let subs = args.optString("subtitles") ?? "sidecar"
         let formats = TimedTextFormat(rawValue: subs).map { [$0.rawValue] } ?? args.strings("subtitle_formats") ?? ["srt", "vtt"]
         var options = TimedTextOptions()
+        options.language = language
+        options.translation = translation
         if let pos = args.optString("subtitle_position") { options.position = pos }
         options.speakerColors = args.bool("subtitle_speakers", default: false)
         var analyses: [String: SpeakerAnalysis] = [:]
@@ -487,7 +514,7 @@ extension Toolbox {
         for f in formats {
             switch f {
             case "srt", "vtt":
-                try p.subtitles(f == "srt" ? .srt : .vtt, transcripts: transcripts, range: range, offset: offset).write(to: base.appendingPathExtension(f), atomically: true, encoding: .utf8)
+                try p.subtitles(f == "srt" ? .srt : .vtt, transcripts: transcripts, range: range, offset: offset, language: translation).write(to: base.appendingPathExtension(f), atomically: true, encoding: .utf8)
                 files.append(base.lastPathComponent + "." + f)
             default:
                 guard let format = TimedTextFormat(rawValue: f) else { throw EditError("subtitle_formats are srt, vtt, \(TimedTextFormat.allCases.map(\.rawValue).joined(separator: ", "))") }
@@ -498,7 +525,7 @@ extension Toolbox {
                 files.append(base.lastPathComponent + "." + format.fileSuffix)
             }
         }
-        let count = p.subtitleCues(transcripts: transcripts, range: range).count
-        return ["Subtitles: " + files.joined(separator: ", ") + " (\(count) cues)"] + notes
+        let count = p.subtitleCues(transcripts: transcripts, range: range, language: translation).count
+        return ["Subtitles\(translation.map { " (\($0))" } ?? ""): " + files.joined(separator: ", ") + " (\(count) cues)"] + notes
     }
 }

@@ -465,6 +465,7 @@ extension Toolbox {
             "replacements": ["type": "object", "additionalProperties": ["type": "string"], "description": "Word fixes, e.g. {\"cut line\": \"Cutline\"}; merged into existing ones, empty string value deletes"],
             "hidden_words": Schema.strings("Words never captioned, e.g. fillers you kept in the audio"),
             "track_ids": Schema.strings("Only caption speech from these tracks"),
+            "language": Schema.string("Burn in this translation (captions_translate) instead of the spoken words; \"\" for the spoken language. Cue times stay; words are spread over each cue"),
         ]), label: { a, _ in a.bool("enabled", default: true) ? (a.optString("preset").map { "Captions: \($0) style" } ?? "Restyle captions") : "Turn off captions" }) { p, args in
             var c = p.captions
             c.enabled = args.bool("enabled", default: true)
@@ -492,8 +493,13 @@ extension Toolbox {
             }
             if let v = args.strings("hidden_words") { c.hiddenWords = v }
             if let v = args.strings("track_ids") { c.trackIds = v }
+            if let v = args.optString("language") {
+                let tag = Project.languageTag(v)
+                guard tag.isEmpty || c.translations[tag] != nil else { throw EditError("No \(tag) translation yet; run captions_translate language:\"\(tag)\" first" + (c.translations.isEmpty ? "" : " (translated: \(c.translations.keys.sorted().joined(separator: ", ")))")) }
+                c.language = tag.isEmpty ? nil : tag
+            }
             p.captions = c
-            return c.enabled ? "Captions on (\(s.animation.rawValue), size \(fmt2(s.size)), y \(fmt2(s.y)))" : "Captions off"
+            return c.enabled ? "Captions on (\(s.animation.rawValue), size \(fmt2(s.size)), y \(fmt2(s.y))\(c.language.map { ", in \($0)" } ?? ""))" : "Captions off"
         })
 
         addEdit(EditTool(name: "markers", description: "Timeline markers (chapters, to-dos, notes; labels work as anchors \"marker:<label>\") and, with media_id, source tags on footage: keyword ranges plus favorite/reject ratings, like Final Cut's keywords. Tags show in analysis_read and help pick takes.", schema: Schema.object([

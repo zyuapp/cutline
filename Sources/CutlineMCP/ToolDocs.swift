@@ -52,11 +52,11 @@ extension Toolbox {
             "media_id": "Id, ids or \"all\"",
             "features": "Default all the media allows",
             "channel": "Channel(s) analysis listens to: \"ch3\", \"ch3+ch4\", \"mix:1,3\", auto",
-            "background": "Return at once", "language": "Default en-US",
+            "background": "Return at once", "language": "Default en-US", "vocabulary": "Names/terms to spell; kept",
         ], hide: ["log", "signal_range"]),
         "media_remove": ToolBrief(text: "Remove unused media.", args: ["media_id": ""]),
-        "media_transcript": ToolBrief(text: "What a media file says, in SOURCE time with word ids (for source_cut, assemble, source_in/out); fillers *um*, pauses ≥0.4 s.", args: [
-            "media_id": "", "start": "Source time", "end": "Source time", "words": "Every word with its time",
+        "media_transcript": ToolBrief(text: "What a media file says, in SOURCE time with word ids (for source_cut, assemble, source_in/out); fillers *um*, unsure [word?], pauses ≥0.4 s.", args: [
+            "media_id": "", "start": "Source time", "end": "Source time", "words": "Every word with its time", "low_confidence": "Only unsure words",
         ]),
         "media_frames": ToolBrief(text: "Contact sheet of source frames from one media file.", args: [
             "media_id": "", "times": "Source times", "count": "Default 8, max 24", "start": "", "end": "",
@@ -135,6 +135,7 @@ extension Toolbox {
             "color": "Hex", "highlight_color": "Hex, spoken word", "background": "Hex or none", "stroke": "Hex or none", "stroke_width": "",
             "uppercase": "", "y": "Center, default 0.82", "max_width": "", "max_words_per_line": "", "max_lines": "Lines at once; longer cues page",
             "replacements": "{\"cut line\": \"Cutline\"}; \"\" deletes", "hidden_words": "Never captioned", "track_ids": "Default the dialogue tracks",
+            "language": "Burn in a translation",
         ]),
         "markers": ToolBrief(text: "Timeline markers (anchors \"marker:<label>\"), or with media_id keyword/rating tags on source ranges.", args: [
             "add": "[{time, end, label, kind, color, note, rating}]", "add[].color": "", "add[].end": "", "add[].kind": "", "add[].label": "",
@@ -190,7 +191,7 @@ extension Toolbox {
             "deliver": "Default video; stems is one file per audio role", "audio_format": "", "downmix": "", "image_format": "", "times": "For stills",
             "interlaced": "1080i master: tff or bff", "leader": "Bars, slate, 2-pop: true or {bars, slate, black, pop, version}",
             "leader.bars": "", "leader.black": "", "leader.pop": "", "leader.slate": "", "leader.version": "",
-            "timecode_start": "\"hh:mm:ss:ff\" of the program", "subtitles": "Soft subtitles from the transcripts, default none", "subtitle_formats": "srt, vtt, ttml, imsc, ebu-tt-d",
+            "timecode_start": "\"hh:mm:ss:ff\" of the program", "subtitles": "Soft subtitles from the transcripts, default none", "subtitle_formats": "srt, vtt, ttml, imsc, ebu-tt-d", "subtitle_languages": "Translations too", "subtitle_default": "", "subtitle_forced": "",
             "subtitle_position": "", "subtitle_speakers": "Color speakers in TTML", "closed_captions": "CEA-608 plus .scc",
             "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml (+ .notes.txt)", "render_graphics": "Bake generators", "bake_luts": "Grades as .cube", "trim": "For archive: used parts only",
             "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported, then undone",
@@ -210,8 +211,11 @@ extension Toolbox {
         ]),
         "comment_reply": ToolBrief(text: "Reply to a comment and resolve it.", args: ["comment_id": "", "text": "", "resolve": "Default true"]),
         "comment_add": ToolBrief(text: "Leave the human a note at a timeline time.", args: ["text": "", "at": ""]),
-        "captions_list": ToolBrief(text: "Caption cues with times, text and source words (\"<media>.wN\" for caption_edit), captioned tracks and overlapping speech.", args: [
-            "start": "", "end": "",
+        "captions_list": ToolBrief(text: "Caption cues with times, text ([word?] unsure) and source words (\"<media>.wN\" for caption_edit), captioned tracks, overlapping speech, translations.", args: [
+            "start": "", "end": "", "language": "Show this translation",
+        ]),
+        "captions_translate": ToolBrief(text: "Translate caption cues (on-device, or your cues/.srt) for subtitles in other languages; follows edits.", args: [
+            "language": "e.g. fr", "cues": "[{id, text}] your own", "cues[].id": "", "cues[].text": "", "file": ".srt/.vtt to import", "clear": "",
         ]),
         "caption_edit": ToolBrief(text: "Fix one caption cue (by at or from/to words): text, timing, hide, break_before, merge with the next, or clear edits.", args: [
             "at": "Time inside the cue", "from": "\"<media>.wN\"", "to": "Default from", "text": "", "start_offset": "", "end_offset": "",

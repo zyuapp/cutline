@@ -50,11 +50,13 @@ extension Session {
             notes.append("audio: loudness \(String(format: "%.1f", a.loudnessDb)) dB, \(long.count) pauses ≥0.5s totaling \(fmt1(long.map(\.duration).reduce(0, +)))s")
             do {
                 let bounds = Transcriber.chunkBounds(duration: media.duration, silences: a.silences)
-                let raw = try await Transcriber.transcribe(pcmURL: pcm, mediaId: media.id, locale: language, bounds: bounds, checkpoint: checkpoints.appendingPathComponent("\(media.id)-transcript.json")) { p in progress?(0.3 * p) }
+                let vocabulary = transcriptVocabulary(media, bundle: b)
+                let (raw, steps) = try await Transcriber.analyze(pcmURL: pcm, mediaId: media.id, locale: language, vocabulary: vocabulary, bounds: bounds, checkpoints: checkpoints) { p in progress?(0.3 * p) }
                 let t = Transcriber.tighten(raw, audio: a)
                 try b.saveTranscript(t)
                 transcript = t
-                notes.append("transcript: \(t.words.count) words, \(t.words.filter(\.isFiller).count) fillers")
+                let unsure = t.words.filter(\.isLowConfidence).count
+                notes.append("transcript: \(t.words.count) words, \(t.words.filter(\.isFiller).count) fillers, \(unsure) low-confidence" + (steps.isEmpty ? "" : " (" + steps.joined(separator: "; ") + ")"))
             } catch {
                 notes.append("transcript failed: \(error.localizedDescription)")
             }
@@ -92,5 +94,12 @@ extension Session {
         notes += perception.filter { !notes.contains($0) }
         built = nil
         return notes.joined(separator: "; ")
+    }
+
+    /// Spellings transcription should use for `media`: its vocabulary, caption replacement targets and named speakers.
+    func transcriptVocabulary(_ media: MediaAsset, bundle b: ProjectBundle) -> [String] {
+        guard let p = try? project() else { return media.vocabulary ?? [] }
+        let names = p.media.flatMap { b.analysis(SpeakerAnalysis.self, $0.id, "speakers")?.speakers ?? [] }
+        return Vocabulary.terms(p, media: media, speakerNames: names)
     }
 }
