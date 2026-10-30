@@ -104,7 +104,22 @@ Goal: an editor coming from Final Cut Pro, Premiere or Resolve can bring their t
   - **Captions:** embedded CEA-608/708 closed captions.
   - **Color:** full ACES output transforms (gamut compression is done).
   - **Interchange:** AAF.
-  - **Validation:** checking every import against real Final Cut, Premiere and Resolve projects, and the perception features against real footage with people.
+  - **Validation in the real apps:** opening Cutline's exports in Final Cut Pro, Premiere and Resolve themselves (none are installed here).
+
+### Validation on real material
+
+- **Timelines:** 31 real exports from the OpenTimelineIO adapter test suites (Final Cut Pro FCPXML, Premiere/Avid/Nucoda/Resolve EDLs, Resolve and Premiere OTIO, Premiere/Hiero FCP7 XML) all import and validate; they are kept as test fixtures.
+- **Footage (Blender's Tears of Steel, CC BY):**
+  - Transcript, shots, faces, person masks and 9:16 reframing behave well.
+  - Speaker detection now finds the two leads, but quick back-and-forth lines can still merge into one turn.
+  - Stabilization cuts a known shake by about 70%.
+  - Multicam sync found a 0.75 s offset exactly.
+- **Bugs found and fixed:**
+  - Export hung on timelines with long gaps.
+  - Stabilization under-measured real shake by about 3×.
+  - EDLs starting before the hour landed an hour late.
+  - Clips with missing media were dropped.
+  - Multicam left one-frame gaps.
 
 ## Phases (about 1–2 weeks each)
 
