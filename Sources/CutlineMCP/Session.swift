@@ -12,7 +12,7 @@ public enum PreviewControl {
 final class Session {
     var bundle: ProjectBundle?
     let library = MediaLibrary()
-    var built: (project: Project, transcripts: Int, timeline: BuiltTimeline)?
+    var built: (project: Project, transcripts: [String: Transcript], timeline: BuiltTimeline)?
     let jobs = JobBoard()
 
     static var stateURL: URL {
@@ -92,12 +92,12 @@ final class Session {
     func timeline(for p: Project) async throws -> BuiltTimeline {
         let b = try requireBundle()
         let transcripts = b.transcripts(for: p)
-        if let built, built.project == p, built.transcripts == transcripts.count, built.timeline.missingStems.isEmpty { return built.timeline }
+        if let built, built.project == p, built.transcripts == transcripts, built.timeline.missingStems.isEmpty { return built.timeline }
         try await analyzeMotion(p)
         let stems = try stems()
         try await stems.renderMissing(p, transcripts: transcripts, library: library)
         let t = try await TimelineBuilder.build(p, transcripts: transcripts, library: library, stems: stems)
-        built = (p, transcripts.count, t)
+        built = (p, transcripts, t)
         return t
     }
 

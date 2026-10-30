@@ -4,6 +4,10 @@ public struct CaptionWord: Equatable, Hashable, Sendable {
     public var text: String
     public var start: Seconds
     public var end: Seconds
+    /// The transcript word this came from, as "<mediaId>.w<index>".
+    public var anchor: String? = nil
+    /// A cue must start at this word.
+    public var breakBefore = false
 }
 
 /// A block of caption text on the timeline.
@@ -56,12 +60,83 @@ extension Project {
         return deduped
     }
 
+    /// Tracks captioned by default: those with the dialogue role, or else every track whose role or name
+    /// isn't music, effects or ambience.
+    public var captionTrackIds: [String] {
+        let sound = flattenedForSound
+        let dialogue = sound.filter { $0.role?.lowercased() == "dialogue" }.map(\.id)
+        if !dialogue.isEmpty { return dialogue }
+        let background = ["music", "effects", "sfx", "fx", "ambience", "ambient", "amb", "atmos", "atmosphere", "room tone", "roomtone", "foley", "score", "bed"]
+        return sound.filter { t in
+            let tags = [t.role, t.name].compactMap { $0?.lowercased() }
+            return !tags.contains { tag in background.contains { tag == $0 || tag.hasPrefix($0 + " ") || tag.hasSuffix(" " + $0) } }
+        }.map(\.id)
+    }
+
+    /// Timeline words the captions read: the caption tracks, or the dialogue tracks when none are set.
+    public func captionTimelineWords(transcripts: [String: Transcript]) -> [TimelineWord] {
+        let ids = captions.trackIds.isEmpty ? captionTrackIds : captions.trackIds
+        guard !ids.isEmpty else { return [] }
+        return timelineWords(transcripts: transcripts, trackIds: ids)
+    }
+
+    /// Timeline spans where two clips' speech overlaps, which a single caption track can't show cleanly.
+    public func overlappingSpeech(transcripts: [String: Transcript]) -> [TimeRange] {
+        let words = captionTimelineWords(transcripts: transcripts)
+        var spans: [TimeRange] = []
+        for (i, a) in words.enumerated() {
+            for b in words[(i + 1)...] {
+                if b.start >= a.end - 0.05 { break }
+                if b.clipId != a.clipId { spans.append(TimeRange(b.start, min(a.end, b.end))) }
+            }
+        }
+        return TimeRange.merged(spans, tolerance: 0.5)
+    }
+
     public func captionSegments(transcripts: [String: Transcript]) -> [CaptionSegment] {
         let style = captions.style
         let hidden = Set(captions.hiddenWords.map { $0.lowercased() })
         let replacements = Dictionary(captions.replacements.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { a, _ in a })
         var words: [CaptionWord] = []
-        for w in timelineWords(transcripts: transcripts, trackIds: captions.trackIds) {
+        var run: (edit: CaptionEdit, words: [TimelineWord])?
+        func flush() {
+            guard let r = run else { return }
+            run = nil
+            if r.edit.hidden == true { return }
+            let start = r.words[0].start + (r.edit.startOffset ?? 0)
+            let end = max(start + 0.05, r.words.last!.end + (r.edit.endOffset ?? 0))
+            let anchor = "\(r.edit.mediaId).w\(r.words[0].wordIndex)"
+            var made: [CaptionWord]
+            if let text = r.edit.text {
+                let tokens = text.split(whereSeparator: \.isWhitespace).map { style.uppercase ? $0.uppercased() : String($0) }
+                let total = Double(max(1, tokens.reduce(0) { $0 + $1.count + 1 }))
+                var t = start
+                made = tokens.map { tok in
+                    let d = (end - start) * Double(tok.count + 1) / total
+                    defer { t += d }
+                    return CaptionWord(text: tok, start: t, end: t + d, anchor: anchor)
+                }
+            } else {
+                made = r.words.map { CaptionWord(text: style.uppercase ? $0.text.uppercased() : $0.text, start: $0.start, end: $0.end, anchor: "\($0.mediaId).w\($0.wordIndex)") }
+                if !made.isEmpty {
+                    made[0].start = start
+                    made[made.count - 1].end = end
+                }
+            }
+            if r.edit.breakBefore == true, !made.isEmpty { made[0].breakBefore = true }
+            words += made
+        }
+        for w in captionTimelineWords(transcripts: transcripts) {
+            if let edit = captions.edits.last(where: { $0.covers(w.mediaId, w.wordIndex) }) {
+                if let r = run, r.edit == edit, r.words.last?.clipId == w.clipId {
+                    run!.words.append(w)
+                } else {
+                    flush()
+                    run = (edit, [w])
+                }
+                continue
+            }
+            flush()
             let norm = w.text.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)).lowercased()
             if hidden.contains(norm) { continue }
             var text = w.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -71,8 +146,9 @@ extension Project {
             }
             if style.uppercase { text = text.uppercased() }
             guard !text.isEmpty else { continue }
-            words.append(CaptionWord(text: text, start: w.start, end: w.end))
+            words.append(CaptionWord(text: text, start: w.start, end: w.end, anchor: "\(w.mediaId).w\(w.wordIndex)"))
         }
+        flush()
         mergeMultiWordReplacements(&words, replacements: replacements)
 
         let perLine = max(1, style.maxWordsPerLine)
@@ -84,7 +160,7 @@ extension Project {
                 let gap = w.start - last.end
                 let endsSentence = last.text.last.map { ".?!".contains($0) } ?? false
                 let tooLong = w.end - current[0].start > 3.2
-                if gap > 0.6 || current.count >= perSegment || tooLong || endsSentence {
+                if gap > 0.6 || current.count >= perSegment || tooLong || endsSentence || w.breakBefore {
                     groups.append(current)
                     current = []
                 }
@@ -117,7 +193,7 @@ extension Project {
                 }
                 if window == parts {
                     let trailing = String(words[i + parts.count - 1].text.reversed().prefix { $0.isPunctuation }.reversed())
-                    let merged = CaptionWord(text: (captions.style.uppercase ? value.uppercased() : value) + trailing, start: words[i].start, end: words[i + parts.count - 1].end)
+                    let merged = CaptionWord(text: (captions.style.uppercase ? value.uppercased() : value) + trailing, start: words[i].start, end: words[i + parts.count - 1].end, anchor: words[i].anchor, breakBefore: words[i].breakBefore)
                     words.replaceSubrange(i..<(i + parts.count), with: [merged])
                 }
                 i += 1

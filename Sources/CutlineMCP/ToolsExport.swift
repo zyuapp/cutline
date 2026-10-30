@@ -74,17 +74,20 @@ extension Toolbox {
             if subs != "none" {
                 cues = p.subtitleCues(transcripts: transcripts).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                 if cues.isEmpty { report.append("No transcribed speech on the timeline, so no subtitles.") }
+                let overlaps = p.overlappingSpeech(transcripts: transcripts)
+                if !overlaps.isEmpty { report.append("Overlapping speech at " + overlaps.prefix(5).map { "\(fmt2($0.start))s" }.joined(separator: ", ") + " interleaves two voices in the subtitles; see captions_list.") }
                 if subs == "sidecar" || subs == "both" {
-                    try p.subtitles(.srt, transcripts: transcripts).write(to: base.appendingPathExtension("srt"), atomically: true, encoding: .utf8)
-                    try p.subtitles(.vtt, transcripts: transcripts).write(to: base.appendingPathExtension("vtt"), atomically: true, encoding: .utf8)
-                    report.append("Subtitles: \(base.lastPathComponent).srt and .vtt (\(cues.count) cues)")
+                    try p.subtitles(.srt, transcripts: transcripts, range: range).write(to: base.appendingPathExtension("srt"), atomically: true, encoding: .utf8)
+                    try p.subtitles(.vtt, transcripts: transcripts, range: range).write(to: base.appendingPathExtension("vtt"), atomically: true, encoding: .utf8)
+                    report.append("Subtitles: \(base.lastPathComponent).srt and .vtt (\(p.subtitleCues(transcripts: transcripts, range: range).count) cues)")
                 }
             }
             var closed: [TimedText] = []
             if args.bool("closed_captions", default: false) {
                 closed = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 2).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
                 if closed.isEmpty { report.append("No transcribed speech, so no closed captions.") } else {
-                    try CEA608.scc(closed, fps: p.canvas.fps).write(to: base.appendingPathExtension("scc"), atomically: true, encoding: .utf8)
+                    let sidecar = p.subtitleCues(transcripts: transcripts, maxCharsPerLine: 32, maxLines: 2, range: range).map { TimedText(start: $0.start, end: $0.end, text: $0.text) }
+                    try CEA608.scc(sidecar, fps: p.canvas.fps).write(to: base.appendingPathExtension("scc"), atomically: true, encoding: .utf8)
                     report.append("Closed captions: \(closed.count) cues embedded (CEA-608, CC1) and \(base.lastPathComponent).scc")
                 }
             }

@@ -61,6 +61,7 @@ final class Toolbox {
         registerAudioTools()
         registerBatchTool()
         registerReviewTools()
+        registerCaptionTools()
     }
 
     func add(_ tool: Tool) {

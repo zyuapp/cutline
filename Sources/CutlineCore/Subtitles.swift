@@ -19,8 +19,9 @@ extension Project {
     /// Subtitles for the words heard on the timeline, with the caption replacements and hidden words applied.
     /// Cues keep to broadcast rules: at most `maxLines` lines of `maxCharsPerLine`, 1–7 s on screen,
     /// at least 0.1 s apart, breaking at sentence ends, clause punctuation and pauses.
-    public func subtitles(_ format: SubtitleFormat, transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2) -> String {
-        let cues = subtitleCues(transcripts: transcripts, maxCharsPerLine: maxCharsPerLine, maxLines: maxLines)
+    /// With `range`, only cues inside it, clipped to it and timed from its start.
+    public func subtitles(_ format: SubtitleFormat, transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil) -> String {
+        let cues = subtitleCues(transcripts: transcripts, maxCharsPerLine: maxCharsPerLine, maxLines: maxLines, range: range)
         switch format {
         case .srt:
             return cues.enumerated().map { i, c in
@@ -35,7 +36,17 @@ extension Project {
         }
     }
 
-    public func subtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2) -> [SubtitleCue] {
+    public func subtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil) -> [SubtitleCue] {
+        let cues = unclippedSubtitleCues(transcripts: transcripts, maxCharsPerLine: maxCharsPerLine, maxLines: maxLines)
+        guard let range else { return cues }
+        let lo = Int((range.start * 1000).rounded()), hi = Int((range.end * 1000).rounded())
+        return cues.compactMap { c in
+            let s = max(c.startMs, lo), e = min(c.endMs, hi)
+            return e > s ? SubtitleCue(startMs: s - lo, endMs: e - lo, lines: c.lines) : nil
+        }
+    }
+
+    func unclippedSubtitleCues(transcripts: [String: Transcript], maxCharsPerLine: Int, maxLines: Int) -> [SubtitleCue] {
         let maxChars = max(1, maxCharsPerLine), lineLimit = max(1, maxLines)
         let minMs = 1000, maxMs = 7000, gapMs = 100, lingerMs = 300
         let pause: Seconds = 0.7
@@ -57,6 +68,7 @@ extension Project {
                     || Self.endsSentence(last.text)
                     || (Self.endsClause(last.text) && cur.map(\.text).joined(separator: " ").count > maxChars)
                     || (w.end - cur[0].start) * 1000 > Double(maxMs)
+                    || w.breakBefore
                 if breakNow {
                     groups.append(cur)
                     cur = []
@@ -86,7 +98,7 @@ extension Project {
             let short = (g.last!.end - g[0].start) * 1000 < Double(minMs)
             let close = (n[0].start - g.last!.end) * 1000 < Double(minMs + gapMs)
             let merged = g + n
-            if short, close, fits(merged), (merged.last!.end - merged[0].start) * 1000 <= Double(maxMs) {
+            if short, close, !n[0].breakBefore, fits(merged), (merged.last!.end - merged[0].start) * 1000 <= Double(maxMs) {
                 groups[i] = merged
                 groups.remove(at: i + 1)
             } else {

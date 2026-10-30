@@ -750,15 +750,61 @@ public struct Captions: Codable, Equatable, Sendable {
     public var replacements: [String: String]
     /// Words never shown, e.g. filler words left in the edit.
     public var hiddenWords: [String]
-    /// Restricts captions to clips on these tracks. Empty means every unmuted track.
+    /// Restricts captions to clips on these tracks. Empty means the dialogue tracks (see `Project.captionTrackIds`).
     public var trackIds: [String]
+    /// Corrections to individual cues, keyed by the source words they cover.
+    public var edits: [CaptionEdit]
 
-    public init(enabled: Bool = false, style: CaptionStyle = CaptionStyle(), replacements: [String: String] = [:], hiddenWords: [String] = [], trackIds: [String] = []) {
+    public init(enabled: Bool = false, style: CaptionStyle = CaptionStyle(), replacements: [String: String] = [:], hiddenWords: [String] = [], trackIds: [String] = [], edits: [CaptionEdit] = []) {
         self.enabled = enabled
         self.style = style
         self.replacements = replacements
         self.hiddenWords = hiddenWords
         self.trackIds = trackIds
+        self.edits = edits
+    }
+
+    enum CodingKeys: String, CodingKey { case enabled, style, replacements, hiddenWords, trackIds, edits }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        style = try c.decodeIfPresent(CaptionStyle.self, forKey: .style) ?? CaptionStyle()
+        replacements = try c.decodeIfPresent([String: String].self, forKey: .replacements) ?? [:]
+        hiddenWords = try c.decodeIfPresent([String].self, forKey: .hiddenWords) ?? []
+        trackIds = try c.decodeIfPresent([String].self, forKey: .trackIds) ?? []
+        edits = try c.decodeIfPresent([CaptionEdit].self, forKey: .edits) ?? []
+    }
+}
+
+/// A correction to the caption words spoken between two transcript words of one media file.
+/// Because it is keyed by source words, it follows the words through later edits.
+public struct CaptionEdit: Codable, Equatable, Sendable {
+    public var mediaId: String
+    public var fromWord: Int
+    public var toWord: Int
+    /// Replaces the words' text; their time span is shared out by length.
+    public var text: String?
+    /// Seconds added to the first word's start and the last word's end.
+    public var startOffset: Seconds?
+    public var endOffset: Seconds?
+    public var hidden: Bool?
+    /// Starts a new cue at the first word.
+    public var breakBefore: Bool?
+
+    public init(mediaId: String, fromWord: Int, toWord: Int, text: String? = nil, startOffset: Seconds? = nil, endOffset: Seconds? = nil, hidden: Bool? = nil, breakBefore: Bool? = nil) {
+        self.mediaId = mediaId
+        self.fromWord = fromWord
+        self.toWord = toWord
+        self.text = text
+        self.startOffset = startOffset
+        self.endOffset = endOffset
+        self.hidden = hidden
+        self.breakBefore = breakBefore
+    }
+
+    public func covers(_ mediaId: String, _ word: Int) -> Bool {
+        mediaId == self.mediaId && word >= fromWord && word <= toWord
     }
 }
 
