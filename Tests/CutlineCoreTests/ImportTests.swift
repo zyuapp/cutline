@@ -428,7 +428,7 @@ private let fcpBare = """
     #expect(p.tracks[1].hidden && !p.tracks[0].hidden)
     #expect(shapes(p.tracks[0], fps: 25) == [
         Shape(kind: .media, media: "clip-one", start: 0, duration: 100, sourceIn: 75, speed: 1),
-        Shape(kind: .media, media: "clip-one", start: 100, duration: 100, sourceIn: 250, speed: 1.5),
+        Shape(kind: .media, media: "clip-one", start: 100, duration: 100, sourceIn: 250, speed: 2),
     ])
     #expect(shapes(p.tracks[1], fps: 25) == [Shape(kind: .media, media: "clip-one", start: 200, duration: 50, sourceIn: 0, speed: 1)])
 
@@ -439,7 +439,8 @@ private let fcpBare = """
     #expect(p.transitions.count == 1)
     #expect(p.transitions[0].type == "dip" && p.transitions[0].align == .center && p.transitions[0].duration == 2)
     #expect(r.warnings.contains { $0.contains("Gaussian Blur") })
-    #expect(r.warnings.contains { $0.contains("\"Ramp\" changes speed") })
+    // The ramp's clip plays only its 2× stretch.
+    #expect(!r.warnings.contains { $0.contains("changes speed") })
     #expect(r.warnings.contains("Transition Page Curl imported as a dissolve"))
     #expect(r.warnings.contains { $0.hasPrefix("Dropped transition tr2") })
 }

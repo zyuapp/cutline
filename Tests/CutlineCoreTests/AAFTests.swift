@@ -408,12 +408,16 @@ func aafProject() throws -> Project {
 @Test func notesSayWhatAAFDropsAndThatNoDAWHasOpenedIt() throws {
     var p = try aafProject()
     p.tracks[0].clips[2].transform.scale = 1.2
+    p.tracks[0].clips[2].transform.anchorX = 0.2
     p.tracks[0].clips[2].effects = [Effect(id: "blur", type: "blur")]
+    p.tracks[0].clips[1].reverse = true
     p.transitions.append(Transition(id: "x2", from: "c2", to: "c3", type: "wipe", duration: 0.4))
     let made = try p.interchange(.aaf, options: InterchangeOptions(aafHandles: 5))
     let text = made.notesText(project: p.name, format: .aaf)
     #expect(text.contains("Not yet opened in Pro Tools, Media Composer or Resolve"))
-    #expect(made.notes.contains { $0.hasPrefix("c3 → position, scale") && $0.contains("blur") })
+    // Scale and reverse are carried; the anchor and blur aren't.
+    #expect(made.notes.contains("c3 → anchor point, effects and grade (blur) not carried"), "\(made.notes)")
+    #expect(!made.notes.contains { $0.hasPrefix("c2") })
     #expect(made.notes.contains("Transition x2 wipe → a dissolve"))
     #expect(made.notes.contains { $0.hasPrefix("Handles: 1 clip(s) have less than 5.00s") && $0.hasSuffix(": vo1") })
 }

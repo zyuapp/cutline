@@ -9,7 +9,9 @@ extension Importer {
     /// and source mobs to a file: the media is the first locator that exists (the original a file mob was imported
     /// from before Avid's own media), else the deepest one; its reel and source timecode come from the tape or import
     /// mob. Transitions become dissolves (dips stay dips), against filler fades; MonoAudioGain/Audio Gain Amplitude
-    /// the clip's level or volume keyframes; constant speed control the clip's speed. Other effects pass their first
+    /// the clip's level or volume keyframes; Motion Control (Media Composer's offset maps, else SpeedRatio) and Video
+    /// Repeat the clip's speed, reverse, freeze or ramp; Video Crop, Scale, Rotate, Position and Opacity, and Media
+    /// Composer's 3D Warp scale and rotation, its picture (keyed when varying). Other effects pass their first
     /// input through with a note. Nested compositions are flattened. DescriptiveMarkers and CommentMarkers on event
     /// slots become markers. Media is never probed; files that don't exist stay offline.
     public static func aaf(_ data: Data, relativeTo base: URL?) throws -> ImportResult {
@@ -47,6 +49,17 @@ final class AAFReader {
         var hint: String?
         /// A grade note: CDL and LUT files.
         var grade: String?
+        /// Motion Control: source frames from the input's first at output frames from the effect's start, as
+        /// Cutline's time map (a reversed clip's first output frame at its source out).
+        var warp: [(t: Double, v: Double)]?
+        /// Picture effects' parameters by id.
+        var picture: [AUID: ParamRead] = [:]
+    }
+
+    /// A parameter's constant, or its keys at slot positions (edit units).
+    struct ParamRead {
+        var constant: Double?
+        var keys: [(at: Double, v: Double)] = []
     }
 
     /// A transition between the piece at `before` and the next one.
@@ -179,6 +192,10 @@ final class AAFReader {
                 }
                 guard let ref = piece.ref else { continue }
                 var c = Clip(id: nextClip(), kind: .media, name: ref.name, mediaId: ref.media, start: sec(piece.start), duration: sec(piece.length), sourceIn: ref.source, speed: ref.speed)
+                if let w = ref.warp, let warning = Importer.retime(&c, map: w.map { (seconds($0.t, sr), ref.source + seconds($0.v, sr)) }, tolerance: 0.1 * frame) {
+                    warnings.append(warning)
+                }
+                if kind == .video { applyPicture(ref.picture, &c, rate: sr) }
                 if kind == .audio || abs(ref.gain - 1) > 1e-9 { c.volume = ref.gain }
                 if !ref.keys.isEmpty {
                     c.anim["audio.volume"] = Curve(keys: ref.keys.map { CurveKey(t: seconds($0.at, sr) - c.start, v: .number($0.gain * ref.gain), ease: .linear) })
@@ -194,12 +211,8 @@ final class AAFReader {
                 switch (a, b) {
                 case let (a?, b?):
                     let cut = sec(j.start + j.cut)
-                    let shift = cut - out[b].clip.start
-                    out[a].clip.duration = cut - out[a].clip.start
-                    out[b].clip.sourceIn += shift * out[b].clip.speed
-                    out[b].clip.duration -= shift
-                    if let k = out[b].clip.anim["audio.volume"] { out[b].clip.anim["audio.volume"] = k.shifted(by: -shift) }
-                    out[b].clip.start = cut
+                    out[a].clip = Project.trimmedRight(out[a].clip, to: cut)
+                    out[b].clip = Project.trimmedLeft(out[b].clip, to: cut)
                     // A centered transition of odd length has its extra frame after the cut.
                     let al = j.length > 1 && j.cut == j.length / 2 ? (align: TransitionAlign.center, duration: sec(j.length), cutOffset: Seconds?.none)
                         : Importer.alignment(before: sec(j.cut), after: sec(j.length - j.cut), frame: frame)
@@ -302,10 +315,15 @@ final class AAFReader {
             canvas.width = first.width
             canvas.height = first.height
         }
+        if let size = comment(comp, "Cutline canvas", pid: 0x4406)?.split(separator: "x").compactMap({ Int($0) }), size.count == 2, size[0] > 0, size[1] > 0 {
+            canvas.width = size[0]
+            canvas.height = size[1]
+        }
         var p = Project(name: comp.string(0x4402).flatMap { $0.isEmpty ? nil : $0 } ?? "AAF", canvas: canvas)
         p.canvasSet = true
         p.media = media
         p.tracks = tracks.filter { $0.kind == .video || !$0.clips.isEmpty }
+        resolveConform(&p)
         if !p.tracks.contains(where: { $0.kind == .video }) { p.tracks.insert(Track(id: "V1", kind: .video, name: "Main"), at: 0) }
         p.transitions = transitions
         p.markers = markers.sorted { $0.time < $1.time }
@@ -366,8 +384,8 @@ final class AAFReader {
 
     // MARK: Segments
 
-    func comment(_ o: AAFObject, _ name: String) -> String? {
-        for tv in o.objects(0x0204) where tv.string(0x5001) == name {
+    func comment(_ o: AAFObject, _ name: String, pid: UInt16 = 0x0204) -> String? {
+        for tv in o.objects(pid) where tv.string(0x5001) == name {
             if let s = tv.bytes(0x5003).flatMap(AAFCodec.indirectString) { return s }
         }
         return nil
@@ -416,6 +434,8 @@ final class AAFReader {
                 ref.name = comment(seg, "Name") ?? wrap.name ?? ref.name
                 ref.hint = comment(seg, "Cutline sound") ?? wrap.hint
                 ref.grade = comment(seg, "Comment") ?? wrap.grade
+                ref.warp = wrap.warp
+                ref.picture = wrap.picture
                 out.pieces.append(Piece(start: pos, length: len, ref: ref))
             } else {
                 out.pieces.append(Piece(start: pos, length: len, ref: nil))
@@ -431,7 +451,32 @@ final class AAFReader {
             inner.hint = comment(seg, "Cutline sound") ?? wrap.hint
             inner.grade = comment(seg, "Comment") ?? wrap.grade
             let start = pos
-            if op == AAFDef.monoAudioGain || (op.flatMap { opNames[$0] } ?? "").lowercased().contains("audio gain") {
+            let opName = (op.flatMap { opNames[$0] } ?? "").lowercased()
+            /// A parameter's constant or keys at slot positions.
+            func number(_ id: AUID) -> ParamRead? {
+                guard let p = parameter(seg, id) else { return nil }
+                if p.classID == AAFClass.constantValue { return p.bytes(0x4d01).flatMap(AAFCodec.indirectNumber).map { ParamRead(constant: $0) } }
+                let keys = p.objects(0x4e02).compactMap { cp -> (at: Double, v: Double)? in
+                    guard let t = cp.rational(0x1a03), t.den != 0, let v = cp.bytes(0x1a02).flatMap(AAFCodec.indirectNumber) else { return nil }
+                    return (Double(start) + Double(t.num) / Double(t.den) * Double(len), v)
+                }
+                return keys.isEmpty ? nil : ParamRead(keys: keys)
+            }
+            let pictureParams: [AUID: [AUID]] = [
+                AAFDef.videoCrop: [AAFDef.cropLeft, AAFDef.cropRight, AAFDef.cropTop, AAFDef.cropBottom], AAFDef.videoScale: [AAFDef.scaleX, AAFDef.scaleY],
+                AAFDef.videoRotate: [AAFDef.rotation], AAFDef.videoPosition: [AAFDef.positionOffsetX, AAFDef.positionOffsetY], AAFDef.videoOpacity: [AAFDef.opacityLevel],
+            ]
+            if let op, let ids = pictureParams[op] {
+                for id in ids { if let v = number(id) { inner.picture[id] = v } }
+            } else if op == AAFDef.avidSBlend {
+                // Media Composer's 3D Warp: its scale (percent) and Z rotation; the rest isn't read.
+                if let v = number(AAFDef.avidDVEScaleX) { inner.picture[AAFDef.scaleX] = scaled(v, 0.01) }
+                if let v = number(AAFDef.avidDVEScaleY) { inner.picture[AAFDef.scaleY] = scaled(v, 0.01) }
+                if let v = number(AAFDef.avidDVERotZ) { inner.picture[AAFDef.rotation] = scaled(v, -1.0 / 360) }
+                warnings.append("3D Warp: scale and rotation kept; position, 3D rotation, perspective and borders not kept")
+            } else if op == AAFDef.videoRepeat {
+                inner.warp = [(0, 0), (Double(len), 0)]
+            } else if op == AAFDef.monoAudioGain || opName.contains("audio gain") {
                 if let p = parameter(seg, AAFDef.amplitude) {
                     if p.classID == AAFClass.constantValue, let g = p.bytes(0x4d01).flatMap(AAFCodec.indirectNumber) {
                         inner.gain *= g
@@ -443,15 +488,12 @@ final class AAFReader {
                         if !keys.isEmpty { inner.keys = keys }
                     }
                 }
-            } else if op == AAFDef.videoSpeedControl || (op.flatMap { opNames[$0] } ?? "").lowercased().contains("motion control") {
-                if let p = parameter(seg, AAFDef.speedRatio), p.classID == AAFClass.constantValue, let s = p.bytes(0x4d01).flatMap(AAFCodec.indirectNumber), s > 0 {
-                    inner.speed *= s
-                } else if let input = inputs.first, len > 0 {
-                    let s = Double(length(input)) / Double(len)
-                    if s > 0 { inner.speed *= s }
-                    if parameter(seg, AAFDef.speedRatio)?.classID == AAFClass.varyingValue { warnings.append("A speed ramp was imported at its average speed") }
+            } else if op == AAFDef.videoSpeedControl || opName.contains("motion control") {
+                if let w = timeWarp(seg, length: len, input: inputs.first.map(length) ?? len) {
+                    inner.warp = w
+                    if w.count >= 2 { inner.speed = abs(w[w.count - 1].v - w[0].v) / max(w[w.count - 1].t - w[0].t, 1e-9) }
                 }
-            } else if !(op.flatMap { opNames[$0] } ?? "").lowercased().contains("audio pan") {
+            } else if !opName.contains("audio pan") {
                 let name = op.flatMap { opNames[$0] }.flatMap { $0.isEmpty ? nil : $0 } ?? op?.description ?? "unknown"
                 warnings.append(inputs.isEmpty ? "Effect \(name) (a generator) imported as a gap" : "Effect \(name) not kept; its first input plays")
             }
@@ -489,6 +531,114 @@ final class AAFReader {
             if !isA(seg, AAFClass.filler), !isA(seg, AAFClass.event) { out.pieces.append(Piece(start: pos, length: len, ref: nil)) }
         }
         pos += len
+    }
+
+    func scaled(_ r: ParamRead, _ k: Double) -> ParamRead {
+        ParamRead(constant: r.constant.map { $0 * k }, keys: r.keys.map { ($0.at, $0.v * k) })
+    }
+
+    /// A Motion Control's time map: Media Composer's input offset map (output frames, or normalized time for curved
+    /// warps), else its SpeedRatio (output over input length; Cutline 1.0 wrote input over output).
+    func timeWarp(_ seg: AAFObject, length len: Int, input: Int) -> [(t: Double, v: Double)]? {
+        guard len > 0 else { return nil }
+        func points(_ id: AUID) -> [(t: Double, v: Double)]? {
+            guard let p = parameter(seg, id), p.classID == AAFClass.varyingValue else { return nil }
+            let pts = p.objects(0x4e02).compactMap { cp -> (t: Double, v: Double)? in
+                guard let t = cp.rational(0x1a03), t.den != 0, let v = cp.bytes(0x1a02).flatMap(AAFCodec.indirectNumber) else { return nil }
+                return (Double(t.num) / Double(t.den), v)
+            }.sorted { $0.t < $1.t }
+            return pts.isEmpty ? nil : pts
+        }
+        let ratio = parameter(seg, AAFDef.speedRatio).flatMap { $0.classID == AAFClass.constantValue ? $0.bytes(0x4d01).flatMap(AAFCodec.indirectNumber) : nil }
+        /// Avid's offsets name the frame shown; a reversed clip's map runs from one past it.
+        func shifted(_ pts: [(t: Double, v: Double)]) -> [(t: Double, v: Double)] {
+            guard let a = pts.first, let b = pts.last, b.v < a.v else { return pts }
+            return pts.map { ($0.t, $0.v + 1) }
+        }
+        if var pts = points(AAFDef.avidSpeedOffsetMap) {
+            if pts.count == 1 { pts.append((Double(len), pts[0].v)) }
+            return shifted(pts)
+        }
+        if let pts = points(AAFDef.avidOffsetMap) {
+            // Normalized time over the output's first to last frame, offsets of the input frames shown.
+            if pts.count == 2, let r = ratio, r != 0 {
+                let v0 = pts[0].v
+                return shifted([(0, v0), (Double(len), v0 + Double(len) / r)])
+            }
+            var out = pts.map { (t: $0.t * Double(max(len - 1, 1)), v: $0.v) }
+            if out.count >= 2 {
+                let a = out[out.count - 2], b = out[out.count - 1]
+                if b.t < Double(len), b.t > a.t { out.append((Double(len), b.v + (b.v - a.v) / (b.t - a.t) * (Double(len) - b.t))) }
+            }
+            if pts.count > 2 { warnings.append("A curved Media Composer timewarp was imported with straight segments between its keys") }
+            return shifted(out)
+        }
+        if var r = ratio, r != 0 {
+            if legacySpeedRatio { r = 1 / r }
+            if input <= 1 { return [(0, 0), (Double(len), 0)] }
+            let speed = 1 / r
+            return speed < 0 ? [(0, Double(input)), (Double(len), Double(input) + Double(len) * speed)] : [(0, 0), (Double(len), Double(len) * speed)]
+        }
+        if parameter(seg, AAFDef.speedRatio)?.classID == AAFClass.varyingValue { warnings.append("A speed ramp was imported at its average speed") }
+        return input > 0 ? [(0, 0), (Double(len), Double(input))] : nil
+    }
+
+    /// Cutline 1.0 wrote SpeedRatio as input over output length, with no offset map.
+    lazy var legacySpeedRatio: Bool = {
+        (doc.header?.objects(0x3b06) ?? []).contains { $0.string(0x3c02) == "Cutline" && $0.string(0x3c04) == "1.0" }
+    }()
+
+    /// Clips whose scale is still the picture's size over its media fit whole, until the canvas is known.
+    var conformPending: [String: (x: Double, y: Double)] = [:]
+
+    /// Sets `c`'s crop, rotation, position and opacity (keyed when the effects are) from picture effects; scale waits in
+    /// `conformPending` for the canvas.
+    func applyPicture(_ pic: [AUID: ParamRead], _ c: inout Clip, rate sr: Rate) {
+        guard !pic.isEmpty else { return }
+        func apply(_ id: AUID, _ path: String, _ f: (Double) -> Double, set: (inout Clip, Double) -> Void) {
+            guard let r = pic[id] else { return }
+            if let k = r.constant { set(&c, f(k)); return }
+            let keys = r.keys.map { CurveKey(t: seconds($0.at, sr) - c.start, v: .number(f($0.v)), ease: .linear) }
+            guard let first = keys.first, case .number(let v0) = first.v else { return }
+            set(&c, v0)
+            if keys.contains(where: { $0.v != first.v }) { c.anim[path] = Curve(keys: keys) }
+        }
+        func constant(_ id: AUID) -> Double? { pic[id]?.constant ?? pic[id]?.keys.first?.v }
+        if let l = constant(AAFDef.cropLeft) { c.transform.crop.left = max(0, (l + 1) / 2) }
+        if let r = constant(AAFDef.cropRight) { c.transform.crop.right = max(0, (1 - r) / 2) }
+        if let t = constant(AAFDef.cropTop) { c.transform.crop.top = max(0, (t + 1) / 2) }
+        if let b = constant(AAFDef.cropBottom) { c.transform.crop.bottom = max(0, (1 - b) / 2) }
+        apply(AAFDef.rotation, "transform.rotation", { $0 * 360 }) { $0.transform.rotation = $1 }
+        apply(AAFDef.positionOffsetX, "transform.x", { $0 / 2 }) { $0.transform.x = $1 }
+        apply(AAFDef.positionOffsetY, "transform.y", { $0 / 2 }) { $0.transform.y = $1 }
+        apply(AAFDef.opacityLevel, "transform.opacity", { min(max($0, 0), 1) }) { $0.transform.opacity = $1 }
+        let x = pic[AAFDef.scaleX] ?? pic[AAFDef.scaleY], y = pic[AAFDef.scaleY] ?? pic[AAFDef.scaleX]
+        if let x, let y {
+            apply(pic[AAFDef.scaleX] != nil ? AAFDef.scaleX : AAFDef.scaleY, "transform.scale", { $0 }) { $0.transform.scale = $1 }
+            conformPending[c.id] = (x.constant ?? x.keys.first?.v ?? 1, y.constant ?? y.keys.first?.v ?? 1)
+        }
+    }
+
+    /// Fit and scale of clips whose picture effects gave their size over the media fit whole.
+    func resolveConform(_ p: inout Project) {
+        for t in p.tracks.indices {
+            for i in p.tracks[t].clips.indices {
+                let c = p.tracks[t].clips[i]
+                guard let raw = conformPending[c.id], raw.x > 0 else { continue }
+                var made = c
+                if let w = p.canvas.setConform(&made, media: c.mediaId.flatMap(p.mediaAsset), x: raw.x, y: raw.y) { warnings.append(w) }
+                let k = made.transform.scale / raw.x
+                made.transform.scale = c.transform.scale * k
+                if let curve = c.anim["transform.scale"] {
+                    made.anim["transform.scale"] = Curve(keys: curve.keys.map { key in
+                        var key = key
+                        if case .number(let v) = key.v { key.v = .number(v * k) }
+                        return key
+                    })
+                }
+                p.tracks[t].clips[i] = made
+            }
+        }
     }
 
     /// A composition used as a clip, its slot flattened into the one reading it.

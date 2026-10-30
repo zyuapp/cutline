@@ -369,14 +369,16 @@ extension Project {
                 if t.anchorX != 0.5 || t.anchorY != 0.5 { lost.append("anchor point") }
                 if t.rotateX != 0 || t.rotateY != 0 || t.threeD || t.z != 0 { lost.append("3D placement") }
                 if t.motionBlur > 0 { lost.append("motion blur") }
-                if format == .xml, t.fit == .fill { lost.append("fill conform") }
+                if format == .xml, t.fit == .stretch, c.kind == .media, case let k = scope.conformScale(c), abs(k.x - k.y) > 1e-3 * max(k.x, k.y) {
+                    lost.append("stretch to another aspect (written fit; Basic Motion scales evenly)")
+                }
             }
             if !otio {
-                let keyed = c.anim.keys.filter { $0 != "audio.volume" }.sorted()
+                // Speed ramps and freezes go in FCPXML timeMaps and FCP7 Time Remap keys.
+                let keyed = c.anim.keys.filter { $0 != "audio.volume" && (edl || $0 != "time.speed") }.sorted()
                 if !keyed.isEmpty { lost.append("keyframes on " + keyed.prefix(4).joined(separator: ", ") + (keyed.count > 4 ? ", …" : "")) }
                 if c.blend != .normal { lost.append("\(c.blend.rawValue) blend") }
                 if c.fadeIn > 0 || c.fadeOut > 0 { lost.append("picture fades") }
-                if c.reverse, fcp { lost.append("reverse") }
                 if c.interpolate != nil { lost.append("\(c.interpolate!) frame interpolation") }
                 if c.inputTone != nil || c.inputExposure != nil { lost.append("log input tone mapping") }
             }
