@@ -280,6 +280,33 @@ public enum Importer {
         warnings = condense(warnings)
     }
 
+    /// Transitions once sound clips have folded into their pictures (`soundOf`, audio clip to picture clip): a
+    /// crossfade between folded sounds moves to the pictures as an audio-only transition, and joins a dissolve over
+    /// the same clips with the same timing into one. Other dissolves touching pictures whose sound came from
+    /// elsewhere (`separate`) are picture only.
+    static func foldTransitions(_ transitions: [Transition], soundOf: [String: String], separate: Set<String>, frame: Seconds) -> [Transition] {
+        var out: [Transition] = [], sound: [Transition] = []
+        for var tr in transitions {
+            let moved = [tr.from, tr.to].contains { $0.map { soundOf[$0] != nil } ?? false }
+            tr.from = tr.from.map { soundOf[$0] ?? $0 }
+            tr.to = tr.to.map { soundOf[$0] ?? $0 }
+            if moved { sound.append(tr); continue }
+            if tr.part == .both, [tr.from, tr.to].contains(where: { $0.map(separate.contains) ?? false }) { tr.part = .video }
+            out.append(tr)
+        }
+        func close(_ a: Seconds?, _ b: Seconds?) -> Bool { a == nil && b == nil || a.flatMap { x in b.map { abs(x - $0) < frame / 2 } } == true }
+        for var tr in sound {
+            if let i = out.firstIndex(where: { $0.from == tr.from && $0.to == tr.to && $0.part == .video && close($0.duration, tr.duration)
+                && $0.align == tr.align && close($0.cutOffset, tr.cutOffset) }) {
+                out[i].part = .both
+            } else if tr.from != nil, tr.to != nil, !out.contains(where: { $0.from == tr.from && $0.to == tr.to && $0.hasAudio }) {
+                tr.part = .audio
+                out.append(tr)
+            }
+        }
+        return out
+    }
+
     /// Alignment, duration and cut offset of a transition running `before` seconds before its cut and `after`
     /// past it, covering the same frames; uneven ones keep the cut where it is (`Transition.cutOffset`).
     static func alignment(before a: Seconds, after b: Seconds, frame: Seconds) -> (align: TransitionAlign, duration: Seconds, cutOffset: Seconds?) {
@@ -630,22 +657,25 @@ final class FCPReader {
             guard prev?.clipId != nil || next?.clipId != nil, let d = time(tr.attr("duration")), d > 0 else { continue }
             let cut = next?.start ?? prev!.end
             let s = time(tr.attr("offset")).map(place) ?? (cut - d / 2)
-            let half = 0.5 / grid.rate
+            // Whole frames before the cut; a centered transition of odd length has the extra frame after it.
+            let before = grid.frames(cut) - grid.frames(s), length = grid.frames(d)
             var align = TransitionAlign.center
             var cutOffset: Seconds?
-            if abs(s - cut) < half { align = .start } else if abs(s + d - cut) < half { align = .end } else if abs(s - (cut - d / 2)) >= half {
-                if cut > s, cut < s + d { cutOffset = snap(cut - s) } else { warnings.append("Transition \(label(tr)) isn't on a cut; centered on it") }
+            if before == 0 { align = .start } else if before == length { align = .end } else if before != length / 2 {
+                if before > 0, before < length { cutOffset = snap(cut - s) } else { warnings.append("Transition \(label(tr)) isn't on a cut; centered on it") }
             }
-            let name = tr.attr("name") ?? tr.first("filter-video")?.attr("name") ?? "Transition"
+            let video = tr.first("filter-video") != nil, audio = tr.first("filter-audio") != nil
+            let name = tr.first("filter-video")?.attr("name") ?? tr.attr("name") ?? "Transition"
             let lower = name.lowercased()
             let type: String
             if lower.contains("fade to") || lower.contains("dip") {
                 type = "dip"
             } else {
                 type = "dissolve"
-                if !lower.contains("dissolve") { warnings.append("Transition \(name) imported as a dissolve") }
+                if !lower.contains("dissolve"), video || !audio { warnings.append("Transition \(name) imported as a dissolve") }
             }
-            var made = Transition(id: "tr\(ctx.transitions.count + 1)", from: prev?.clipId, to: next?.clipId, type: type, duration: snap(d), align: align)
+            var made = Transition(id: "tr\(ctx.transitions.count + 1)", from: prev?.clipId, to: next?.clipId, type: type, duration: snap(d), align: align,
+                                  part: video == audio ? .both : video ? .video : .audio)
             made.cutOffset = prev?.clipId != nil && next?.clipId != nil ? cutOffset : nil
             ctx.transitions.append(made)
         }
@@ -1140,6 +1170,8 @@ final class OTIOReader {
         var tracks: [Track] = []
         var transitions: [Transition] = []
         var linked = Set<String>()
+        /// Crossfades on the sound of video tracks, between the pictures their clips carry.
+        var embedded: [Transition] = []
         for item in Self.items(stack) {
             var child = item
             switch Self.schema(item) {
@@ -1158,6 +1190,7 @@ final class OTIOReader {
                 for item in Self.items(child) where Self.schema(item) == "Clip" {
                     if let id = mediaId(activeReference(item), clipName: item["name"] as? String ?? "", kind: .audio) { linked.insert(id) }
                 }
+                embedded += soundTransitions(child)
                 continue
             }
             let enabled = child["enabled"] as? Bool ?? true
@@ -1201,6 +1234,7 @@ final class OTIOReader {
         }
         for t in drop.reversed() { tracks.remove(at: t) }
         for i in media.indices where linked.contains(media[i].id) { media[i].hasAudio = true }
+        for tr in embedded where !transitions.contains(where: { $0.from == tr.from && $0.to == tr.to && $0.hasAudio }) { transitions.append(tr) }
 
         var v = 0, a = 0
         for t in tracks.indices {
@@ -1357,25 +1391,57 @@ final class OTIOReader {
             for m in track["markers"] as? [[String: Any]] ?? [] { addMarker(m) { $0 } }
         }
         for (tr, index) in pending {
-            let a = Self.time(tr["in_offset"]) ?? 0, b = Self.time(tr["out_offset"]) ?? 0
             let from = index > 0 ? items[index - 1].id : nil
             let to = index < items.count ? items[index].id : nil
-            guard a + b > 0, from != nil || to != nil else { continue }
-            let label = (tr["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? tr["transition_type"] as? String ?? ""
-            let (align, duration, cutOffset) = from != nil && to != nil
-                ? Importer.alignment(before: a, after: b, frame: frame)
-                : (TransitionAlign.center, a + b, nil)
-            let name = label.lowercased()
-            var type = "dissolve"
+            if let made = transition(tr, from: from, to: to) { transitions.append(made) }
+        }
+        return (clips, disabled, transitions)
+    }
+
+    /// A Transition item between the items `from` and `to` (nil for gaps or the track's ends).
+    func transition(_ tr: [String: Any], from: String?, to: String?) -> Transition? {
+        let a = Self.time(tr["in_offset"]) ?? 0, b = Self.time(tr["out_offset"]) ?? 0
+        guard a + b > 0, from != nil || to != nil else { return nil }
+        let frame = 1 / max(canvas.fps, 1)
+        let md = Self.cutline(tr)
+        let label = (tr["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? tr["transition_type"] as? String ?? ""
+        var (align, duration, cutOffset) = from != nil && to != nil
+            ? Importer.alignment(before: a, after: b, frame: frame)
+            : (TransitionAlign.center, a + b, nil)
+        if from != nil, to != nil, let known = (md["align"] as? String).flatMap(TransitionAlign.init(rawValue:)) {
+            align = known
+            cutOffset = Self.number(md["cutOffset"])
+        }
+        let name = label.lowercased()
+        var type = (md["type"] as? String).flatMap { TransitionCatalog.type($0) != nil ? $0 : nil } ?? "dissolve"
+        if md["type"] == nil {
             if name.contains("dip") || name.contains("fade to") { type = "dip" } else if tr["transition_type"] as? String != "SMPTE_Dissolve" && !name.contains("dissolve") && !name.contains("cross fade") {
                 warnings.append("Transition \(label) imported as a dissolve")
             }
-            transitionCount += 1
-            var made = Transition(id: "tr\(transitionCount)", from: from, to: to, type: type, duration: duration, align: align)
-            made.cutOffset = cutOffset
-            transitions.append(made)
         }
-        return (clips, disabled, transitions)
+        transitionCount += 1
+        var made = Transition(id: "tr\(transitionCount)", from: from, to: to, type: type, duration: duration, align: align,
+                              part: (md["part"] as? String).flatMap(TransitionPart.init(rawValue:)) ?? .both)
+        made.cutOffset = cutOffset
+        return made
+    }
+
+    /// Crossfades on the sound track of a video track, between the clips whose sound its items carry.
+    func soundTransitions(_ track: [String: Any]) -> [Transition] {
+        var out: [Transition] = []
+        var previous: String?
+        var pending: [String: Any]?
+        for item in Self.items(track) {
+            if Self.schema(item) == "Transition" { pending = item; continue }
+            let id = Self.schema(item) == "Clip" ? Self.cutline(item)["clipId"] as? String : nil
+            if let tr = pending, let from = previous, let to = id, var made = transition(tr, from: from, to: to) {
+                made.part = .audio
+                out.append(made)
+            }
+            pending = nil
+            previous = id
+        }
+        return out
     }
 
     func clip(_ item: [String: Any], kind: TrackKind, start: Seconds, duration: Seconds, range: (start: Seconds, duration: Seconds)?) -> Clip? {
@@ -1592,7 +1658,9 @@ extension Importer {
     ///
     /// Picture events without sound on their line (V) are silent. Audio-only events are audio clips, except sound
     /// on channel 1 of a silent picture event's source, in sync with it, overlapping it and starting and ending
-    /// within `maxSplit` seconds of it: that is the picture's split edit.
+    /// within `maxSplit` seconds of it: that is the picture's split edit (on another channel too where it overlaps
+    /// such sound). Dissolves on audio channels are crossfades; between split sounds they move to the pictures as
+    /// audio-only transitions, joining a matching picture dissolve into one of both.
     public static func edl(_ text: String, fps: Double, media existing: [MediaAsset] = [], mediaResolver: (String) -> String? = { _ in nil }) throws -> ImportResult {
         struct Line {
             var event: String
@@ -1898,7 +1966,9 @@ extension Importer {
             guard let type, d > 0 else { continue }
             let from = outgoing.map { clips[ch.main]![$0] }
             if let f = from, let id = f.mediaId { extent[id] = max(extent[id] ?? 0, f.sourceOut + d * f.speed) }
-            transitions.append(Transition(id: "tr\(transitions.count + 1)", from: from?.id, to: incoming.id, type: type, duration: d, align: .start))
+            // A dissolve between sounds is a crossfade.
+            transitions.append(Transition(id: "tr\(transitions.count + 1)", from: from?.id, to: incoming.id, type: type, duration: d, align: .start,
+                                          part: ch.main.kind == .audio && from != nil ? .audio : .both))
         }
         if !mismatched.isEmpty {
             let list = mismatched.count > 6 ? mismatched.prefix(6).joined(separator: ", ") + ", …" : mismatched.joined(separator: ", ")
@@ -1933,6 +2003,9 @@ extension Importer {
             tracks.append(Track(id: id, kind: key.kind, name: "\(key.kind == .video ? "Video" : "Audio") \(key.n)", clips: clips[key]!.sorted { $0.start < $1.start }))
         }
         // Audio that repeats a video clip's or another channel's: the same source on the same record time.
+        let carried = sounding
+        /// Audio clips folded away, to the clip that now carries their sound.
+        var soundOf: [String: String] = [:]
         var seen: [Clip] = tracks.filter { $0.kind == .video }.flatMap(\.clips)
         let videoIds = Set(seen.map(\.id))
         for t in tracks.indices where tracks[t].kind == .audio {
@@ -1940,18 +2013,24 @@ extension Importer {
                 let match = seen.first { s in
                     s.mediaId == c.mediaId && abs(s.start - c.start) < half && abs(s.duration - c.duration) < half && abs(s.sourceIn - c.sourceIn) < half
                 }
-                if let s = match, videoIds.contains(s.id) { sounding.insert(s.id) }
+                if let s = match {
+                    if videoIds.contains(s.id) { sounding.insert(s.id) }
+                    soundOf[c.id] = soundOf[s.id] ?? s.id
+                }
                 if match == nil { seen.append(c) }
                 return match != nil
             }
         }
         // Sound on channel 1 of a picture-only event's source, in sync with it, overlapping it and starting and
-        // ending near it: a split edit.
-        for t in tracks.indices where tracks[t].kind == .audio && channels[tracks[t].id] == 1 {
+        // ending near it: a split edit. On other channels it is one only where it overlaps such sound, as sound
+        // moved off channel 1 to keep it from overlapping there.
+        var heard = tracks.filter { $0.kind == .video }.flatMap(\.clips).filter { sounding.contains($0.id) }.map(\.audioRange)
+        func fold(_ t: Int, overlapping: Bool) {
             var kept: [Clip] = []
             for a in tracks[t].clips {
                 var folded = false
-                for v in tracks.indices where tracks[v].kind == .video && !folded {
+                let overlaps = heard.contains { $0.start < a.end - half && a.start < $0.end - half }
+                for v in tracks.indices where tracks[v].kind == .video && !folded && (!overlapping || overlaps) {
                     guard let i = tracks[v].clips.firstIndex(where: { c in
                         !sounding.contains(c.id) && c.mediaId == a.mediaId && abs(c.speed - a.speed) < 1e-6 && !c.reverse && !a.reverse && !c.isRetimed
                             && a.start < c.end - half && c.start < a.end - half
@@ -1961,13 +2040,23 @@ extension Importer {
                     tracks[v].clips[i].audioLead = tracks[v].clips[i].start - a.start
                     tracks[v].clips[i].audioLag = a.end - tracks[v].clips[i].end
                     sounding.insert(tracks[v].clips[i].id)
+                    soundOf[a.id] = tracks[v].clips[i].id
+                    heard.append(TimeRange(a.start, a.end))
                     folded = true
                 }
                 if !folded { kept.append(a) }
             }
             tracks[t].clips = kept
         }
+        for t in tracks.indices where tracks[t].kind == .audio && channels[tracks[t].id] == 1 { fold(t, overlapping: false) }
+        for t in tracks.indices where tracks[t].kind == .audio && channels[tracks[t].id] != 1 { fold(t, overlapping: true) }
+        transitions = Importer.foldTransitions(transitions, soundOf: soundOf, separate: sounding.subtracting(carried), frame: 1 / rate)
         tracks.removeAll { $0.kind == .audio && $0.clips.isEmpty }
+        var na = 0
+        for t in tracks.indices where tracks[t].kind == .audio {
+            na += 1
+            tracks[t].id = "A\(na)"
+        }
         // A picture-only event plays no sound, unless its media is known to have none.
         let silent = Set(media.filter { known.contains($0.id) && (!$0.hasAudio || $0.isImage) }.map(\.id))
         for t in tracks.indices where tracks[t].kind == .video {
@@ -2073,14 +2162,18 @@ extension Project {
     /// CMX 3600 EDL of the main video track and the first two audio tracks, recorded from the canvas's start
     /// timecode in canvas frames (drop frame as `Canvas.isDropFrame` says). Sequence clips are listed as the
     /// events they play (`flattenedSequences`). The main track's production sound rides with its picture as
-    /// AA/V; a clip with a split edit is a V event plus an AA event over its audio range. Audio tracks are A and
-    /// A2, or channels 3 and 4 (NONE with an AUD line) when there is production sound. Source timecode is the
-    /// media's own (its first frame's timecode plus the in point, at its rate and drop frame), the reel its reel or
-    /// file name (`edlReel`). Each event names its clip
-    /// and source file in comments, speed becomes an M2 line, the clip's CDL `*ASC_SOP` and `*ASC_SAT` lines and
-    /// its LUT files `*LUT:` lines, and markers LOC comments. Transitions become dissolves (wipes stay wipes)
-    /// starting at the edit, so a centered one moves the edit to its start; transitions from or to nothing go
-    /// through black. Only media clips are listed.
+    /// AA/V when picture and sound cut and dissolve together; otherwise (split edits, picture-only dissolves,
+    /// audio-only crossfades) the picture is a V event and the sound an AA event over its audio range. Audio
+    /// tracks are A and A2, or channels 3 and 4 (NONE with an AUD line) when there is production sound. Sound
+    /// that would overlap other sound on its channel moves to a channel free at that time (3, 4, A or A2), and is
+    /// cut short where none is, so no channel holds overlapping events. Source timecode is the media's own (its
+    /// first frame's timecode plus the in point, at its rate and drop frame), the reel its reel or file name
+    /// (`edlReel`). Each event names its clip and source file in comments, speed becomes an M2 line, the clip's CDL
+    /// `*ASC_SOP` and `*ASC_SAT` lines and its LUT files `*LUT:` lines, and markers LOC comments. Dissolves (wipes
+    /// stay wipes) and crossfades are written as CMX writes them: the outgoing event runs to the transition's
+    /// start, then a zero-length line of it and a D line of the incoming event. They start at the edit, so a
+    /// centered one moves the edit to its start (crossfades sit on the sound cut); transitions from or to nothing
+    /// go through black. Only media clips are listed.
     public func edl(title: String) -> String { flattenedSequences().flatEDL(title: title) }
 
     private func flatEDL(title: String) -> String {
@@ -2089,13 +2182,14 @@ extension Project {
         let nominal = format.nominal, drop = format.dropFrame
         let origin = startFrame
         func tc(_ f: Int) -> String { EDLTimecode.string(f, nominal: nominal, drop: drop) }
+        func seconds(_ f: Int) -> Seconds { Double(f * grid.num) / Double(grid.den) }
         func pad(_ s: String, _ n: Int) -> String { s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }
         func reel(_ c: Clip) -> String { c.mediaId.flatMap(mediaAsset).map(Project.edlReel) ?? "AX" }
         func srcFormat(_ c: Clip) -> TimecodeFormat { c.mediaId.flatMap(mediaAsset)?.timecodeFormat(fallback: canvas.fps, dropFrame: canvas.dropFrame) ?? format }
         /// Source frames from midnight at second `t` of the clip's media.
         func src(_ c: Clip, _ t: Seconds) -> Int { c.mediaId.flatMap(mediaAsset)?.sourceFrames(at: t, fallback: canvas.fps) ?? grid.frames(t) }
         /// Source frames played over `frames` record frames.
-        func srcLength(_ c: Clip, _ frames: Int) -> Int { srcFormat(c).frameCount(Double(frames * grid.num) / Double(grid.den)) }
+        func srcLength(_ c: Clip, _ frames: Int) -> Int { srcFormat(c).frameCount(seconds(frames) * c.speed) }
         func clipName(_ c: Clip) -> String { c.name ?? c.mediaId.flatMap(mediaAsset)?.name ?? c.id }
         var out = ["TITLE: \(title)", "FCM: \(drop ? "DROP FRAME" : "NON-DROP FRAME")", ""]
         var event = 0
@@ -2104,7 +2198,7 @@ extension Project {
             let st: (Int) -> String = { source?.string($0) ?? tc($0) }
             out.append("\(String(format: "%03d", event))  \(pad(reel, 8)) \(pad(ch, 5)) \(pad(tr, 4)) \(d) \(st(s0)) \(st(s1)) \(tc(r0 + origin)) \(tc(r1 + origin))")
         }
-        func code(_ w: TransitionWindow) -> String { w.transition.type == "wipe" ? "W001" : "D" }
+        func code(_ tr: Transition) -> String { tr.type == "wipe" ? "W001" : "D" }
 
         var pendingMarkers = markers.filter { $0.time >= 0 }.sorted { $0.time < $1.time }
         func flushMarkers(before frame: Int?) {
@@ -2113,8 +2207,6 @@ extension Project {
                 pendingMarkers.removeFirst()
             }
         }
-
-        func aud(_ n: Int?) { if let n { out.append("AUD  \(n)") } }
         func describe(_ c: Clip, s0: Int) {
             if let path = c.mediaId.flatMap(mediaAsset)?.conformPath, !path.isEmpty { out.append("* SOURCE FILE: \(path)") }
             if abs(c.speed - 1) > 1e-9 || c.reverse {
@@ -2123,98 +2215,198 @@ extension Project {
             }
         }
 
+        /// A clip over record frames `r0..<r1`, reading from source second `t0`, entered from `from` (from black
+        /// when nil) by `into`, or left to black by `out`.
+        struct Event {
+            var clip: Clip
+            var r0: Int
+            var r1: Int
+            var t0: Seconds
+            var into: (tr: Transition, length: Int, from: Clip?)?
+            var out: (tr: Transition, length: Int)?
+            var end: Int { r1 + (out?.length ?? 0) }
+        }
+        /// Writes an event on channel `ch` (with an AUD line for channels 3 and 4); `picture` adds the grade.
+        func write(_ e: Event, _ ch: String, aud: [Int], picture: Bool) {
+            let c = e.clip
+            let s0 = src(c, e.t0), s1 = s0 + srcLength(c, e.r1 - e.r0)
+            func audLine() { if !aud.isEmpty { out.append("AUD  " + aud.map(String.init).joined(separator: " ")) } }
+            event += 1
+            if let (tr, d, from) = e.into {
+                if let from {
+                    let fs = src(from, sourceTime(from, at: e.r0, sound: !picture))
+                    line(reel(from), ch, "C", nil, fs, fs, e.r0, e.r0, source: srcFormat(from))
+                } else {
+                    line("BL", ch, "C", nil, 0, 0, e.r0, e.r0)
+                }
+                line(reel(c), ch, code(tr), d, s0, s1, e.r0, e.r1, source: srcFormat(c))
+                audLine()
+                if let from { out.append("* FROM CLIP NAME: \(clipName(from))") }
+                out.append("* TO CLIP NAME: \(clipName(c))")
+            } else {
+                line(reel(c), ch, "C", nil, s0, s1, e.r0, e.r1, source: srcFormat(c))
+                audLine()
+                out.append("* FROM CLIP NAME: \(clipName(c))")
+            }
+            describe(c, s0: s0)
+            if picture {
+                if let cdl = c.cdl {
+                    out.append("*ASC_SOP \(cdl.sop)")
+                    out.append("*ASC_SAT \(cdl.sat)")
+                }
+                out += c.lutFiles.map { "*LUT: \($0)" }
+            }
+            if picture, ch.contains("V") { flushMarkers(before: e.r1) }
+            if let (tr, d) = e.out {
+                event += 1
+                let fs = src(c, sourceTime(c, at: e.r1, sound: !picture))
+                line(reel(c), ch, "C", nil, fs, fs, e.r1, e.r1, source: srcFormat(c))
+                line("BL", ch, code(tr), d, 0, d, e.r1, e.r1 + d)
+                audLine()
+                out.append("* FROM CLIP NAME: \(clipName(c))")
+            }
+            out.append("")
+        }
+        /// Source second of a clip's picture, or its sound, at record frame `r`.
+        func sourceTime(_ c: Clip, at r: Int, sound: Bool) -> Seconds {
+            sound && !c.reverse ? c.audioSourceRange.start + (seconds(r) - c.audioRange.start) * c.speed : c.sourceTime(atTimeline: seconds(r))
+        }
+        /// Events of `clips` over their pictures, or with `sound` their sounds, joined by the transitions `joins` allows.
+        func events(_ clips: [Clip], sound: Bool, joins: (Transition) -> Bool) -> [Event] {
+            let ids = Set(clips.map(\.id))
+            let mine = transitions.filter { tr in joins(tr) && [tr.from, tr.to].compactMap { $0 }.allSatisfy(ids.contains) }
+            func at(_ tr: Transition) -> (start: Int, cut: Int, length: Int)? { transitionFrames(tr, grid: grid, sound: sound) }
+            var list: [Event] = []
+            for c in clips {
+                let span = sound && !c.reverse ? c.audioRange : TimeRange(c.start, c.end)
+                var e = Event(clip: c, r0: grid.frames(span.start), r1: grid.frames(span.end), t0: 0)
+                if let tr = mine.first(where: { $0.to == c.id }), let w = at(tr) {
+                    if let f = tr.from, let from = clips.first(where: { $0.id == f }) {
+                        e.r0 = w.start
+                        e.into = (tr, w.length, from)
+                    } else if tr.from == nil {
+                        e.into = (tr, w.length, nil)
+                    }
+                }
+                if let tr = mine.first(where: { $0.from == c.id }), let w = at(tr) {
+                    if tr.to != nil {
+                        e.r1 = w.start
+                    } else {
+                        e.r1 = max(e.r0, e.r1 - w.length)
+                        e.out = (tr, w.length)
+                    }
+                }
+                e.t0 = sourceTime(c, at: e.r0, sound: sound)
+                if e.r0 < 0 {
+                    e.t0 -= seconds(e.r0) * c.speed * (c.reverse ? -1 : 1)
+                    e.r0 = 0
+                    e.into = nil
+                }
+                guard e.end > e.r0, e.r1 >= e.r0 else { continue }
+                list.append(e)
+            }
+            return list
+        }
+
         let video = tracks.first { $0.kind == .video }
-        /// Production sound of the main video track: with its picture (AA/V), or in AA events of its own when split.
+        /// Production sound of the main video track.
         func sounds(_ c: Clip, _ track: Track) -> Bool {
             guard c.kind == .media, let m = c.mediaId.flatMap(mediaAsset), m.hasAudio, !m.isImage, !track.muted else { return false }
             return c.volume > 1e-6 || c.anim["audio.volume"] != nil
         }
         func split(_ c: Clip) -> Bool { grid.frames(c.audioLead) != 0 || grid.frames(c.audioLag) != 0 }
-        let production = video.map { v in v.clips.contains { sounds($0, v) } } ?? false
-        // With production sound on A1/A2, audio tracks take channels 3 and 4 (NONE plus an AUD line).
-        let audio = tracks.filter { $0.kind == .audio }.prefix(2)
-        let channels: [(Track, String, Int?)] = (video.map { [($0, "V", nil)] } ?? [])
-            + audio.enumerated().map { production ? ($0.element, "NONE", 3 + $0.offset) : ($0.element, $0.offset == 0 ? "A" : "A2", nil) }
-        let windows = transitionWindows
-        for (track, label, audLine) in channels {
-            let clips = track.clips.filter { c in
+        func listed(_ track: Track) -> [Clip] {
+            track.clips.filter { c in
                 guard c.kind == .media, let m = c.mediaId.flatMap(mediaAsset) else { return false }
                 return track.kind == .video || m.hasAudio
             }.sorted { $0.start < $1.start }
-            let ids = Set(clips.map(\.id))
-            let mine = windows.filter { $0.trackId == track.id }
-            for c in clips {
-                let ch = label == "V" && sounds(c, track) && !split(c) ? "AA/V" : label
-                let inW = mine.first { $0.transition.to == c.id }
-                let outW = mine.first { $0.transition.from == c.id }
-                let pairedIn = inW.flatMap { w in w.transition.from.map { ids.contains($0) } == true ? w : nil }
-                let fadeIn = inW.flatMap { $0.transition.from == nil ? $0 : nil }
-                let pairedOut = outW.flatMap { w in w.transition.to.map { ids.contains($0) } == true ? w : nil }
-                let fadeOut = outW.flatMap { $0.transition.to == nil ? $0 : nil }
-                // Audio clips without transitions play over their audio range.
-                let span = track.kind == .audio && inW == nil && outW == nil && !c.reverse ? c.audioRange : TimeRange(c.start, c.end)
-                var r0 = grid.frames(pairedIn?.start ?? span.start)
-                let r1 = grid.frames(pairedOut?.start ?? fadeOut?.start ?? span.end)
-                var t0 = span.start == c.start ? c.sourceTime(atTimeline: Double(r0) / grid.rate) : c.audioSourceRange.start
-                if r0 < 0 { t0 -= Double(r0 * grid.num) / Double(grid.den) * c.speed; r0 = 0 }
-                guard r1 > r0 else { continue }
-                let s0 = src(c, t0), s1 = s0 + srcLength(c, r1 - r0)
-                event += 1
-                if let w = pairedIn, let from = w.transition.from.flatMap({ clip($0) }) {
-                    let fs = src(from, from.sourceTime(atTimeline: Double(r0) / grid.rate))
-                    line(reel(from), ch, "C", nil, fs, fs, r0, r0, source: srcFormat(from))
-                    line(reel(c), ch, code(w), grid.frames(w.end - w.start), s0, s1, r0, r1, source: srcFormat(c))
-                    aud(audLine)
-                    out.append("* FROM CLIP NAME: \(clipName(from))")
-                    out.append("* TO CLIP NAME: \(clipName(c))")
-                } else if let w = fadeIn {
-                    line("BL", ch, "C", nil, 0, 0, r0, r0)
-                    line(reel(c), ch, code(w), grid.frames(w.end - w.start), s0, s1, r0, r1, source: srcFormat(c))
-                    aud(audLine)
-                    out.append("* TO CLIP NAME: \(clipName(c))")
-                } else {
-                    line(reel(c), ch, "C", nil, s0, s1, r0, r1, source: srcFormat(c))
-                    aud(audLine)
-                    out.append("* FROM CLIP NAME: \(clipName(c))")
-                }
-                describe(c, s0: s0)
-                if track.kind == .video {
-                    if let cdl = c.cdl {
-                        out.append("*ASC_SOP \(cdl.sop)")
-                        out.append("*ASC_SAT \(cdl.sat)")
-                    }
-                    out += c.lutFiles.map { "*LUT: \($0)" }
-                }
-                if label == "V" { flushMarkers(before: r1) }
-                if let w = fadeOut {
-                    event += 1
-                    let fs = src(c, c.sourceTime(atTimeline: Double(r1) / grid.rate))
-                    let d = grid.frames(w.end - w.start)
-                    line(reel(c), ch, "C", nil, fs, fs, r1, r1, source: srcFormat(c))
-                    line("BL", ch, code(w), d, 0, d, r1, r1 + d)
-                    aud(audLine)
-                    out.append("* FROM CLIP NAME: \(clipName(c))")
-                }
-                out.append("")
-            }
-            if label == "V" {
-                flushMarkers(before: nil)
-                // Split edits: the sound gets its own AA event over its audio range.
-                for c in clips.filter({ sounds($0, track) && split($0) && !$0.reverse }).sorted(by: { $0.audioRange.start < $1.audioRange.start }) {
-                    var r0 = grid.frames(c.audioRange.start), t0 = c.audioSourceRange.start
-                    let r1 = grid.frames(c.audioRange.end)
-                    if r0 < 0 { t0 -= Double(r0 * grid.num) / Double(grid.den) * c.speed; r0 = 0 }
-                    guard r1 > r0 else { continue }
-                    event += 1
-                    let s0 = src(c, t0)
-                    line(reel(c), "AA", "C", nil, s0, s0 + srcLength(c, r1 - r0), r0, r1, source: srcFormat(c))
-                    out.append("* FROM CLIP NAME: \(clipName(c))")
-                    describe(c, s0: s0)
-                    out.append("")
-                }
+        }
+        let pictures = video.map(listed) ?? []
+        let production = video.map { v in pictures.filter { sounds($0, v) } } ?? []
+        // Sound rides on its picture's events (AA/V) only where both cut and dissolve together.
+        let heard = Set(production.map(\.id))
+        var together = Set(production.filter { !split($0) }.map(\.id))
+        var settled = false
+        while !settled {
+            settled = true
+            for tr in transitions {
+                let ends = [tr.from, tr.to].compactMap { $0 }.filter(heard.contains)
+                guard ends.contains(where: together.contains), tr.part != .both || !ends.allSatisfy(together.contains) else { continue }
+                together.subtract(ends)
+                settled = false
             }
         }
-        if video == nil { flushMarkers(before: nil) }
+
+        // Picture; sound riding on it takes channels 1 and 2.
+        var busy: [Int: [(Int, Int)]] = [:]
+        for e in events(pictures, sound: false, joins: { $0.hasVideo }) {
+            let both = together.contains(e.clip.id)
+            if both { for ch in [1, 2] { busy[ch, default: []].append((e.r0, e.end)) } }
+            write(e, both ? "AA/V" : "V", aud: [], picture: true)
+        }
+        flushMarkers(before: nil)
+
+        // Sound, on lanes of channels: AA (1 and 2), A (1), A2 (2), and 3 and 4 (NONE with an AUD line).
+        struct Lane { var label: String; var aud: [Int]; var channels: [Int] }
+        let aa = Lane(label: "AA", aud: [], channels: [1, 2]), a1 = Lane(label: "A", aud: [], channels: [1]), a2 = Lane(label: "A2", aud: [], channels: [2])
+        let ch3 = Lane(label: "NONE", aud: [3], channels: [3]), ch4 = Lane(label: "NONE", aud: [4], channels: [4])
+        let audioTracks = Array(tracks.filter { $0.kind == .audio }.prefix(2))
+        let hasProduction = !production.isEmpty
+        var sources: [(events: [Event], lane: Lane)] = []
+        let separate = production.filter { !together.contains($0.id) }
+        if !separate.isEmpty { sources.append((events(separate, sound: true, joins: { $0.hasAudio }), aa)) }
+        for (k, t) in audioTracks.enumerated() {
+            let lane = hasProduction ? (k == 0 ? ch3 : ch4) : (k == 0 ? a1 : a2)
+            sources.append((events(listed(t), sound: true, joins: { $0.hasAudio }), lane))
+        }
+        // Each chain of events joined by transitions takes one lane: its own when free, else the first free one.
+        func free(_ lane: Lane, _ chain: [Event]) -> Bool {
+            chain.allSatisfy { e in lane.channels.allSatisfy { ch in (busy[ch] ?? []).allSatisfy { $0.1 <= e.r0 || $0.0 >= e.end } } }
+        }
+        func take(_ lane: Lane, _ chain: [Event]) {
+            for e in chain { for ch in lane.channels { busy[ch, default: []].append((e.r0, e.end)) } }
+        }
+        func chains(_ list: [Event]) -> [[Event]] {
+            var out: [[Event]] = []
+            for e in list {
+                if e.into?.from != nil, let last = out.last?.last, e.into?.from?.id == last.clip.id { out[out.count - 1].append(e) } else { out.append([e]) }
+            }
+            return out
+        }
+        var placed: [(lane: Lane, events: [Event])] = []
+        var waiting: [(chain: [Event], lane: Lane)] = []
+        for s in sources {
+            for chain in chains(s.events) {
+                if free(s.lane, chain) { take(s.lane, chain); placed.append((s.lane, chain)) } else { waiting.append((chain, s.lane)) }
+            }
+        }
+        for (chain, own) in waiting {
+            if let lane = [own, ch3, ch4, a1, a2].first(where: { free($0, chain) }) {
+                take(lane, chain)
+                placed.append((lane, chain))
+                continue
+            }
+            // No channel is free: what overlaps is cut off its own lane.
+            for var e in chain {
+                for (b0, b1) in own.channels.flatMap({ busy[$0] ?? [] }).sorted(by: { $0.0 < $1.0 }) {
+                    if b0 <= e.r0, b1 > e.r0 {
+                        e.t0 += seconds(b1 - e.r0) * e.clip.speed * (e.clip.reverse ? -1 : 1)
+                        e.r0 = b1
+                        e.into = nil
+                    } else if b0 > e.r0, b0 < e.end {
+                        e.r1 = min(e.r1, b0)
+                        e.out = nil
+                    }
+                }
+                guard e.r1 > e.r0 else { continue }
+                take(own, [e])
+                placed.append((own, [e]))
+            }
+        }
+        for lane in [aa, a1, a2, ch3, ch4] {
+            let mine = placed.filter { $0.lane.label == lane.label && $0.lane.aud == lane.aud }.flatMap(\.events).sorted { $0.r0 < $1.r0 }
+            for e in mine { write(e, lane.label, aud: lane.aud, picture: false) }
+        }
         while out.last == "" { out.removeLast() }
         return out.joined(separator: "\n") + "\n"
     }
@@ -2231,7 +2423,9 @@ extension Importer {
     /// Crop, Opacity, a CDL and LUT files in clip comments (see `colorEffects`), each file's source timecode and
     /// reel, enabled flags and markers. Audio clipitems that only repeat a video clip's sound fold
     /// into it, linked ones in sync but starting or ending elsewhere fold in as split edits, and audio fades
-    /// from or to black become clip fades; video clips whose sound isn't on an audio track are silent. Files that don't exist, or that have no path, stay as offline media.
+    /// from or to black become clip fades; video clips whose sound isn't on an audio track are silent. A video
+    /// transition between clips whose sound came from audio clipitems is picture only, and a crossfade between
+    /// those sounds is audio only, unless the two match, which makes one transition of both. Files that don't exist, or that have no path, stay as offline media.
     public static func xmeml(_ data: Data, relativeTo base: URL?) throws -> ImportResult {
         let doc: XMLDocument
         do { doc = try XMLDocument(data: data, options: []) } catch { throw EditError("Not valid XML: \(error.localizedDescription)") }
@@ -2363,6 +2557,8 @@ final class XMEMLReader {
         }
         var heard = Set<String>()
         var folded = Set<String>()
+        /// Folded audio clips to the clip whose sound they carried.
+        var soundOf: [String: String] = [:]
         func hear(_ a: Clip, in v: inout Clip, split: Bool) {
             v.volume = a.volume
             v.audioFadeIn = a.audioFadeIn
@@ -2380,6 +2576,7 @@ final class XMEMLReader {
                     if !heard.contains(tracks[v].clips[i].id) { hear(a, in: &tracks[v].clips[i], split: false) }
                     heard.insert(tracks[v].clips[i].id)
                     folded.insert(a.id)
+                    soundOf[a.id] = tracks[v].clips[i].id
                 }
             }
         }
@@ -2397,6 +2594,7 @@ final class XMEMLReader {
                     hear(a, in: &tracks[v].clips[i], split: true)
                     heard.insert(tracks[v].clips[i].id)
                     folded.insert(a.id)
+                    soundOf[a.id] = tracks[v].clips[i].id
                 }
             }
         }
@@ -2407,10 +2605,14 @@ final class XMEMLReader {
             let kept = tracks[t].clips.filter { a in
                 if folded.contains(a.id) { return false }
                 if !(links[a.id] ?? []).isDisjoint(with: heardXML),
-                   tracks.contains(where: { $0.kind == .video && $0.clips.contains { heard.contains($0.id) && $0.mediaId == a.mediaId && links[a.id]!.contains(xmlIds[$0.id] ?? "") } }) {
+                   let v = tracks.lazy.filter({ $0.kind == .video }).flatMap(\.clips).first(where: { heard.contains($0.id) && $0.mediaId == a.mediaId && links[a.id]!.contains(xmlIds[$0.id] ?? "") }) {
+                    soundOf[a.id] = v.id
                     return false
                 }
-                if seen.contains(where: { same($0, a) }) { return false }
+                if let s = seen.first(where: { same($0, a) }) {
+                    soundOf[a.id] = soundOf[s.id] ?? s.id
+                    return false
+                }
                 seen.append(a)
                 return true
             }
@@ -2453,7 +2655,7 @@ final class XMEMLReader {
         for t in tracks.indices {
             if tracks[t].kind == .video { v += 1; tracks[t].id = "V\(v)" } else { a += 1; tracks[t].id = "A\(a)" }
         }
-        return (tracks, transitions)
+        return (tracks, Importer.foldTransitions(transitions, soundOf: soundOf, separate: heard, frame: 1 / fps))
     }
 
     /// Whether anything in a nested sequence makes sound.
@@ -2577,7 +2779,7 @@ final class XMEMLReader {
                                   part: kind == .audio ? .audio : .both)
             // A cut off the middle (Premiere's cutPointTicks) keeps its place.
             let before = edge.cut - edge.start
-            if pair, align == .center, before > 0, before < edge.end - edge.start, abs(before - (edge.end - edge.start) / 2) > 0.6 { made.cutOffset = before / fps }
+            if pair, align == .center, before > 0, before < edge.end - edge.start, abs(before - (edge.end - edge.start) / 2) > (number(e, "cutPointTicks") != nil ? 0.25 : 0.6) { made.cutOffset = before / fps }
             transitions.append(made)
         }
         return (clips, disabled, transitions)
@@ -2855,9 +3057,11 @@ extension Project {
     /// Final Cut Pro 7 XML (xmeml version 5) for Premiere Pro, Resolve and Final Cut Pro 7, timed in canvas
     /// frames. Video tracks come bottom first, then audio: the sound of video clips on an audio track of its
     /// own after each video track's, then the audio tracks. Each file is described at its first use and
-    /// referenced by id after. Dissolves (wipes stay wipes, dips become Dip to Black) are transitionitems,
-    /// with the clips' edges under them written as -1 and their media spanning the transition; an uneven one
-    /// keeps its cut as Premiere's `cutPointTicks`. Speed is a Time Remap filter, opacity Opacity, scale, position
+    /// referenced by id after. Dissolves (wipes stay wipes, dips become Dip to Black) are transitionitems on the
+    /// picture cut and sound crossfades are audio transitionitems on the sound cut, with the clips' edges under them
+    /// written as -1 and their media spanning the transition; an uneven one keeps its cut as Premiere's
+    /// `cutPointTicks`. Every in, out, start and end counts from the same frame, so a clipitem plays as many source
+    /// frames as it lasts at normal speed. Speed is a Time Remap filter, opacity Opacity, scale, position
     /// and rotation Basic Motion, and crop Crop; the CDL and LUT files are a clip comment (`ASC_SOP …; LUT <path>`).
     /// Sound clipitems are linked to their picture and span the audio range, so split edits keep
     /// their own in and out; levels are Audio Levels (keyframed when animated, track faders and master gain
@@ -2929,23 +3133,8 @@ extension Project {
             let windows = scope.transitionWindows
             let top = id == "sequence-1"
             let prefix = top ? "" : id + "/"
-            /// Sequence frames of a transitionitem; a centered one keeps its cut on a frame.
-            func frames(_ w: TransitionWindow) -> (start: Int, end: Int, cut: Int) {
-                let d = f(w.end - w.start)
-                if w.transition.from != nil, w.transition.to != nil, w.transition.cutOffset != nil {
-                    let cut = f(w.start + w.head)
-                    return (cut - f(w.head), cut - f(w.head) + d, cut)
-                }
-                switch (w.transition.from, w.transition.to, w.transition.align) {
-                case (nil, _, _), (_, _, .start): return (f(w.start), f(w.start) + d, f(w.start))
-                case (_, nil, _), (_, _, .end): return (f(w.end) - d, f(w.end), f(w.end))
-                case (_, _, .center):
-                    let cut = f(w.start + w.head)
-                    return (cut - d / 2, cut - d / 2 + d, cut)
-                }
-            }
-            func transitionItem(_ w: TransitionWindow, kind: TrackKind) -> XMLElem {
-                let tr = w.transition, at = frames(w)
+            /// A transitionitem over `at` (first frame, cut frame, length in sequence frames).
+            func transitionItem(_ tr: Transition, _ at: (start: Int, cut: Int, length: Int), kind: TrackKind) -> XMLElem {
                 let align: String
                 if tr.from == nil {
                     align = "start-black"
@@ -2964,7 +3153,7 @@ extension Project {
                 // Premiere's cut point within an uneven transition, in its ticks.
                 let ticks = tr.from != nil && tr.to != nil && tr.cutOffset != nil ? [leaf("cutPointTicks", "\((at.cut - at.start) * 254_016_000_000 * grid.num / grid.den)")] : []
                 return XMLElem("transitionitem", children: [
-                    leaf("start", "\(at.start)"), leaf("end", "\(at.end)"), leaf("alignment", align)] + ticks + [rate(),
+                    leaf("start", "\(at.start)"), leaf("end", "\(at.start + at.length)"), leaf("alignment", align)] + ticks + [rate(),
                     effect(name, id: id, category: category, type: "transition", mediaType: kind == .audio ? "audio" : "video", []),
                 ])
             }
@@ -3019,33 +3208,49 @@ extension Project {
                 return [v, a]
             }
 
-            /// `sound` is the audio of a video track, which takes no transitions.
+            /// `sound` is the audio of a video track. Sound crossfades sit on the sound cut, dissolves on the picture cut.
             func trackElem(_ track: Track, kind: TrackKind, sound: Bool) -> XMLElem {
-                let mine = sound ? [] : windows.filter { $0.trackId == track.id && (kind == .video ? $0.transition.hasVideo : $0.transition.hasAudio) }
+                let clips = track.clips.sorted { $0.start < $1.start }
+                let ids = Set(clips.map(\.id))
+                let audio = kind == .audio
+                let mine = windows.map(\.transition).filter { tr in
+                    (audio ? tr.hasAudio : tr.hasVideo) && [tr.from, tr.to].compactMap { $0 }.allSatisfy(ids.contains)
+                }
+                func at(_ tr: Transition) -> (start: Int, cut: Int, length: Int)? { scope.transitionFrames(tr, grid: grid, sound: audio) }
                 var items: [XMLElem] = []
-                for c in track.clips.sorted(by: { $0.start < $1.start }) {
-                    let into = mine.first { $0.transition.to == c.id && $0.transition.from != nil }
-                    let outOf = mine.first { $0.transition.from == c.id && $0.transition.to != nil }
-                    let black = (into: mine.first { $0.transition.to == c.id && $0.transition.from == nil }, out: mine.first { $0.transition.from == c.id && $0.transition.to == nil })
-                    if let w = mine.first(where: { $0.transition.to == c.id }) { items.append(transitionItem(w, kind: kind)) }
+                for c in clips {
+                    let into = mine.first { $0.to == c.id && $0.from != nil }.flatMap { tr in at(tr).map { (tr, $0) } }
+                    let outOf = mine.first { $0.from == c.id && $0.to != nil }.flatMap { tr in at(tr).map { (tr, $0) } }
+                    let black = (into: mine.first { $0.to == c.id && $0.from == nil }, out: mine.first { $0.from == c.id && $0.to == nil })
+                    if let tr = into?.0 ?? black.into, let w = at(tr) { items.append(transitionItem(tr, w, kind: kind)) }
                     // Sound plays over the audio range, so split edits keep their own in and out.
-                    let heard = kind == .audio && c.kind == .media && !c.reverse && into == nil && outOf == nil && black.into == nil && black.out == nil
+                    let heard = audio && c.kind == .media && !c.reverse
                     let span = heard ? c.audioRange : TimeRange(c.start, c.end)
                     let s = f(span.start), e = f(span.end)
-                    guard e > s else { continue }
-                    let head = into.map { s - frames($0).start } ?? 0, tail = outOf.map { frames($0).end - e } ?? 0
+                    let r0 = into?.1.cut ?? s, r1 = outOf?.1.cut ?? e
+                    guard e > s, r1 > r0 else { continue }
+                    let head = into.map { r0 - $0.1.start } ?? 0, tail = outOf.map { $0.1.start + $0.1.length - r1 } ?? 0
+                    let length = r1 - r0 + head + tail
                     var kids = [leaf("name", c.name ?? c.mediaId.flatMap { scope.mediaAsset($0)?.name } ?? c.kind.rawValue),
-                                leaf("enabled", "TRUE"), leaf("duration", "\(e - s + head + tail)"), rate(),
-                                leaf("start", into != nil ? "-1" : "\(s)"), leaf("end", outOf != nil ? "-1" : "\(e)")]
+                                leaf("enabled", "TRUE"), leaf("duration", "\(length)"), rate(),
+                                leaf("start", into != nil ? "-1" : "\(r0)"), leaf("end", outOf != nil ? "-1" : "\(r1)")]
+                    /// Source frames played over `n` sequence frames.
+                    func played(_ n: Int) -> Int { Int((Double(n) * c.speed).rounded()) }
                     var sourceFrame = 0
                     switch c.kind {
                     case .media:
                         guard let m = c.mediaId.flatMap({ scope.mediaAsset($0) }) else { continue }
-                        let lo = heard ? c.audioSourceRange.start : min(c.sourceIn, c.sourceOut)
-                        let hi = heard ? c.audioSourceRange.end : max(c.sourceIn, c.sourceOut)
-                        let inF = m.isImage ? 0 : f(lo - Double(head) / grid.rate * c.speed)
-                        let outF = m.isImage ? e - s + head + tail : f(hi + Double(tail) / grid.rate * c.speed)
-                        sourceFrame = f(lo)
+                        let inF: Int, outF: Int
+                        if m.isImage {
+                            (inF, outF) = (0, length)
+                        } else if c.reverse {
+                            (inF, outF) = (f(min(c.sourceIn, c.sourceOut)) - played(head), f(max(c.sourceIn, c.sourceOut)) + played(tail))
+                        } else {
+                            // In and out count from the same frame as start and end, so both span the same frames.
+                            sourceFrame = f(heard ? c.audioSourceRange.start : c.sourceIn)
+                            (inF, outF) = (sourceFrame + played(r0 - s - head), sourceFrame + played(r1 - s + tail))
+                        }
+                        if c.reverse { sourceFrame = f(min(c.sourceIn, c.sourceOut)) }
                         kids += [leaf("in", "\(inF)"), leaf("out", "\(outF)"), file(m)]
                         if kind == .audio { kids.append(XMLElem("sourcetrack", children: [leaf("mediatype", "audio"), leaf("trackindex", "1")])) }
                         if abs(c.speed - 1) > 1e-9 || c.reverse {
@@ -3058,7 +3263,8 @@ extension Project {
                         }
                     case .sequence:
                         guard let seq = c.mediaId.flatMap({ scope.sequence($0) }) else { continue }
-                        kids += [leaf("in", "\(f(c.sourceIn) - head)"), leaf("out", "\(f(c.sourceIn + c.duration) + tail)")]
+                        let inner = f(c.sourceIn)
+                        kids += [leaf("in", "\(inner + r0 - s - head)"), leaf("out", "\(inner + r1 - s + tail)")]
                         let ref = "sequence-\(seq.id)"
                         if sequenceDescribed.contains(ref) {
                             kids.append(XMLElem("sequence", [("id", ref)]))
@@ -3067,12 +3273,12 @@ extension Project {
                             kids.append(sequenceElem(scope.inside(seq), id: ref, name: seq.name, markers: []))
                         }
                     case .text where kind == .video:
-                        kids += [leaf("in", "0"), leaf("out", "\(e - s + head + tail)"), effect("Text", id: "Text", category: "Text", type: "generator", mediaType: "video", [
+                        kids += [leaf("in", "0"), leaf("out", "\(length)"), effect("Text", id: "Text", category: "Text", type: "generator", mediaType: "video", [
                             parameter("str", "Text", c.text?.text ?? c.name ?? ""), parameter("fontname", "Font", c.text?.font ?? "system"),
                         ])]
                     case .solid where kind == .video:
                         let color = c.color ?? .black
-                        kids += [leaf("in", "0"), leaf("out", "\(e - s + head + tail)"), effect("Color", id: "Color", category: "Matte", type: "generator", mediaType: "video", [
+                        kids += [leaf("in", "0"), leaf("out", "\(length)"), effect("Color", id: "Color", category: "Matte", type: "generator", mediaType: "video", [
                             XMLElem("parameter", children: [leaf("parameterid", "fillcolor"), leaf("name", "Color"), XMLElem("value", children: [
                                 leaf("alpha", "255"), leaf("red", byte(color.r)), leaf("green", byte(color.g)), leaf("blue", byte(color.b)),
                             ])]),
@@ -3123,9 +3329,9 @@ extension Project {
                         }
                     }
                     if c.kind == .media || c.kind == .sequence { kids += links(c) }
-                    if heard, black.into == nil, c.audioFadeIn > 0 { items.append(fadeItem(s, min(e, s + max(1, f(c.audioFadeIn))), into: true)) }
+                    if heard, into == nil, black.into == nil, c.audioFadeIn > 0 { items.append(fadeItem(s, min(e, s + max(1, f(c.audioFadeIn))), into: true)) }
                     items.append(XMLElem(c.kind == .text || c.kind == .solid ? "generatoritem" : "clipitem", [("id", itemId(c, sound: sound))], children: kids))
-                    if let w = black.out { items.append(transitionItem(w, kind: kind)) } else if heard, c.audioFadeOut > 0 {
+                    if let tr = black.out, let w = at(tr) { items.append(transitionItem(tr, w, kind: kind)) } else if heard, outOf == nil, c.audioFadeOut > 0 {
                         items.append(fadeItem(max(s, e - max(1, f(c.audioFadeOut))), e, into: false))
                     }
                 }
