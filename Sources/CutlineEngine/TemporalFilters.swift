@@ -424,6 +424,9 @@ final class PictureProcessor {
                 }
                 let s = Denoiser.Settings(radius: Int(n("temporal_frames").rounded()), strength: Float(n("strength")), threshold: Float(n("motion_threshold")), spatial: Float(n("spatial")), mix: Float(e.mix))
                 return Denoiser(s, flow: flow, context: context)
+            case "video.rolling_shutter":
+                let s = RollingShutterCorrector.Settings(readout: Float(n("readout")), bottomUp: e.params["direction"]?.string == "bottom_up", bands: Int(n("bands").rounded()), strength: Float(n("strength")), mix: Float(e.mix))
+                return RollingShutterCorrector(s, flow: try? OpticalFlow(width: width, height: height, context: context), context: context)
             case "video.remove_object":
                 let samples = ObjectTrack.decodeBoxes(e.params["boxes"]?.string ?? "")
                 guard !samples.isEmpty else { return nil }

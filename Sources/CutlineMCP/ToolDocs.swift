@@ -185,9 +185,9 @@ extension Toolbox {
         "project_patch": ToolBrief(text: "Last resort: RFC 6902 JSON Patch on project.json (project_status detail=json), validated, one undo step.", args: [
             "ops": "[{op, path, value?, from?}]",
         ]),
-        "template_save": ToolBrief(text: "Save clips (effects, animation, transitions) as a template for recipe template; {{name}} text or fields become fields.", args: [
+        "template_save": ToolBrief(text: "Save clips (effects, animation, transitions) as a recipe template; {{name}} text or fields become fields; export/import share files.", args: [
             "name": "", "clips": "", "fields": "{placeholder: clip id}", "summary": "",
-        ]),
+        ], hide: ["export", "import"]),
         "sequence_nest": ToolBrief(text: "Nest clips into one sequence clip (one transform, effects, transition for all), or unnest one.", args: [
             "clips": "", "name": "", "unnest": "Nested clip to expand",
         ]),

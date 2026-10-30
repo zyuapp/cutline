@@ -228,7 +228,11 @@ public final class RenderScene: @unchecked Sendable {
             return nil
         case .generator:
             guard let gen = clip.effects.first(where: { GeneratorCatalog.type($0.type) != nil }) else { return nil }
-            guard let cg = GeneratorRenderer.render(type: gen.type, value: { clip.generatorValue($0, at: local) ?? .number(0) }, canvas: canvas.size, time: local, duration: clip.duration, history: { clip.generatorValue($0, at: $1) ?? .number(0) }) else { return nil }
+            let value = generatorValues(clip, gen, at: local)
+            if gen.type == "text.extruded", xf.threeD, matteView?.clip != clip.id {
+                return extruded3D(clip, value: value, xf: xf, center: center, t: t, param: param)
+            }
+            guard let cg = GeneratorRenderer.render(type: gen.type, value: value, canvas: canvas.size, time: local, duration: clip.duration, history: { clip.generatorValue($0, at: $1) ?? .number(0) }) else { return nil }
             layer = CIImage(cgImage: cg)
         case .sequence:
             guard let child = child(for: clip) else { return nil }

@@ -101,8 +101,8 @@ extension Toolbox {
             var needs = ids.map { AnalysisNeed(mediaId: $0, feature: .scenes, without: "the grade acts on the whole clip, in every shot it plays") }
             if a.bool("face", default: false) { needs += ids.map { AnalysisNeed(mediaId: $0, feature: .shots, without: "the face window stays where the face was at at instead of following it") } }
             return needs
-        case "remove_object":
-            return media(ofClips: [a.optString("clip")].compactMap { $0 }).map { AnalysisNeed(mediaId: $0, feature: .scenes, without: "shot cuts are found only by comparing neighbouring frames while it renders, which can miss a soft cut") }
+        case "remove_object", "track_mask":
+            return media(ofClips: [a.optString("clip")].compactMap { $0 }).map { AnalysisNeed(mediaId: $0, feature: .scenes, without: name == "track_mask" ? "tracking stops only at cuts it detects from the frames, which can miss a soft cut" : "shot cuts are found only by comparing neighbouring frames while it renders, which can miss a soft cut") }
         default:
             return []
         }

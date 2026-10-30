@@ -106,10 +106,10 @@ public struct LayerPlacement3D: Sendable {
         self.rotateZ = rotateZ
     }
 
-    /// World position of a point offset (dx, dy) pixels from the anchor in the layer's own plane (y down).
-    /// The roll applies in the layer's plane first, then the turn, then the tilt.
-    public func world(_ dx: Double, _ dy: Double) -> Vec3 {
-        var x = dx * scale, y = dy * scale, z = 0.0
+    /// World position of a point offset (dx, dy) pixels from the anchor in the layer's own plane (y down), and `dz`
+    /// pixels behind it along the layer's normal. The roll applies in the layer's plane first, then the turn, then the tilt.
+    public func world(_ dx: Double, _ dy: Double, _ dz: Double = 0) -> Vec3 {
+        var x = dx * scale, y = dy * scale, z = dz * scale
         let rz = rotateZ * .pi / 180, ry = rotateY * .pi / 180, rx = rotateX * .pi / 180
         (x, y) = (x * cos(rz) - y * sin(rz), x * sin(rz) + y * cos(rz))
         (x, z) = (x * cos(ry) - z * sin(ry), x * sin(ry) + z * cos(ry))

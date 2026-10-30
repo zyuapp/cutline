@@ -328,6 +328,8 @@ enum EffectRenderer {
             let grown = img.applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: width])
             let ring = solid.applyingFilter("CISourceInCompositing", parameters: [kCIInputBackgroundImageKey: grown]).cropped(to: grown.extent)
             return img.composited(over: ring)
+        case "distort.lens", "distort.chromatic_aberration", "color.vignette_correct":
+            return LensWarp.render(type, img, v)
         case "distort.bulge":
             return local("CIBumpDistortion", [kCIInputCenterKey: point(), kCIInputRadiusKey: n("radius") * ctx.unit, kCIInputScaleKey: n("amount")])
         case "distort.twirl":

@@ -107,6 +107,8 @@ extension Toolbox {
                 }
             case "remove_object":
                 return try await removeObject(a, dry: dry)
+            case "track_mask":
+                return try await trackMask(a, dry: dry)
             case "dme_buses":
                 return try await dmeBuses(a, dry: dry)
             default:

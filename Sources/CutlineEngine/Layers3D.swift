@@ -31,13 +31,15 @@ extension RenderScene {
 
     /// Projects a picture whose anchor would sit at `center` (Core Image coordinates) in 2D onto its plane in 3D.
     /// A layer reaching behind the camera keeps only an axis-aligned part in front of it; nil when none is.
-    func place3D(_ full: CIImage, center: CGPoint, xf: Transform, camera: SceneCamera) -> CIImage? {
+    /// `depth` moves the picture that many pixels behind the layer's plane, along its normal.
+    func place3D(_ full: CIImage, center: CGPoint, xf: Transform, camera: SceneCamera, depth: Double = 0) -> CIImage? {
         let whole = full.extent
         guard !whole.isInfinite, whole.width > 0, whole.height > 0 else { return nil }
         let H = canvasRect.height
         let a = CGPoint(x: whole.minX + xf.anchorX * whole.width, y: whole.maxY - xf.anchorY * whole.height)
         let shift = CGPoint(x: center.x + (a.x - whole.midX), y: center.y + (a.y - whole.midY))
-        let plane = LayerPlacement3D(anchor: Vec3(shift.x, H - shift.y, xf.z * H), scale: xf.scale, rotateX: xf.rotateX, rotateY: xf.rotateY, rotateZ: xf.rotation)
+        var plane = LayerPlacement3D(anchor: Vec3(shift.x, H - shift.y, xf.z * H), scale: xf.scale, rotateX: xf.rotateX, rotateY: xf.rotateY, rotateZ: xf.rotation)
+        if depth != 0 { plane.anchor = plane.world(0, 0, depth) }
         guard let e = inFront(whole, anchor: a, plane: plane, camera: camera) else { return nil }
         let img = e == whole ? full : full.cropped(to: e)
         func corner(_ x: CGFloat, _ y: CGFloat) -> CGPoint? {
