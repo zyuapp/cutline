@@ -157,6 +157,8 @@ enum Describe {
             if let t = bundle.transcript(m.id) { a.append("transcript \(t.words.count) words") }
             if let au = bundle.audioAnalysis(m.id) { a.append("\(au.silences.filter { $0.duration >= 0.5 }.count) pauses") }
             if let v = bundle.visualAnalysis(m.id), !v.sceneCuts.isEmpty { a.append("\(v.sceneCuts.count) scene cuts") }
+            if let tc = m.timecodeStart { a.append("TC \(Project.timecodeString(tc, fps: m.fps > 0 ? m.fps : p.canvas.fps))" + (m.reel.map { " reel \($0)" } ?? "")) }
+            if let tags = m.tags, !tags.isEmpty { a.append("tags " + tags.map { $0.rating.map { r in "\($0.label) (\(r))" } ?? $0.label }.joined(separator: ", ")) }
             let kind = m.isImage ? "image" : [m.hasVideo ? "video" : nil, m.hasAudio ? "audio" : nil].compactMap { $0 }.joined(separator: "+")
             let dims = m.hasVideo ? " \(m.width)×\(m.height)" + (m.isImage ? "" : " \(fmtFps(m.fps))fps") : ""
             let missing = FileManager.default.fileExists(atPath: m.path) ? "" : " MISSING FILE"
@@ -180,7 +182,7 @@ enum Describe {
         }
         lines.append("Captions: " + (cs.enabled ? "on, \(cs.style.animation.rawValue), size \(fmt2(cs.style.size)), y \(fmt2(cs.style.y)), \(cs.style.maxWordsPerLine) words/line" : "off"))
         if !p.transitions.isEmpty { lines.append("Transitions: " + p.transitions.map { "\($0.id) \($0.type) \(fmt2($0.duration))s \($0.from ?? "∅")→\($0.to ?? "∅")" }.joined(separator: ", ")) }
-        if !p.markers.isEmpty { lines.append("Markers: " + p.markers.map { "\(fmt2($0.time)) \($0.label)" }.joined(separator: ", ")) }
+        if !p.markers.isEmpty { lines.append("Markers: " + p.markers.map { "\(fmt2($0.time)) \($0.label)" + ($0.kind.map { " [\($0)]" } ?? "") }.joined(separator: ", ")) }
         let open = bundle.loadComments().comments.filter { $0.status == .open }
         lines.append("Comments: \(open.count) open" + (open.isEmpty ? "" : " — call comments_list"))
         let w = warnings(p, transcripts: bundle.transcripts(for: p))

@@ -356,15 +356,46 @@ extension Toolbox {
             return c.enabled ? "Captions on (\(s.animation.rawValue), size \(fmt2(s.size)), y \(fmt2(s.y)))" : "Captions off"
         })
 
-        addEdit(EditTool(name: "markers", description: "Add or remove labeled timeline markers (chapters, beats, notes to self). Marker labels work as anchors: \"marker:<label>\".", schema: Schema.object([
-            "add": Schema.array(Schema.object(["time": Schema.time("Timeline time or anchor"), "label": Schema.string("Label")], required: ["time", "label"]), "Markers to add"),
-            "remove": Schema.strings("Marker ids or labels to remove"),
-            "remove_all": Schema.bool("Remove every marker first"),
+        addEdit(EditTool(name: "markers", description: "Timeline markers (chapters, to-dos, notes; labels work as anchors \"marker:<label>\") and, with media_id, source tags on footage: keyword ranges plus favorite/reject ratings, like Final Cut's keywords. Tags show in analysis_read and help pick takes.", schema: Schema.object([
+            "add": Schema.array(Schema.object([
+                "time": Schema.time("Timeline time or anchor (with media_id: source start)"),
+                "label": Schema.string("Label or keyword"),
+                "kind": Schema.string("Marker kind", values: ["standard", "chapter", "todo", "done", "comment"]),
+                "color": Schema.string("Marker color, hex or name"),
+                "note": Schema.string("Longer note"),
+                "end": Schema.time("Ranged marker or tag end"),
+                "rating": Schema.string("For media tags", values: ["favorite", "reject"]),
+            ], required: ["time", "label"]), "Markers or tags to add"),
+            "update": Schema.array(Schema.object(["id": Schema.string("Marker id or label"), "kind": Schema.string("New kind"), "label": Schema.string("New label"), "note": Schema.string("New note")], required: ["id"]), "Change markers, e.g. mark a to-do done"),
+            "remove": Schema.strings("Marker ids or labels (or tag labels with media_id) to remove"),
+            "remove_all": Schema.bool("Remove every marker (or every tag of media_id) first"),
+            "media_id": Schema.string("Tag this media file's source ranges instead of the timeline"),
         ]), label: { a, _ in
             let added = a.raw["add"]?.array?.compactMap { $0["label"]?.string } ?? []
             return added.isEmpty ? "Remove markers" : "Mark " + added.map { "“\($0)”" }.joined(separator: ", ")
         }) { p, args in
+            if let mid = args.optString("media_id") {
+                guard let mi = p.media.firstIndex(where: { $0.id == mid }) else { throw EditError("No media \(mid)") }
+                var tags = p.media[mi].tags ?? []
+                if args.bool("remove_all", default: false) { tags.removeAll() }
+                if let labels = args.strings("remove") { tags.removeAll { labels.contains($0.label) } }
+                for m in args.raw["add"]?.array ?? [] {
+                    let a = Args(m)
+                    let s = try a.sourceTime("time")
+                    tags.append(MediaTag(label: try a.string("label"), start: s, end: try a.optSourceTime("end") ?? (p.media[mi].isImage ? 0 : p.media[mi].duration), rating: a.optString("rating")))
+                }
+                p.media[mi].tags = tags.isEmpty ? nil : tags.sorted { $0.start < $1.start }
+                return "\(mid) tags: " + tags.map { "\($0.label)\($0.rating.map { " (\($0))" } ?? "") \(fmt2($0.start))–\(fmt2($0.end))" }.joined(separator: ", ").ifEmptyText("none")
+            }
             if args.bool("remove_all", default: false) { p.markers.removeAll() }
+            for u in args.raw["update"]?.array ?? [] {
+                let a = Args(u)
+                let key = try a.string("id").lowercased()
+                guard let i = p.markers.firstIndex(where: { $0.id.lowercased() == key || $0.label.lowercased() == key }) else { throw EditError("No marker \(key)") }
+                if let k = a.optString("kind") { p.markers[i].kind = k == "standard" ? nil : k }
+                if let l = a.optString("label") { p.markers[i].label = l }
+                if let n = a.optString("note") { p.markers[i].note = n }
+            }
             if let ids = args.strings("remove") {
                 let set = Set(ids.map { $0.lowercased() })
                 p.markers.removeAll { set.contains($0.id.lowercased()) || set.contains($0.label.lowercased()) }
@@ -372,7 +403,11 @@ extension Toolbox {
             var made: [String] = []
             for m in args.raw["add"]?.array ?? [] {
                 let a = Args(m)
-                let marker = Marker(id: IDs.make("m"), time: p.canvas.snap(try a.time("time")), label: try a.string("label"))
+                var marker = Marker(id: IDs.make("m"), time: p.canvas.snap(try a.time("time")), label: try a.string("label"))
+                if let k = a.optString("kind"), k != "standard" { marker.kind = k }
+                marker.color = try a.color("color")
+                marker.note = a.optString("note")
+                if let end = try a.optTime("end") { marker.duration = max(0, end - marker.time) }
                 p.markers.append(marker)
                 made.append("\(marker.id) “\(marker.label)” @\(fmt2(marker.time))")
             }

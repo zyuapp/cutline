@@ -45,7 +45,31 @@ public enum MediaProbe {
             height = Int(abs(r.height).rounded())
             fps = Double(rate)
         }
-        return MediaAsset(id: id, path: url.path, name: name, duration: duration, width: width, height: height, fps: fps, hasVideo: !videoTracks.isEmpty, hasAudio: !audioTracks.isEmpty)
+        var media = MediaAsset(id: id, path: url.path, name: name, duration: duration, width: width, height: height, fps: fps, hasVideo: !videoTracks.isEmpty, hasAudio: !audioTracks.isEmpty)
+        if let tc = try? await startTimecode(asset) {
+            media.timecodeStart = tc.seconds
+            media.reel = tc.reel
+        }
+        return media
+    }
+
+    /// The timecode of the first frame from a QuickTime timecode track, and its reel name.
+    static func startTimecode(_ asset: AVAsset) async throws -> (seconds: Seconds, reel: String?)? {
+        guard let track = try await asset.loadTracks(withMediaType: .timecode).first else { return nil }
+        let reader = try AVAssetReader(asset: asset)
+        let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        reader.add(out)
+        guard reader.startReading(), let sample = out.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(sample), let fd = CMSampleBufferGetFormatDescription(sample) else { return nil }
+        var raw = Data(count: CMBlockBufferGetDataLength(block))
+        raw.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
+        guard raw.count >= 4 else { return nil }
+        let frame = raw.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+        let frameDuration = CMTimeCodeFormatDescriptionGetFrameDuration(fd)
+        let quanta = Int(CMTimeCodeFormatDescriptionGetFrameQuanta(fd))
+        guard frameDuration.seconds > 0, quanta > 0 else { return nil }
+        let frames = frame
+        let reel = (CMFormatDescriptionGetExtension(fd, extensionKey: kCMTimeCodeFormatDescriptionExtension_SourceReferenceName) as? [String: Any])?[kCMTimeCodeFormatDescriptionKey_Value as String] as? String
+        return (Double(frames) * frameDuration.seconds, reel)
     }
 }
 

@@ -109,6 +109,11 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     public var hasAudio: Bool
     /// True for still images, which can be shown for any duration.
     public var isImage: Bool
+    /// Source timecode of the first frame, in seconds (e.g. 3600 for 01:00:00:00).
+    public var timecodeStart: Seconds?
+    public var reel: String?
+    /// Keyword ranges, favorites and rejects, in source time.
+    public var tags: [MediaTag]?
 
     public init(id: String, path: String, name: String, duration: Seconds, width: Int, height: Int, fps: Double, hasVideo: Bool, hasAudio: Bool, isImage: Bool = false) {
         self.id = id
@@ -124,6 +129,22 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     }
 
     public var url: URL { URL(fileURLWithPath: path) }
+}
+
+/// A labeled source range of a media file, like Final Cut's keywords and ratings.
+public struct MediaTag: Codable, Equatable, Sendable {
+    public var label: String
+    public var start: Seconds
+    public var end: Seconds
+    /// favorite or reject, for ratings.
+    public var rating: String?
+
+    public init(label: String, start: Seconds, end: Seconds, rating: String? = nil) {
+        self.label = label
+        self.start = start
+        self.end = end
+        self.rating = rating
+    }
 }
 
 public enum TrackKind: String, Codable, Sendable, CaseIterable {
@@ -678,6 +699,12 @@ public struct Marker: Codable, Equatable, Sendable, Identifiable {
     public var id: String
     public var time: Seconds
     public var label: String
+    /// standard (default), chapter, todo, done or comment.
+    public var kind: String?
+    public var color: RGBA?
+    public var note: String?
+    /// Ranged markers span this many seconds.
+    public var duration: Seconds?
 
     public init(id: String, time: Seconds, label: String) {
         self.id = id

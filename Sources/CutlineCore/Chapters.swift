@@ -25,7 +25,8 @@ extension Project {
     }
 
     private func chapterEntries() -> [(time: Seconds, title: String, generated: Bool)] {
-        let sorted = markers.filter { $0.time >= 0 }.sorted { $0.time < $1.time }
+        let explicit = markers.contains { $0.kind == "chapter" }
+        let sorted = markers.filter { $0.time >= 0 && (!explicit || $0.kind == "chapter") && $0.kind != "todo" && $0.kind != "done" && $0.kind != "comment" }.sorted { $0.time < $1.time }
         guard !sorted.isEmpty else { return [] }
         var out = sorted.enumerated().map { i, m in
             let title = m.label.components(separatedBy: .newlines).joined(separator: " ").trimmingCharacters(in: .whitespaces)

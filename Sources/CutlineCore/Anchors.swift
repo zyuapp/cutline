@@ -10,6 +10,8 @@ import Foundation
 ///     "beat:12", "downbeat:3"   the 12th beat / 3rd downbeat of the music on the timeline (from 0)
 ///     "clip_ab12cd.start/.end"  edges of a clip
 ///     "marker:Intro", "m_x8k2p" a marker by label or id
+///     "tc:00:01:10:12"          timeline timecode (frames at the canvas rate)
+///     "<media>@01:00:12:10"     a source timecode of that media (source-time arguments)
 ///     "start", "end"            the ends of the timeline
 ///
 /// Any anchor can carry an offset: "lake-tahoe.w12+0.2", "clip_ab12cd.end-1".
@@ -34,6 +36,8 @@ extension Project {
         if let n = Double(s) { return n }
         if let t = Project.clockTime(s) { return t }
         let (base, offset) = Project.splitOffset(s)
+        if base.hasPrefix("tc:"), let t = Project.timecode(String(base.dropFirst(3)), fps: canvas.fps) { return t + offset }
+        if let (mid, src) = try sourceTimecode(base) { return try placed(mid, source: src, what: base) + offset }
         if let t = try resolveAnalysisAnchor(base, index: index, timeline: true) { return t + offset }
         return try resolveBase(base, transcripts: transcripts) + offset
     }
@@ -90,6 +94,37 @@ extension Project {
             source = list[n]
         }
         return timeline ? try placed(mediaId, source: source, what: s) : source
+    }
+
+    /// "HH:MM:SS:FF" (or ";" before frames for drop frame) → seconds at `fps`.
+    public static func timecode(_ s: String, fps: Double) -> Seconds? {
+        let parts = s.split(whereSeparator: { $0 == ":" || $0 == ";" }).compactMap { Int($0) }
+        guard parts.count == 4, fps > 0 else { return nil }
+        let nominal = Int(fps.rounded())
+        var frames = ((parts[0] * 60 + parts[1]) * 60 + parts[2]) * nominal + parts[3]
+        if s.contains(";"), nominal == 30 || nominal == 60 {
+            let drop = nominal / 15
+            let minutes = parts[0] * 60 + parts[1]
+            frames -= drop * (minutes - minutes / 10)
+        }
+        return Double(frames) / fps
+    }
+
+    /// Seconds → "HH:MM:SS:FF" at a nominal frame rate.
+    public static func timecodeString(_ t: Seconds, fps: Double) -> String {
+        let nominal = max(1, Int(fps.rounded()))
+        let total = Int((t * fps).rounded())
+        let f = total % nominal, s = total / nominal
+        return String(format: "%02d:%02d:%02d:%02d", s / 3600, s / 60 % 60, s % 60, f)
+    }
+
+    /// "<media>@HH:MM:SS:FF": a source time from the media's own timecode.
+    func sourceTimecode(_ s: String) throws -> (String, Seconds)? {
+        guard let at = s.firstIndex(of: "@") else { return nil }
+        let mid = String(s[..<at])
+        guard let m = mediaAsset(mid) else { return nil }
+        guard let t = Project.timecode(String(s[s.index(after: at)...]), fps: m.fps > 0 ? m.fps : canvas.fps) else { throw EditError("Timecodes look like \(mid)@01:00:12:10") }
+        return (mid, t - (m.timecodeStart ?? 0))
     }
 
     /// "1:02.5" or "1:00:02.5" → seconds.
@@ -160,6 +195,7 @@ extension Project {
         if let n = Double(s) { return n }
         if let t = Project.clockTime(s) { return t }
         let (base, offset) = Project.splitOffset(s)
+        if let (_, src) = try sourceTimecode(base) { return src + offset }
         if let t = try resolveAnalysisAnchor(base, index: index, timeline: false) { return t + offset }
         guard let r = base.range(of: #"\.w(\d+)(\.end)?$"#, options: .regularExpression) else {
             throw EditError("Source times are seconds in the media file, a word like \"<media>.w12\", a beat \"<media>.b8\" or a shot \"<media>.s2\"; got \(s)")
