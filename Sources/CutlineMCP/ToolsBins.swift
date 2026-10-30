@@ -12,7 +12,8 @@ extension Toolbox {
             "field_order": Schema.string("Override the detected scan: progressive, tff (top field first) or bff", values: FieldOrder.allCases.map(\.rawValue)),
             "log": Schema.string("Camera log encoding, or \"none\" for display-referred video", values: ["none"] + LogProfile.allCases.map(\.rawValue)),
             "signal_range": Schema.string("Whether log code values are legal (video, default) or full range", values: ["video", "full"]),
-        ], required: ["media_ids"]), label: { a, _ in a.optString("bin").map { "Move to bin \($0)" } ?? (a.has("log") || a.has("signal_range") ? "Set log encoding" : "Edit media metadata") }) { p, args in
+            "raw": ["type": "object", "description": "Camera RAW development defaults (catalog type=raw): exposure (stops, +1 = double ISO), iso (rate at, from as shot), temperature (kelvin of the light to neutralize; 0 as shot), tint (-150…150 from as shot, + magenta), highlights (recovery 0…1; -1 decoder default), noise_reduction (0…1, DNG and stills; -1 default); reset:true starts from as shot"],
+        ], required: ["media_ids"]), label: { a, _ in a.optString("bin").map { "Move to bin \($0)" } ?? (a.has("raw") ? "Set RAW development" : a.has("log") || a.has("signal_range") ? "Set log encoding" : "Edit media metadata") }) { p, args in
             let ids = args.strings("media_ids") ?? []
             guard !ids.isEmpty else { throw EditError("Pass media_ids") }
             if args.has("name"), ids.count != 1 { throw EditError("Rename one media file at a time") }
@@ -33,9 +34,14 @@ extension Toolbox {
                 if let name = args.optString("name"), !name.isEmpty { p.media[i].name = name }
                 if let d = args.optString("deinterlace") { p.media[i].deinterlace = d == "off" ? false : nil }
                 if let f = try args.enumValue("field_order", FieldOrder.self) { p.media[i].fieldOrder = f }
+                if p.media[i].raw != nil, args.has("log") || args.has("signal_range") {
+                    throw EditError("\(id) is camera RAW, developed into \(CameraRaw.workingLog.rawValue) scene light; its encoding is fixed (set raw instead)")
+                }
                 try Toolbox.applyLog(&p.media[i], args)
+                try Toolbox.applyRaw(&p.media[i], args)
             }
-            return "Updated \(ids.joined(separator: ", "))" + Toolbox.logNote(args)
+            let rawNote = args.has("raw") ? ": raw " + ids.compactMap { p.mediaAsset($0)?.raw?.settings.summary }.joined(separator: "; ") : ""
+            return "Updated \(ids.joined(separator: ", "))" + Toolbox.logNote(args) + rawNote
         })
 
         add(Tool(name: "media_list", description: "Browse the media library as a list view: bins, metadata columns, keywords/ratings, format and whether each file is used on the timeline. Filter by bin, search text (name, metadata, keywords and transcript), rating, keyword, kind or unused; sort by any column.", schema: Schema.object([
@@ -43,7 +49,7 @@ extension Toolbox {
             "search": Schema.string("Text to find in names, metadata, keywords and transcripts"),
             "keyword": Schema.string("Only media with this keyword tag"),
             "rating": Schema.string("Only media with a favorite or reject range", values: ["favorite", "reject"]),
-            "kind": Schema.string("Only this kind", values: ["video", "audio", "image"]),
+            "kind": Schema.string("Only this kind (raw: camera RAW)", values: ["video", "audio", "image", "raw"]),
             "unused": Schema.bool("Only media not on the timeline"),
             "sort": Schema.string("Column to sort by: name, duration, bin, or a metadata column such as scene or take"),
         ])) { [unowned self] args in
@@ -60,6 +66,7 @@ extension Toolbox {
                 case "video": if !m.hasVideo || m.isImage { return false }
                 case "audio": if m.hasVideo { return false }
                 case "image": if !m.isImage { return false }
+                case "raw": if m.raw == nil { return false }
                 default: break
                 }
                 if args.bool("unused", default: false), used[m.id] != nil { return false }
@@ -87,7 +94,7 @@ extension Toolbox {
             let columns = Array(Set(rows.flatMap { ($0.metadata ?? [:]).keys })).sorted()
             var lines = ["id | name | bin | " + (columns.isEmpty ? "" : columns.joined(separator: " | ") + " | ") + "format | source TC | reel | keywords | on timeline"]
             for m in rows {
-                let format = m.isImage ? "image \(m.width)×\(m.height)" : (m.hasVideo ? "\(m.width)×\(m.height) \(fmt2(m.fps))fps \(fmt2(m.duration))s" : "audio \(fmt2(m.duration))s") + (m.log.map { " \($0.rawValue)" } ?? "") + (m.channelSummary.map { ", " + $0 } ?? "")
+                let format = m.isImage ? "image \(m.width)×\(m.height)" : (m.hasVideo ? "\(m.width)×\(m.height) \(fmt2(m.fps))fps \(fmt2(m.duration))s" : "audio \(fmt2(m.duration))s") + Toolbox.encodingTag(m) + (m.channelSummary.map { ", " + $0 } ?? "")
                 let tags = (m.tags ?? []).map { $0.rating.map { r in "★\(r)" } ?? $0.label }
                 let cols = columns.map { m.metadata?[$0] ?? "–" }
                 lines.append(([m.id, m.name, m.bin ?? "–"] + cols + [format, m.timecodeString() ?? "–", m.reel ?? "–", tags.isEmpty ? "–" : tags.joined(separator: ", "), used[m.id].map { "\($0) clip\($0 == 1 ? "" : "s")" } ?? "unused"]).joined(separator: " | "))

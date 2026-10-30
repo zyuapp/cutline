@@ -130,6 +130,10 @@ public enum TimelineBuilder {
                 guard let mid = clip.mediaId, let media = project.mediaAsset(mid) else { continue }
                 if media.isImage {
                     if images[mid] == nil, dryTrack == nil, !soundOnly { images[mid] = library.image(for: media) }
+                    // Raw stills developed differently from the media play their own development.
+                    if dryTrack == nil, !soundOnly, let s = media.rawSettings(for: clip), s.baked != media.raw?.settings.baked {
+                        images[clip.id] = CameraRawRender.stillImage(media, settings: s)
+                    }
                     continue
                 }
                 let entry = try await library.entry(for: media)
@@ -147,6 +151,20 @@ public enum TimelineBuilder {
                     audioRange = try await audio?.load(.timeRange)
                     orientations[clip.id] = .up
                     base = 0
+                }
+
+                // DNG media developed with other settings than as shot plays that copy once it is rendered.
+                if dryTrack == nil, !soundOnly, pictureKind == .video, !clip.reverse, let req = CameraRawDevelop.request(media, clip: clip) {
+                    if let url = CameraRawDevelop.cached(req) {
+                        let copy = AVURLAsset(url: url)
+                        proxies.append(copy)
+                        if let pv = try await copy.loadTracks(withMediaType: .video).first {
+                            video = pv
+                            videoRange = try await pv.load(.timeRange)
+                        }
+                    } else {
+                        missingPictures.append(clip.id)
+                    }
                 }
 
                 // Temporal effects play a processed copy of the picture once it is rendered.

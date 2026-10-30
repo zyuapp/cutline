@@ -132,6 +132,7 @@ extension Toolbox {
                 return .text(Toolbox.describeEffectType(try await Toolbox.registerPlugin(id)))
             }
             if let r = args.optString("recipe") { return .text(try Toolbox.recipeManual(r)) }
+            if args.optString("type") == "raw" { return .text(rawCatalog()) }
             if let id = args.optString("type") {
                 if let t = TransitionCatalog.type(id) { return .text(Toolbox.describeTransitionType(t)) }
                 guard let t = EffectCatalog.type(id) else { throw EditError("No effect or transition \(id). Effects: \(EffectCatalog.listed.map(\.id).joined(separator: ", ")). Transitions: \(TransitionCatalog.all.map(\.id).joined(separator: ", "))") }

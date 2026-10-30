@@ -92,6 +92,7 @@ extension Clip {
             if ta.animator != tb.animator { f.append(tb.animator == nil ? "text animator removed" : "text animator") }
         }
         if a.mediaId != b.mediaId { f.append("media \(a.mediaId ?? "–")→\(b.mediaId ?? "–")") }
+        if a.raw != b.raw, b.raw == nil { f.append("raw development cleared") }
         let ea = Dictionary(uniqueKeysWithValues: a.effects.map { ($0.id, $0) })
         let eb = Dictionary(uniqueKeysWithValues: b.effects.map { ($0.id, $0) })
         for e in b.effects where ea[e.id] == nil { f.append("+fx \(e.id) (\(e.type))") }
@@ -129,6 +130,7 @@ extension MediaAsset {
         if a.timecodeStart != b.timecodeStart { f.append("timecode start") }
         if a.log != b.log { f.append("log \(b.log.map { "\($0)" } ?? "none")") }
         if a.signalRange != b.signalRange { f.append("signal range") }
+        if a.raw?.settings != b.raw?.settings { f.append("raw development \(b.raw?.settings.summary ?? "none")") }
         if a.duration != b.duration || a.width != b.width || a.height != b.height || a.fps != b.fps || a.hasVideo != b.hasVideo || a.hasAudio != b.hasAudio {
             f.append("format \(a.width)×\(a.height)@\(fmt2(a.fps)) \(fmt2(a.duration))s → \(b.width)×\(b.height)@\(fmt2(b.fps)) \(fmt2(b.duration))s")
         }

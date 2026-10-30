@@ -53,23 +53,13 @@ extension Toolbox {
     /// media_import without relink: every file is imported or listed as failed, never both.
     func importMedia(_ paths: [String], args: Args) async throws -> ToolResult {
         let b = try session.requireBundle()
-        var files: [URL] = []
-        var failures: [String] = []
-        for path in paths {
-            let url = session.resolve(path)
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { failures.append("\(url.path): not found"); continue }
-            if isDir.boolValue {
-                let items = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
-                files += items.filter { Toolbox.mediaExtensions.contains($0.pathExtension.lowercased()) }.sorted { $0.path < $1.path }
-            } else {
-                files.append(url)
-            }
-        }
+        let (files, missing) = Toolbox.expandImportPaths(paths.map { session.resolve($0) })
+        var failures = missing
         var project = try b.loadProject()
         let tools = FFmpeg.tools()
         var imported: [MediaAsset] = []
         var deferred: [String: ProbeInfo] = [:]
+        var developing: Set<String> = []
         var lines: [String] = []
         for url in files {
             if let existing = project.media.first(where: { $0.path == url.path || $0.originalPath == url.path }) {
@@ -79,13 +69,16 @@ extension Toolbox {
             let id = Toolbox.mediaId(for: url, existing: Set(project.media.map(\.id)))
             do {
                 var m: MediaAsset
-                switch try await MediaIngest.prepare(url, id: id, cache: b.cacheURL, tools: tools) {
+                switch try await MediaIngest.prepare(url, id: id, cache: b.cacheURL, tools: tools, sequenceFPS: args.optDouble("fps")) {
                 case .ready(let ready): m = ready
                 case .deferred(let placeholder, let info):
                     m = placeholder
                     deferred[id] = info
+                case .developing(let placeholder):
+                    m = placeholder
+                    developing.insert(id)
                 }
-                if m.hasVideo, !m.isImage, deferred[id] == nil { m.log = await ColorManagement.detectLog(AVURLAsset(url: m.url)) }
+                if m.hasVideo, !m.isImage, m.raw == nil, deferred[id] == nil { m.log = await ColorManagement.detectLog(AVURLAsset(url: m.url)) }
                 project.media.append(m)
                 imported.append(m)
             } catch let f as MediaIngest.Failure {
@@ -109,6 +102,11 @@ extension Toolbox {
                 let job = session.jobs.enqueue(m.id, named: [Session.transcodeJob], bundle: b.url, language: language, analyze: analyze)
                 line += " — \(fmt1(m.duration))s of \(info.codecSummary) is transcoding to ProRes 422 HQ in the background (\(job)); don't use \(m.id) until analysis_read wait:600 shows it done"
                 lines.append(line)
+                continue
+            }
+            if developing.contains(m.id) {
+                let job = session.jobs.enqueue(m.id, named: [Session.developJob], bundle: b.url, language: language, analyze: analyze)
+                lines.append(line + " — \(m.raw?.format.title ?? "RAW") is developing to ProRes 4444 XQ in the background (\(job)); don't use \(m.id) until analysis_read wait:600 shows it done")
                 continue
             }
             if analyze {
@@ -140,6 +138,7 @@ extension Toolbox {
         if m.isInterlaced { s += ", " + interlaceNote(m) }
         if let tc = sourceTimecodeNote(m) { s += ", " + tc }
         if let t = m.transcoded, !m.isTranscoding { s += ", transcoded \(t) at \(m.path); the original stays the conform source" }
+        if let raw = Toolbox.rawNote(m) { s += "; " + raw }
         if let ch = m.channelSummary { s += "; " + ch + " (play any with audio.channels \"ch3\", \"ch3+ch4\" or \"mix:1,3\"; clip_add channels:\"split\" lays each on its own track)" }
         return s
     }
@@ -180,6 +179,12 @@ extension Toolbox {
                     }
                     let job = session.jobs.enqueue(id, named: [Session.transcodeJob], bundle: b.url, analyze: false)
                     notes.append("\(id): transcoding in the background (\(job))")
+                case .developing(let placeholder):
+                    try session.edit("Mark \(id) for developing") { p in
+                        if let i = p.media.firstIndex(where: { $0.id == id }) { p.media[i].originalPath = placeholder.originalPath; p.media[i].transcoded = placeholder.transcoded }
+                    }
+                    let job = session.jobs.enqueue(id, named: [Session.developJob], bundle: b.url, analyze: false)
+                    notes.append("\(id): developing in the background (\(job))")
                 }
             } catch {
                 notes.append("\(error)")

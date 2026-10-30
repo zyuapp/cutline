@@ -81,7 +81,7 @@ extension Clip {
     /// The fixed (non-effect) parameters this clip has.
     public var fixedSpecs: [ParamSpec] {
         switch kind {
-        case .media: return Clip.transformSpecs + Clip.timeSpecs + Clip.audioSpecs
+        case .media: return Clip.transformSpecs + Clip.timeSpecs + Clip.audioSpecs + (raw == nil ? [] : CameraRaw.specs)
         case .text: return Clip.transformSpecs + Clip.textSpecs
         case .solid: return Clip.transformSpecs + Clip.solidSpecs
         case .adjustment: return Clip.transformSpecs.filter { $0.name == "transform.opacity" || $0.name.hasPrefix("fade.") || $0.name == "name" }
@@ -107,6 +107,7 @@ extension Clip {
             return try Clip.effectSpec(e, param: parts[2], path: path)
         }
         if let s = fixedSpecs.first(where: { $0.name == path }) { return s }
+        if kind == .media, let s = CameraRaw.specs.first(where: { $0.name == path }) { return s }
         let names = fixedSpecs.map(\.name)
         let guess = names.min { editDistance($0, path) < editDistance($1, path) } ?? ""
         throw EditError("\(kind.rawValue) clips have no parameter \(path). Did you mean \(guess)? Call project_status with target \(id) for the full list.")
@@ -179,6 +180,7 @@ extension Clip {
         case "color": return .string((color ?? .black).hex)
         default: break
         }
+        if path.hasPrefix("raw.") { return kind == .media ? CameraRaw.value(raw, path) : nil }
         guard path.hasPrefix("text."), let s = text else { return nil }
         switch path {
         case "text.text": return .string(s.text)
@@ -281,6 +283,7 @@ extension Clip {
             }
             surround = s == .standard ? nil : s
         case "color": color = v.color
+        case _ where path.hasPrefix("raw."): CameraRaw.set(&self.raw, path, n)
         default:
             guard path.hasPrefix("text."), var s = text else { throw EditError("Cannot set \(path) on \(id)") }
             switch path {

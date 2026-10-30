@@ -5,8 +5,9 @@ import Foundation
 
 extension Toolbox {
     func registerMediaTools() {
-        add(Tool(name: "media_import", description: "Add media files (video, audio, images) to the project, or relink missing ones. By default each file is analyzed: word-level transcript (on-device speech recognition), pauses from audio levels, and scene cuts. Media is referenced in place, not copied. Each file is checked to decode; files macOS can't play (MXF, DNxHR, XDCAM, MPEG-2…) are transcoded with ffmpeg to a ProRes 422 HQ mezzanine in the project cache (timecode, frame rate, field order and every audio channel kept; long files in the background) while interchange exports keep naming the original. Interlaced media is detected and deinterlaced. A file that can't be imported is listed with its codec and the fix; the others still import. Returns the path → media id mapping to use in edits.", schema: Schema.object([
-            "paths": Schema.strings("Files or folders to import; folders import every media file inside"),
+        add(Tool(name: "media_import", description: "Add media files (video, audio, images) to the project, or relink missing ones. By default each file is analyzed: word-level transcript (on-device speech recognition), pauses from audio levels, and scene cuts. Media is referenced in place, not copied. Each file is checked to decode; files macOS can't play (MXF, DNxHR, XDCAM, MPEG-2…) are transcoded with ffmpeg to a ProRes 422 HQ mezzanine in the project cache (timecode, frame rate, field order and every audio channel kept; long files in the background) while interchange exports keep naming the original. Interlaced media is detected and deinterlaced. Camera RAW: ProRes RAW files, CinemaDNG (a folder of .dng frames is one clip) and raw stills (DNG, CR3, NEF, ARW…) are developed to scene-linear light with raw.* controls (catalog type=raw); BRAW, R3D, ARRIRAW and Canon RAW Light are recognized and reported with what to export instead. A file that can't be imported is listed with its codec and the fix; the others still import. Returns the path → media id mapping to use in edits.", schema: Schema.object([
+            "paths": Schema.strings("Files or folders to import; folders import every media file inside, and a folder of DNG frames (or each such sub-folder) is one CinemaDNG clip"),
+            "fps": Schema.number("Frame rate of CinemaDNG frames that don't record one (default 24)"),
             "analyze": Schema.bool("Run analysis, default true"),
             "language": Schema.string("Speech language, default en-US"),
             "relink": Schema.bool("Instead of importing, find missing media inside paths (folders searched recursively) and point the project at them"),
@@ -306,7 +307,7 @@ extension Toolbox {
         return (Double(full) / n, Double(partial) / n)
     }
 
-    static let mediaExtensions: Set<String> = Set(["mov", "mp4", "m4v", "mkv", "avi", "mxf", "mts", "m2ts", "mpg", "mpeg", "m2v", "webm", "mp3", "m4a", "wav", "aif", "aiff", "caf", "aac", "flac"]).union(MediaProbe.imageExtensions)
+    static let mediaExtensions: Set<String> = Set(["mov", "mp4", "m4v", "mkv", "avi", "mxf", "mts", "m2ts", "mpg", "mpeg", "m2v", "webm", "mp3", "m4a", "wav", "aif", "aiff", "caf", "aac", "flac"]).union(MediaProbe.imageExtensions).union(Toolbox.rawExtensions)
 
     static func mediaId(for url: URL, existing: Set<String>) -> String {
         let base = url.deletingPathExtension().lastPathComponent.lowercased()

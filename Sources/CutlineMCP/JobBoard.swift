@@ -327,6 +327,17 @@ extension Session {
             let work = transcodeWork(m, info: nil, language: language, analyze: job.analyze ?? true)
             return { try await work(ctx.progress) }
         }
+        if job.features == [Session.developJob] {
+            guard m.isTranscoding, m.raw != nil else { return { "\(m.id) is already linked to its developed copy" } }
+            let work = developWork(m, language: language, analyze: job.analyze ?? true)
+            return { try await work(ctx.progress) }
+        }
+        if job.features == [Session.rawJob] {
+            let requests = CameraRawDevelop.requests(p).filter { $0.media.id == job.mediaId && CameraRawDevelop.cached($0) == nil && (job.keys?.contains($0.key) ?? true) }
+            guard !requests.isEmpty else { return { "nothing left to develop" } }
+            let work = rawWork(requests)
+            return { try await work(ctx.progress) }
+        }
         if job.features == [Session.pictureJob] {
             let requests = ProcessedPicture.requests(p, cuts: Session.sceneCuts(p, b)).filter { $0.media.id == job.mediaId && ProcessedPicture.cached($0) == nil && (job.keys?.contains($0.key) ?? true) }
             guard !requests.isEmpty else { return { "nothing left to render" } }

@@ -180,6 +180,7 @@ public final class MediaLibrary: @unchecked Sendable {
 
     public func image(for media: MediaAsset) -> CIImage? {
         if let i = lock.withLock({ images[media.path] }) { return i }
+        if let raw = media.raw { return CameraRawRender.stillImage(media, settings: raw.settings) }
         guard let img = CIImage(contentsOf: media.url, options: [.applyOrientationProperty: true]) else { return nil }
         let normalized = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
         lock.withLock { images[media.path] = normalized }
