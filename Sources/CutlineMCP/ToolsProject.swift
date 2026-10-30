@@ -86,9 +86,17 @@ extension Toolbox {
             return .text(Describe.project(p, bundle: b, mix: try? session.measuredMix[session.stems().masterKey(for: p)]) + (session.jobs.statusLine.map { "\n" + $0 } ?? ""))
         })
 
-        addEdit(EditTool(name: "canvas_set", description: "Change the canvas size, frame rate or background. Media clips refit automatically; text and captions scale with the canvas.", schema: Schema.object(canvasProps), label: { a, _ in a.optString("preset").map { "Make it \($0)" } ?? "Change canvas" }) { p, args in
+        addEdit(EditTool(name: "canvas_set", description: "Change the canvas size, frame rate or background. Media clips refit automatically; text and captions scale with the canvas. A new frame rate conforms the timeline: cuts, sound edges, transitions, markers, keyframes and caption offsets snap to the new frame grid (cuts that met still meet), or keep their frame counts with conform:\"keep_frames\".", schema: Schema.object(canvasProps.merging([
+            "conform": Schema.string("With fps: snap (default) moves every time to the nearest new frame and keeps the edit's length; keep_frames keeps frame counts, like a sequence frame-rate change, so the edit runs longer or shorter", values: FrameRateConform.allCases.map(\.rawValue)),
+        ]) { a, _ in a }), label: { a, _ in a.optString("preset").map { "Make it \($0)" } ?? "Change canvas" }) { p, args in
+            let mode = try args.enumValue("conform", FrameRateConform.self) ?? .snap
+            let old = p.canvas.fps
             try Toolbox.applyCanvas(&p.canvas, args)
-            return "Canvas is \(p.canvas.width)×\(p.canvas.height) @\(Describe.fmtFps(p.canvas.fps))fps"
+            var lines = ["Canvas is \(p.canvas.width)×\(p.canvas.height) @\(Describe.fmtFps(p.canvas.fps))fps"]
+            if abs(old - p.canvas.fps) > 1e-3 {
+                lines.append(p.conformFrameRate(from: old, mode: mode).summary)
+            }
+            return lines.joined(separator: "\n")
         })
 
         add(Tool(name: "history", description: "The edit history: list entries, undo or redo, jump to any entry, diff two versions, or fork the project into a separate copy (same media, own history) to explore an alternative cut. Every edit is one entry. A new edit after undo discards the undone entries.", schema: Schema.object([

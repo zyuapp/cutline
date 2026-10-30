@@ -150,10 +150,10 @@ extension Toolbox {
             }
             for kind in args.strings("interchange") ?? [] {
                 switch kind {
-                case "otio": try p.otio().write(to: base.appendingPathExtension("otio"))
-                case "fcpxml": try p.fcpxml().write(to: base.appendingPathExtension("fcpxml"), atomically: true, encoding: .utf8)
-                case "edl": try p.edl(title: p.name).write(to: base.appendingPathExtension("edl"), atomically: true, encoding: .utf8)
-                case "xml": try p.xmeml().write(to: base.appendingPathExtension("xml"), atomically: true, encoding: .utf8)
+                case "otio": try p0.otio().write(to: base.appendingPathExtension("otio"))
+                case "fcpxml": try p0.fcpxml().write(to: base.appendingPathExtension("fcpxml"), atomically: true, encoding: .utf8)
+                case "edl": try p0.edl(title: p0.name).write(to: base.appendingPathExtension("edl"), atomically: true, encoding: .utf8)
+                case "xml": try p0.xmeml().write(to: base.appendingPathExtension("xml"), atomically: true, encoding: .utf8)
                 default: throw EditError("interchange is otio, fcpxml, edl or xml (Final Cut Pro 7 XML for Premiere and Resolve)")
                 }
                 report.append("Interchange: \(base.lastPathComponent).\(kind)")

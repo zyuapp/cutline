@@ -285,6 +285,13 @@ private func expectSameV1(_ p: Project, _ q: Project, levels: Bool = true, trans
         #expect(volumes(viaXML) == volumes(source), "\(name) volumes via xmeml")
         let viaFCP = try Importer.fcpxml(Data(source.fcpxml().utf8), relativeTo: nil).project
         #expect(timing(viaFCP).first == timing(source).first, "\(name) via FCPXML")
+        // Every transition comes back over the same frames (FCPXML can't tell an odd-length one cut a frame early from a centered one).
+        func windows(_ p: Project) -> [String] {
+            p.transitionWindows.map { "\(Int(($0.start * p.canvas.fps).rounded(.down)))–\(Int(($0.end * p.canvas.fps).rounded(.down)))" }.sorted()
+        }
+        #expect(windows(viaXML) == windows(source), "\(name) transitions via xmeml")
+        #expect(windows(viaOTIO) == windows(source), "\(name) transitions via OTIO")
+        #expect(viaFCP.transitions.count == source.transitions.count, "\(name) transitions via FCPXML")
         let edl = source.edl(title: name)
         if edl.contains("001  ") {
             let viaEDL = try Importer.edl(edl, fps: source.canvas.fps) { _ in nil }.project

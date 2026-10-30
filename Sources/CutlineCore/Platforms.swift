@@ -69,7 +69,7 @@ public struct Platform: Sendable {
         }
         if let rates = frameRates, !rates.contains(where: { abs($0 - p.canvas.fps) < 0.001 }) {
             let names = rates.map(Platform.fpsName).joined(separator: " or ")
-            out.append("\(name) needs \(names) fps; the canvas is \(Platform.fpsName(p.canvas.fps)) fps. Conform with canvas_set fps:\(rates.map(Platform.fpsValue).joined(separator: " or fps:")) (changing rate re-times cuts to the new frame grid; footage shot at another rate will judder or need retiming).")
+            out.append("\(name) needs \(names) fps; the canvas is \(Platform.fpsName(p.canvas.fps)) fps. Conform with canvas_set fps:\(rates.map(Platform.fpsValue).joined(separator: " or fps:")): cuts, sound edges, transitions, markers and keyframes snap to the nearest frame of the new rate, keeping the edit's length (conform:\"keep_frames\" keeps frame counts instead, so the edit runs longer or shorter). Footage shot at another rate still plays at its own speed and may judder.")
         }
         if let presets, let chosen, !presets.contains(chosen) {
             out.append("\(name) masters are \(presets.joined(separator: ", ")); \(chosen) is a distribution codec. Use preset \(preset).")
