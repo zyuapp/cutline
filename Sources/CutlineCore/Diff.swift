@@ -23,6 +23,8 @@ extension Project {
             if o.hidden != t.hidden { fields.append(t.hidden ? "hidden" : "shown") }
             if o.volume != t.volume { fields.append("volume \(fmt2(o.volume))→\(fmt2(t.volume))") }
             if o.effects != t.effects { fields.append("effects") }
+            if o.volumeCurve != t.volumeCurve { fields.append(t.volumeCurve == nil ? "volume automation removed" : "volume automation (\(t.volumeCurve!.keys.count) keys)") }
+            if o.role != t.role { fields.append("role \(t.role ?? "auto")") }
             if !fields.isEmpty { out.append("~ track \(t.id): " + fields.joined(separator: ", ")) }
         }
 

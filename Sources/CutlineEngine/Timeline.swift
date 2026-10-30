@@ -87,6 +87,7 @@ public enum TimelineBuilder {
             }
             guard !clips.isEmpty else { continue }
             let trackGain = dryTrack != nil ? 1 : (track.muted ? 0 : track.volume) * master
+            let fader: Curve? = dryTrack != nil || track.muted ? nil : track.volumeCurve.map { c in Curve(keys: c.keys.map { var k = $0; k.v = .number(($0.v.number ?? 1) * master); return k }) }
             let hasAudioFx = track.effects.contains { EffectCatalog.isAudio($0.type) && $0.enabled }
             var stemURL: URL?
             if dryTrack == nil, hasAudioFx, masterStem == nil {
@@ -175,10 +176,14 @@ public enum TimelineBuilder {
                 if let clipStem {
                     let range = CMTimeRange(start: time(span.start), end: time(span.end))
                     try insert(range.intersection(try await clipStem.load(.timeRange)), of: clipStem, into: lanes[lane!].track, at: time(span.start), sourceDuration: range.duration, target: range.duration)
-                    lanes[lane!].params.setVolume(Float(trackGain), at: time(span.start))
+                    if let fader {
+                        addFader(fader, from: span.start, to: span.end, to: lanes[lane!].params)
+                    } else {
+                        lanes[lane!].params.setVolume(Float(trackGain), at: time(span.start))
+                    }
                 } else {
                     try insertPieces(clip, from: -clip.audioLead, to: clip.duration + clip.audioLag, base: base, fps: 20, source: a, available: ar, into: lanes[lane!].track)
-                    addVolumeEnvelope(clip, trackGain: trackGain, to: lanes[lane!].params)
+                    addVolumeEnvelope(clip, trackGain: trackGain, fader: fader, to: lanes[lane!].params)
                 }
                 lanes[lane!].end = span.end
             }
@@ -189,7 +194,7 @@ public enum TimelineBuilder {
                    let t = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
                     try t.insertTimeRange(try await st.load(.timeRange), of: st, at: .zero)
                     let params = AVMutableAudioMixInputParameters(track: t)
-                    params.setVolume(Float(trackGain), at: .zero)
+                    if let fader { addFader(fader, from: 0, to: duration, to: params) } else { params.setVolume(Float(trackGain), at: .zero) }
                     audioParams.append(params)
                 }
             }
@@ -226,19 +231,30 @@ public enum TimelineBuilder {
     /// Gain over the clip's sound: animated or fixed volume, times fades, with a few ms of ramp at
     /// the edges so cuts don't click. Animated volume is sampled every 50 ms. Times are relative
     /// to the clip's picture start, so split-edit lead is negative.
-    static func addVolumeEnvelope(_ clip: Clip, trackGain: Double, to params: AVMutableAudioMixInputParameters) {
+    /// Ramps following fader automation, sampled every 50 ms.
+    static func addFader(_ curve: Curve, from a: Seconds, to b: Seconds, to params: AVMutableAudioMixInputParameters) {
+        var t = a
+        while t < b - 1e-4 {
+            let n = min(b, t + 0.05)
+            params.setVolumeRamp(fromStartVolume: Float(max(0, curve.value(at: t)?.number ?? 1)), toEndVolume: Float(max(0, curve.value(at: n)?.number ?? 1)), timeRange: CMTimeRange(start: time(t), duration: time(n - t)))
+            t = n
+        }
+    }
+
+    static func addVolumeEnvelope(_ clip: Clip, trackGain: Double, fader: Curve? = nil, to params: AVMutableAudioMixInputParameters) {
         let a0 = -clip.audioLead, a1 = clip.duration + clip.audioLag
         let len = a1 - a0
         guard len > 0 else { return }
         let fi = min(max(clip.audioFadeIn, declick), len / 2)
         let fo = min(max(clip.audioFadeOut, declick), len / 2)
         func gain(_ local: Seconds) -> Float {
-            var g = clip.number("audio.volume", at: local, default: clip.volume) * trackGain
+            var g = clip.number("audio.volume", at: local, default: clip.volume) * (fader?.value(at: clip.start + local)?.number ?? trackGain)
             if local - a0 < fi { g *= max(0, local - a0) / fi }
             if a1 - local < fo { g *= max(0, a1 - local) / fo }
             return Float(max(0, g))
         }
         var points: [Seconds] = [a0, a0 + fi, a1 - fo, a1]
+        if fader != nil { points += stride(from: a0, to: a1, by: 0.05).map { $0 } }
         if let curve = clip.anim["audio.volume"] {
             points += stride(from: a0, to: a1, by: 0.05).map { $0 }
             points += curve.keys.map(\.t).filter { $0 > a0 && $0 < a1 }

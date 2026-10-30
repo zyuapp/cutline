@@ -167,6 +167,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var clips: [Clip]
     /// Audio role for stem delivery: dialogue, music, effects, or any custom name.
     public var role: String?
+    /// Fader automation: track volume over timeline time, replacing `volume` where set.
+    public var volumeCurve: Curve?
 
     public init(id: String, kind: TrackKind, name: String, muted: Bool = false, hidden: Bool = false, volume: Double = 1, effects: [Effect] = [], clips: [Clip] = []) {
         self.id = id
@@ -179,7 +181,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.clips = clips
     }
 
-    enum CodingKeys: String, CodingKey { case id, kind, name, muted, hidden, volume, effects, clips, role }
+    enum CodingKeys: String, CodingKey { case id, kind, name, muted, hidden, volume, effects, clips, role, volumeCurve }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -192,9 +194,13 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         effects = try c.decodeIfPresent([Effect].self, forKey: .effects) ?? []
         clips = try c.decodeIfPresent([Clip].self, forKey: .clips) ?? []
         role = try c.decodeIfPresent(String.self, forKey: .role)
+        volumeCurve = try c.decodeIfPresent(Curve.self, forKey: .volumeCurve)
     }
 
     public var end: Seconds { clips.last?.end ?? 0 }
+
+    /// Fader level at a timeline time.
+    public func volume(at t: Seconds) -> Double { volumeCurve?.value(at: t)?.number ?? volume }
 
     public func clip(at t: Seconds, epsilon: Seconds = 1e-6) -> Clip? {
         clips.first { t >= $0.start - epsilon && t < $0.end - epsilon }

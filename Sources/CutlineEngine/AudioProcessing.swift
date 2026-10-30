@@ -71,6 +71,7 @@ public final class AudioStems: @unchecked Sendable {
         var parts: [Data] = []
         for t in project.tracks where t.clips.contains(where: { $0.kind == .media }) {
             parts.append(Data("\(t.id)|\(t.muted)|\(t.volume)|\(key(for: t, in: project))".utf8))
+            if let c = t.volumeCurve { parts.append((try? Self.encoder.encode(c)) ?? Data()) }
         }
         parts.append((try? Self.encoder.encode(project.master)) ?? Data())
         return "master-" + hash(parts)

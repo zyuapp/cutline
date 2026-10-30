@@ -29,8 +29,19 @@ extension Toolbox {
                     p.tracks[loc.track].clips[loc.clip] = c
                 case .track(let i):
                     var t = p.tracks[i]
-                    guard args.raw["animate"] == nil else { throw EditError("Track parameters can't be animated; animate the clips instead (target \"\(t.id)/*\")") }
                     var changed: [String] = []
+                    for (path, raw) in (args.raw["animate"]?.object ?? [:]) {
+                        guard path == "volume" else { throw EditError("Only a track's volume can be animated (fader automation); animate clip parameters on \(t.id)/*") }
+                        guard let list = raw.array else { throw EditError("animate.volume is a list of [time, value, ease?]") }
+                        var keys: [CurveKey] = []
+                        for k in list {
+                            guard let arr = k.array, arr.count >= 2, let v = arr[1].double, v >= 0, v <= 4 else { throw EditError("Track volume keys are [timeline time, 0…4, ease?]") }
+                            keys.append(CurveKey(t: try Args.parseTime(arr[0], name: "time"), v: .number(v), ease: arr.count > 2 ? Easing(rawValue: arr[2].string ?? "") ?? .easeInOut : .easeInOut))
+                        }
+                        t.volumeCurve = keys.isEmpty ? nil : Curve(keys: keys)
+                        changed.append("volume automation (\(keys.count) keys)")
+                    }
+                    if args.strings("unset")?.contains("volume") == true { t.volumeCurve = nil; changed.append("volume automation removed") }
                     for (path, v) in (args.raw["set"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
                         try t.set(path, try Toolbox.paramValue(v))
                         changed.append("\(path)=\(try Toolbox.paramValue(v))")
