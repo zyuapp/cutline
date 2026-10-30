@@ -8,7 +8,7 @@ extension Toolbox {
 
     static let recipeDocs = """
         duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
-        loudness_normalize: {target_lufs: -14, ceiling_db: -1, limit: true}. \
+        loudness_normalize: {target_lufs: -14, ceiling_db: -1.5, limit: true}. \
         split_edit: {edit: "clip_a|clip_b", offset: seconds (+ J cut, − L cut)}. \
         speed_ramp: {clip, at: time (default middle), speed: 0.3, ramp: 0.3, hold: 0.8}. \
         freeze_frame: {at: time, duration: 1.5, track (default top video at that time), zoom: 1 (e.g. 1.08 pushes in)}. \
@@ -31,6 +31,16 @@ extension Toolbox {
     func moreRecipes(_ name: String, _ a: Args, dry: Bool) async throws -> ToolResult {
         let b = try session.requireBundle()
         let current = try session.project()
+        // Face-driven recipes are only as good as the shot analysis; wait briefly for it, then say if it's still missing.
+        if ["reframe", "punch_in", "follow"].contains(name) {
+            let used = Set(current.tracks.flatMap(\.clips).compactMap(\.mediaId))
+            if session.jobs.active.contains(where: { used.contains($0.mediaId) && $0.features.contains("shots") }) {
+                await session.jobs.wait(timeout: 240)
+            }
+            if let job = session.jobs.active.first(where: { used.contains($0.mediaId) && $0.features.contains("shots") }) {
+                throw EditError("Shot and face analysis of \(job.mediaId) is still running (\(Int(job.progress * 100))%); call analysis_read wait: 300, then run \(name) again")
+            }
+        }
         switch name {
         case "speed_ramp":
             let id = try a.string("clip")

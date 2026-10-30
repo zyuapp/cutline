@@ -45,7 +45,9 @@ extension Toolbox {
             "what": Schema.string("What to read", values: ["summary", "beats", "speakers", "shots", "sounds", "faces", "levels", "jobs"]),
             "start": Schema.time("From this source time"),
             "end": Schema.time("Until this source time"),
+            "wait": Schema.number("Seconds to wait for running analysis to finish first (up to 600), e.g. before reframing on face data"),
         ])) { [unowned self] args in
+            if let w = args.optDouble("wait"), w > 0 { await session.jobs.wait(timeout: min(w, 600)) }
             let b = try session.requireBundle()
             let p = try session.project()
             let what = args.optString("what") ?? "summary"
@@ -70,7 +72,7 @@ extension Toolbox {
             }
             guard let m = p.mediaAsset(id) else { throw EditError("No media \(id)") }
             let pending = session.jobs.active.filter { $0.mediaId == id }
-            if !pending.isEmpty { lines.append("Still analyzing: " + pending.map { "\($0.features.joined(separator: "+")) \(Int($0.progress * 100))%" }.joined(separator: ", ")) }
+            if !pending.isEmpty { lines.append("Still analyzing: " + pending.map { "\($0.features.joined(separator: "+")) \(Int($0.progress * 100))%" }.joined(separator: ", ") + " (pass wait: 300 to block until it finishes)") }
             let all = what == "summary"
             if all {
                 lines.append("\(id): \(m.isImage ? "image" : fmt2(m.duration) + "s") \(m.hasVideo ? "\(m.width)×\(m.height)" : "audio only")" + (m.hasVideo && !m.isImage ? " \(Describe.fmtFps(m.fps))fps" : ""))

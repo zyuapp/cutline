@@ -56,7 +56,8 @@ extension Toolbox {
                 }
             case "loudness_normalize":
                 let target = a.optDouble("target_lufs") ?? -14
-                let ceiling = a.optDouble("ceiling_db") ?? -1
+                // −1.5 leaves room for lossy encoders, which overshoot the limiter by a few tenths of a dB.
+                let ceiling = a.optDouble("ceiling_db") ?? -1.5
                 let limit = a.bool("limit", default: true)
                 let original = try session.project()
                 var p = original
