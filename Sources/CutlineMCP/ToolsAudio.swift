@@ -156,8 +156,10 @@ extension Toolbox {
         for (a, z) in zip(bounds, bounds.dropFirst()) where z - a > 0.3 {
             let fs = r.frames.filter { $0.time >= a + 0.05 && $0.time < z - 0.05 }
             guard !fs.isEmpty else { continue }
-            let main = p.tracks.filter { $0.kind == .video && !$0.hidden }.compactMap { $0.clip(at: (a + z) / 2) }.filter { $0.kind == .media || $0.kind == .solid }.last
-            let label = "\(fmt2(a))–\(fmt2(z)) \(main?.id ?? "")"
+            // Attribute the shot to the layer showing most of the frame; list smaller layers over it.
+            let layers = p.pictureLayers(at: (a + z) / 2).sorted { $0.visible > $1.visible }
+            let others = layers.dropFirst().filter { $0.visible >= 0.005 }.map { "\($0.clip.id) \(Int(($0.visible * 100).rounded()))%" }
+            let label = "\(fmt2(a))–\(fmt2(z)) \(layers.first?.clip.id ?? "")" + (others.isEmpty ? "" : " (with " + others.joined(separator: ", ") + ")")
             lines.append("  \(label): " + summary(fs[...]))
             let n = Double(fs.count)
             let cur = (luma: fs.map(\.luma).reduce(0, +) / n, cb: fs.map(\.cb).reduce(0, +) / n, cr: fs.map(\.cr).reduce(0, +) / n, label: label)
