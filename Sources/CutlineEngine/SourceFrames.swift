@@ -162,7 +162,7 @@ final class SourceFrames {
 
 /// Runs blocking decode, Vision and encode work on its own thread, so it never holds Swift's cooperative pool
 /// while framework work it waits on needs threads. `work` should poll `cancelled`.
-func runBlocking<T>(_ work: @escaping (_ cancelled: () -> Bool) throws -> T) async throws -> T {
+public func runBlocking<T>(_ work: @escaping (_ cancelled: () -> Bool) throws -> T) async throws -> T {
     let flag = CancelFlag()
     return try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<T, Error>) in

@@ -50,9 +50,12 @@ public enum MediaProbe {
         var media = MediaAsset(id: id, path: url.path, name: name, duration: duration, width: width, height: height, fps: fps, hasVideo: !videoTracks.isEmpty, hasAudio: !audioTracks.isEmpty)
         media.fieldOrder = fieldOrder
         if let tc = try? await startTimecode(asset) {
-            media.timecodeStart = tc.seconds
+            // A short file's nominal rate can be off; its timecode track names the exact one.
+            if media.hasVideo, abs(media.fps - tc.format.rate) < 0.05 * tc.format.rate { media.fps = tc.format.rate }
+            media.setTimecode(frames: tc.frames, format: tc.format)
             media.reel = tc.reel
         }
+        if media.reel == nil { media.reel = await metadataReel(asset) }
         if let a = audioTracks.first, let fd = try? await a.load(.formatDescriptions).first,
            let rate = CMAudioFormatDescriptionGetStreamBasicDescription(fd)?.pointee.mSampleRate, rate > 0 {
             media.sampleRate = rate
@@ -70,26 +73,59 @@ public enum MediaProbe {
         return detail.map(bottomFirst.contains) == true ? .bff : .tff
     }
 
-    /// The timecode of the first frame from a QuickTime timecode track, and its reel name.
-    static func startTimecode(_ asset: AVAsset) async throws -> (seconds: Seconds, reel: String?)? {
+    /// Source timecode of the first frame from a QuickTime or MP4 timecode track ('tmcd' or 'tc64'): the first
+    /// sample's frame number counted at the track's frame duration and quanta, drop frame as its flags say, and
+    /// the reel from the sample description's source reference name.
+    public struct StartTimecode: Equatable, Sendable {
+        public var frames: Int
+        public var format: TimecodeFormat
+        public var reel: String?
+        public var label: String { format.string(frames) }
+        public var seconds: Seconds { format.seconds(frames) }
+    }
+
+    static func startTimecode(_ asset: AVAsset) async throws -> StartTimecode? {
         guard let track = try await asset.loadTracks(withMediaType: .timecode).first else { return nil }
         // Reading blocks, so it runs off the cooperative pool.
-        return try await runBlocking { _ -> (seconds: Seconds, reel: String?)? in
+        return try await runBlocking { _ -> StartTimecode? in
             let reader = try AVAssetReader(asset: asset)
             let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
             reader.add(out)
-            guard reader.startReading(), let sample = out.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(sample), let fd = CMSampleBufferGetFormatDescription(sample) else { return nil }
-            var raw = Data(count: CMBlockBufferGetDataLength(block))
-            raw.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
-            guard raw.count >= 4 else { return nil }
-            let frame = raw.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
-            let frameDuration = CMTimeCodeFormatDescriptionGetFrameDuration(fd)
-            let quanta = Int(CMTimeCodeFormatDescriptionGetFrameQuanta(fd))
-            guard frameDuration.seconds > 0, quanta > 0 else { return nil }
-            let frames = frame
-            let reel = (CMFormatDescriptionGetExtension(fd, extensionKey: kCMTimeCodeFormatDescriptionExtension_SourceReferenceName) as? [String: Any])?[kCMTimeCodeFormatDescriptionKey_Value as String] as? String
-            return (Double(frames) * frameDuration.seconds, reel)
+            guard reader.startReading() else { return nil }
+            defer { reader.cancelReading() }
+            // The first buffers can be empty markers.
+            for _ in 0..<8 {
+                guard let sample = out.copyNextSampleBuffer() else { return nil }
+                guard let block = CMSampleBufferGetDataBuffer(sample), let fd = CMSampleBufferGetFormatDescription(sample) else { continue }
+                let wide = CMFormatDescriptionGetMediaSubType(fd) == kCMTimeCodeFormatType_TimeCode64
+                var raw = Data(count: CMBlockBufferGetDataLength(block))
+                raw.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
+                guard raw.count >= (wide ? 8 : 4) else { return nil }
+                let bytes = raw.prefix(wide ? 8 : 4)
+                let frame = wide ? Int(Int64(bitPattern: bytes.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) })) : Int(Int32(bitPattern: bytes.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }))
+                let frameDuration = CMTimeCodeFormatDescriptionGetFrameDuration(fd)
+                let quanta = Int(CMTimeCodeFormatDescriptionGetFrameQuanta(fd))
+                guard frameDuration.value > 0, frameDuration.timescale > 0, quanta > 0 else { return nil }
+                let flags = CMTimeCodeFormatDescriptionGetTimeCodeFlags(fd)
+                let drop = flags & kCMTimeCodeFlag_DropFrame != 0
+                let format = TimecodeFormat(fps: Double(frameDuration.timescale) / Double(frameDuration.value), dropFrame: drop)
+                let name = CMFormatDescriptionGetExtension(fd, extensionKey: kCMTimeCodeFormatDescriptionExtension_SourceReferenceName) as? [String: Any]
+                let reel = (name?[kCMTimeCodeFormatDescriptionKey_Value as String] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                return StartTimecode(frames: max(0, frame) % max(1, format.framesPerDay), format: format, reel: reel)
+            }
+            return nil
         }
+    }
+
+    /// A reel or tape name from the file's metadata (QuickTime, iTunes or user data), for files whose timecode track names none.
+    static func metadataReel(_ asset: AVAsset) async -> String? {
+        guard let items = try? await asset.load(.metadata) else { return nil }
+        for item in items {
+            let key = (item.identifier?.rawValue ?? (item.key as? String) ?? "").lowercased()
+            guard key.contains("reel") || key.contains("tape") else { continue }
+            if let v = try? await item.load(.stringValue), !v.trimmingCharacters(in: .whitespaces).isEmpty { return v.trimmingCharacters(in: .whitespaces) }
+        }
+        return nil
     }
 }
 

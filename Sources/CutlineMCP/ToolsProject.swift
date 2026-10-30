@@ -229,8 +229,8 @@ extension Toolbox {
             if var real = try? await MediaProbe.probe(p.media[i].url, id: p.media[i].id) {
                 real.name = p.media[i].name
                 real.tags = p.media[i].tags
-                real.timecodeStart = real.timecodeStart ?? p.media[i].timecodeStart
-                p.media[i] = real
+                real.reel = real.reel ?? p.media[i].reel
+                p.replaceMediaKeepingTimecode(real)
             }
         }
         if !result.missingMedia.isEmpty { notes.append("Missing media (relink with media_import, then clip_update media_id): " + result.missingMedia.prefix(10).joined(separator: ", ")) }

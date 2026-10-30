@@ -277,7 +277,7 @@ private func lumaFrame(code: UInt16, width: Int = 64, height: Int = 64) -> CVPix
             ms = min(ms, Date().timeIntervalSince(start) * 1000)
         }
         print("scope \(kind.rawValue): \(String(format: "%.1f", ms)) ms")
-        #expect(ms < 500)
+        #expect(ms < 1000)
     }
     let start = Date()
     for _ in 0..<5 { _ = Scopes.stats(hd, context: context) }

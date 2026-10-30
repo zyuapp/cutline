@@ -282,16 +282,19 @@ public enum Diarizer {
         output.alwaysCopiesSampleData = false
         reader.add(output)
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read audio of \(url.lastPathComponent)") }
-        var samples: [Float] = []
-        while let buffer = output.copyNextSampleBuffer() {
-            guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
-            var length = 0
-            var ptr: UnsafeMutablePointer<CChar>?
-            guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
-            let n = length / MemoryLayout<Float>.size
-            ptr.withMemoryRebound(to: Float.self, capacity: n) { samples.append(contentsOf: UnsafeBufferPointer(start: $0, count: n)) }
+        let samples = try await runBlocking { _ -> [Float] in
+            var samples: [Float] = []
+            while let buffer = output.copyNextSampleBuffer() {
+                guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+                var length = 0
+                var ptr: UnsafeMutablePointer<CChar>?
+                guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
+                let n = length / MemoryLayout<Float>.size
+                ptr.withMemoryRebound(to: Float.self, capacity: n) { samples.append(contentsOf: UnsafeBufferPointer(start: $0, count: n)) }
+            }
+            if reader.status == .failed { throw reader.error ?? EditError("Audio decode failed for \(url.lastPathComponent)") }
+            return samples
         }
-        if reader.status == .failed { throw reader.error ?? EditError("Audio decode failed for \(url.lastPathComponent)") }
         return samples
     }
 }

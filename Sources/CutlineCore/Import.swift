@@ -85,6 +85,16 @@ public enum Importer {
         return !path.isEmpty && FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && !isDir.boolValue
     }
 
+    /// Whether `path` names `m`'s file: the file it plays or, for a mezzanine, the camera original.
+    static func samePath(_ m: MediaAsset, _ path: String) -> Bool {
+        guard !path.isEmpty else { return false }
+        if m.path == path || m.conformPath == path { return true }
+        guard path.hasPrefix("/") else { return false }
+        func canonical(_ p: String) -> String { URL(fileURLWithPath: p).standardizedFileURL.resolvingSymlinksInPath().path }
+        let p = canonical(path)
+        return [m.path, m.conformPath].contains { $0.hasPrefix("/") && canonical($0) == p }
+    }
+
     /// The last component of a POSIX or Windows path.
     static func fileName(_ path: String) -> String {
         path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? path
@@ -103,6 +113,28 @@ public enum Importer {
         paths.filter { !$0.isEmpty }.enumerated().map {
             Effect(id: $0.offset == 0 ? "lut" : "lut\($0.offset + 1)", type: "color.lut", enabled: false, params: ["file": .string($0.element)])
         }
+    }
+
+    /// A clip's interchange grade: its CDL and the LUT files named beside it. One LUT whose file exists comes back
+    /// as the LUT itself when there is no CDL or the CDL is that LUT's own fit (as exporters write a lone LUT);
+    /// otherwise the CDL is the grade and the LUTs stay disabled beside it.
+    static func colorEffects(cdl: CDL?, luts: [String]) -> [Effect] {
+        let luts = luts.filter { !$0.isEmpty }
+        if luts.count == 1, exists(luts[0]) {
+            let lut = Effect(id: "lut", type: "color.lut", params: ["file": .string(luts[0])])
+            guard let cdl else { return [lut] }
+            if let fit = Clip(id: "", kind: .media, start: 0, duration: 1, effects: [lut]).cdl, fit.distance(to: cdl) < 2e-3 { return [lut] }
+        }
+        return (cdl.map { [$0.effect(id: "cdl")] } ?? []) + lutEffects(luts)
+    }
+
+    /// The grade in a note or comment: `ASC_SOP … ASC_SAT …` and `LUT <path>` parts, separated by ";".
+    static func noteColor(_ note: String) -> [Effect] {
+        let luts = note.components(separatedBy: ";").compactMap { part -> String? in
+            let s = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            return s.hasPrefix("LUT ") ? String(s.dropFirst(4)).trimmingCharacters(in: .whitespaces) : nil
+        }
+        return colorEffects(cdl: CDL(text: note), luts: luts)
     }
 
     /// Holds the clip's first source frame for its whole length, silently.
@@ -161,7 +193,7 @@ public enum Importer {
             let fps = max(p.media[i].fps > 0 ? p.media[i].fps : p.canvas.fps, 1)
             let shift = low < -1e-6 ? (-low * fps - 1e-6).rounded(.up) / fps : 0
             if shift > 0 {
-                if let tc = p.media[i].timecodeStart { p.media[i].timecodeStart = tc - shift }
+                if let tc = p.media[i].timecodeStart { p.media[i].setTimecode(seconds: tc - shift, format: p.media[i].timecodeFormat(fallback: p.canvas.fps)) }
                 func move(_ tracks: inout [Track]) {
                     for t in tracks.indices {
                         for c in tracks[t].clips.indices where tracks[t].clips[c].kind == .media && tracks[t].clips[c].mediaId == id {
@@ -248,15 +280,14 @@ public enum Importer {
         warnings = condense(warnings)
     }
 
-    /// Alignment and duration of a transition running `before` seconds before its cut and `after` past it,
-    /// covering the same frames; uneven ones are centered on the cut and widened.
-    static func alignment(before a: Seconds, after b: Seconds, frame: Seconds, name: String, warnings: inout [String]) -> (TransitionAlign, Seconds) {
+    /// Alignment, duration and cut offset of a transition running `before` seconds before its cut and `after`
+    /// past it, covering the same frames; uneven ones keep the cut where it is (`Transition.cutOffset`).
+    static func alignment(before a: Seconds, after b: Seconds, frame: Seconds) -> (align: TransitionAlign, duration: Seconds, cutOffset: Seconds?) {
         let half = frame / 2
-        if a < half { return (.start, b) }
-        if b < half { return (.end, a) }
-        if abs(a - b) < half { return (.center, a + b) }
-        warnings.append("Transition \"\(name)\" runs \(fmt2(a))s before its cut and \(fmt2(b))s after; centered and widened to \(fmt2(2 * max(a, b)))s")
-        return (.center, 2 * max(a, b))
+        if a < half { return (.start, b, nil) }
+        if b < half { return (.end, a, nil) }
+        if abs(a - b) < half { return (.center, a + b, nil) }
+        return (.center, a + b, a)
     }
 }
 
@@ -379,6 +410,8 @@ final class FCPReader {
     var media: [MediaAsset] = []
     var sequences: [NestedSequence] = []
     var compounds: [String: (id: String, tcStart: Seconds)] = [:]
+    /// Drop frame of each media's timecode, from the `tcFormat` of its first clip.
+    var dropFrame: [String: Bool] = [:]
     var usedSequenceIds = Set<String>()
     var clipCount = 0, markerCount = 0
     var grid = FrameGrid(fps: 30)
@@ -449,6 +482,11 @@ final class FCPReader {
                     t = snap(t + (time(e.attr("duration")) ?? 0))
                 }
             }
+        }
+        for i in media.indices {
+            guard let start = media[i].timecodeStart else { continue }
+            let rate = media[i].fps > 0 ? media[i].fps : canvas.fps
+            media[i].setTimecode(seconds: start, format: TimecodeFormat(fps: rate, dropFrame: dropFrame[media[i].id]))
         }
         for i in media.indices where media[i].tags != nil {
             var seen: [MediaTag] = []
@@ -544,6 +582,7 @@ final class FCPReader {
                                fps: fps, hasVideo: hasVideo, hasAudio: hasAudio, isImage: isImage)
             let start = time(e.attr("start")) ?? 0
             if start > 0, !isImage { m.timecodeStart = start }
+            if let reel = e.first("metadata")?.elems.first(where: { $0.attr("key") == "com.apple.proapps.studio.reel" })?.attr("value"), !reel.isEmpty { m.reel = reel }
             if hasAudio, var rate = e.attr("audioRate")?.lowercased() {
                 let k = rate.hasSuffix("k")
                 if k { rate.removeLast() }
@@ -593,8 +632,9 @@ final class FCPReader {
             let s = time(tr.attr("offset")).map(place) ?? (cut - d / 2)
             let half = 0.5 / grid.rate
             var align = TransitionAlign.center
+            var cutOffset: Seconds?
             if abs(s - cut) < half { align = .start } else if abs(s + d - cut) < half { align = .end } else if abs(s - (cut - d / 2)) >= half {
-                warnings.append("Transition \(label(tr)) isn't on a cut; centered on it")
+                if cut > s, cut < s + d { cutOffset = snap(cut - s) } else { warnings.append("Transition \(label(tr)) isn't on a cut; centered on it") }
             }
             let name = tr.attr("name") ?? tr.first("filter-video")?.attr("name") ?? "Transition"
             let lower = name.lowercased()
@@ -605,7 +645,9 @@ final class FCPReader {
                 type = "dissolve"
                 if !lower.contains("dissolve") { warnings.append("Transition \(name) imported as a dissolve") }
             }
-            ctx.transitions.append(Transition(id: "tr\(ctx.transitions.count + 1)", from: prev?.clipId, to: next?.clipId, type: type, duration: snap(d), align: align))
+            var made = Transition(id: "tr\(ctx.transitions.count + 1)", from: prev?.clipId, to: next?.clipId, type: type, duration: snap(d), align: align)
+            made.cutOffset = prev?.clipId != nil && next?.clipId != nil ? cutOffset : nil
+            ctx.transitions.append(made)
         }
         if storyline { flushStoryline() }
     }
@@ -756,6 +798,7 @@ final class FCPReader {
             return nil
         }
         var clip = Clip(id: "", kind: .media, name: e.attr("name") ?? m.name, mediaId: m.id, start: 0, duration: duration)
+        if let tc = e.attr("tcFormat"), dropFrame[m.id] == nil { dropFrame[m.id] = tc == "DF" }
         if !m.isImage {
             let (map, speed) = timeMap(e)
             clampSpeed(&clip, speed, e)
@@ -913,13 +956,7 @@ final class FCPReader {
             clip.audioLead = snap(start - a0)
             clip.audioLag = snap(a0 + ad - start - d)
         }
-        if let note = e.first("note")?.stringValue {
-            if let cdl = CDL(text: note) { clip.effects.append(cdl.effect(id: "cdl")) }
-            clip.effects += Importer.lutEffects(note.components(separatedBy: ";").compactMap { part in
-                let s = part.trimmingCharacters(in: .whitespacesAndNewlines)
-                return s.hasPrefix("LUT ") ? String(s.dropFirst(4)).trimmingCharacters(in: .whitespaces) : nil
-            })
-        }
+        if let note = e.first("note")?.stringValue { clip.effects += Importer.noteColor(note) }
         var channels: [Bool] = []
         for k in e.elems {
             switch k.name ?? "" {
@@ -1205,7 +1242,7 @@ final class OTIOReader {
             if name == file { name = (file as NSString).deletingPathExtension }
             let isImage = Importer.stillExtensions.contains((file as NSString).pathExtension.lowercased())
                 && (avail.map { $0.duration <= 1.5 / max(availRate ?? canvas.fps, 1) } ?? true)
-            return addMedia(key: path, path: path, name: name, avail: avail, rate: availRate, kind: kind, isImage: isImage, shown: path)
+            return addMedia(key: path, path: path, name: name, avail: avail, rate: availRate, kind: kind, isImage: isImage, shown: path, ref: ref)
         case "ImageSequenceReference":
             guard let r = ref, let baseURL = r["target_url_base"] as? String else { break }
             let prefix = r["name_prefix"] as? String ?? "", suffix = r["name_suffix"] as? String ?? ""
@@ -1225,7 +1262,7 @@ final class OTIOReader {
         return addMedia(key: "\u{0}" + name, path: name, name: (name as NSString).deletingPathExtension, avail: avail, rate: availRate, kind: kind, isImage: false, shown: name)
     }
 
-    func addMedia(key: String, path: String, name: String, avail: (start: Seconds, duration: Seconds)?, rate: Double?, kind: TrackKind, isImage: Bool, shown: String) -> String {
+    func addMedia(key: String, path: String, name: String, avail: (start: Seconds, duration: Seconds)?, rate: Double?, kind: TrackKind, isImage: Bool, shown: String, ref: [String: Any]? = nil) -> String {
         if let i = mediaByKey[key] {
             if kind == .video { media[i].hasVideo = true } else { media[i].hasAudio = true }
             return media[i].id
@@ -1235,7 +1272,11 @@ final class OTIOReader {
                            width: canvas.width, height: canvas.height,
                            fps: kind == .video && !isImage ? Importer.niceFps(rate ?? canvas.fps) : 0,
                            hasVideo: kind == .video, hasAudio: kind == .audio, isImage: isImage)
-        if let s = avail?.start, s > 0, !isImage { m.timecodeStart = s }
+        if let s = avail?.start, s > 0, !isImage {
+            let label = Self.path(ref, ["metadata", "cutline", "timecode"]) as? String
+            m.setTimecode(seconds: s, format: TimecodeFormat(fps: rate ?? canvas.fps, dropFrame: label.map(TimecodeFormat.isDropLabel)))
+        }
+        if let reel = Self.path(ref, ["metadata", "cutline", "reel"]) as? String, !reel.isEmpty { m.reel = reel }
         media.append(m)
         mediaByKey[key] = media.count - 1
         availableStart[id] = isImage ? 0 : avail?.start ?? 0
@@ -1321,16 +1362,18 @@ final class OTIOReader {
             let to = index < items.count ? items[index].id : nil
             guard a + b > 0, from != nil || to != nil else { continue }
             let label = (tr["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? tr["transition_type"] as? String ?? ""
-            let (align, duration) = from != nil && to != nil
-                ? Importer.alignment(before: a, after: b, frame: frame, name: label, warnings: &warnings)
-                : (TransitionAlign.center, a + b)
+            let (align, duration, cutOffset) = from != nil && to != nil
+                ? Importer.alignment(before: a, after: b, frame: frame)
+                : (TransitionAlign.center, a + b, nil)
             let name = label.lowercased()
             var type = "dissolve"
             if name.contains("dip") || name.contains("fade to") { type = "dip" } else if tr["transition_type"] as? String != "SMPTE_Dissolve" && !name.contains("dissolve") && !name.contains("cross fade") {
                 warnings.append("Transition \(label) imported as a dissolve")
             }
             transitionCount += 1
-            transitions.append(Transition(id: "tr\(transitionCount)", from: from, to: to, type: type, duration: duration, align: align))
+            var made = Transition(id: "tr\(transitionCount)", from: from, to: to, type: type, duration: duration, align: align)
+            made.cutOffset = cutOffset
+            transitions.append(made)
         }
         return (clips, disabled, transitions)
     }
@@ -1379,8 +1422,7 @@ final class OTIOReader {
         if let v = Self.number(md["volume"]) { c.volume = v }
         restore(md, &c)
         if Self.decode([Effect].self, md["effects"]) == nil {
-            if let cdl = Self.cdl(item) { c.effects.append(cdl.effect(id: "cdl")) }
-            c.effects += Importer.lutEffects([Self.path(item, ["metadata", "lut", "file"]) as? String].compactMap { $0 })
+            c.effects += Importer.colorEffects(cdl: Self.cdl(item), luts: [Self.path(item, ["metadata", "lut", "file"]) as? String].compactMap { $0 })
         }
         if let b = (md["blend"] as? String).flatMap({ BlendMode(rawValue: $0) }) { c.blend = b }
         return c
@@ -1539,8 +1581,10 @@ extension Importer {
     /// `*ASC_SOP`/`*ASC_SAT` become a `color.cdl` effect and `*LUT:` a disabled `color.lut` beside it; FCM sets the
     /// canvas's drop frame.
     ///
-    /// Each source is first matched to `existing` media by source file path, then by reel or clip name, then by
-    /// file name; those are kept as they are. Others are looked up with `mediaResolver` by clip name, source file
+    /// Each source is first matched to `existing` media by source file path (or camera original), then by reel
+    /// (the file whose timecode covers the event when several share it) or clip name, then by file name; those are
+    /// kept as they are, and their source timecodes count from their own timecode at their own rate (zero-based
+    /// when before it). Others are looked up with `mediaResolver` by clip name, source file
     /// path, file name and reel, in that order. The project lists a placeholder MediaAsset for each other id it uses
     /// (sized from the edit) to replace with the real one. Sources it can't resolve stay as offline media named by
     /// source file, clip name or reel, with source times counted from the hour of their earliest timecode (kept as
@@ -1559,6 +1603,8 @@ extension Importer {
             var src: (Int, Int)
             var rec: (Int, Int)
             var drop: Bool
+            /// The source timecodes as written, read again in a known source's own counting.
+            var srcText = ("", "")
             var clipName: String?
             var sourceFile: String?
             var speed: Double?
@@ -1647,7 +1693,8 @@ extension Importer {
             let tcs = tokens.dropFirst(idx).prefix(4).compactMap { EDLTimecode.parse($0, nominal: nominal, drop: drop) }
             guard tcs.count == 4 else { warnings.append("Line \(n + 1): unreadable event"); continue }
             lines.append(Line(event: first, reel: tokens[1], channel: tokens[2].uppercased(), trans: tokens[3].uppercased(), transFrames: transFrames,
-                              src: (tcs[0].frames, tcs[1].frames), rec: (tcs[2].frames, tcs[3].frames), drop: tcs[2].drop))
+                              src: (tcs[0].frames, tcs[1].frames), rec: (tcs[2].frames, tcs[3].frames), drop: tcs[2].drop,
+                              srcText: (tokens[idx], tokens[idx + 1])))
             named = nil
         }
         guard !lines.isEmpty else { throw EditError("No events in the EDL") }
@@ -1676,17 +1723,24 @@ extension Importer {
         func match(_ l: Line) -> MediaAsset? {
             guard !existing.isEmpty else { return nil }
             let path = l.sourceFile.map { $0.hasPrefix("file:") ? (URL(string: $0)?.path ?? $0) : $0 }
-            if let path, let m = existing.first(where: { $0.path == path }) { return m }
+            if let path, let m = existing.first(where: { Importer.samePath($0, path) }) { return m }
             let reel = l.reel.uppercased()
-            if !["AX", "BL", "BLK", "BLACK"].contains(reel),
-               let m = existing.first(where: { $0.reel?.uppercased() == reel }) ?? existing.first(where: { Project.edlReel($0.name) == reel }) { return m }
+            if !["AX", "BL", "BLK", "BLACK"].contains(reel) {
+                // One camera reel holds many files: the one whose timecode covers the event's source in.
+                let reels = existing.filter { $0.reel?.uppercased() == reel || Project.edlReel($0) == reel || Project.edlReel($0.name) == reel }
+                let covering = reels.first { m in
+                    guard m.timecodeStart != nil, let t = m.sourceSeconds(timecode: l.srcText.0, fallback: fps) else { return false }
+                    return t > -1e-6 && t < max(m.duration, 1 / rate)
+                }
+                if let m = covering ?? (reels.count == 1 || reels.allSatisfy({ $0.timecodeStart == nil }) ? reels.first : nil) { return m }
+            }
             if let c = l.clipName.map(mediaName) {
                 let stem = (c as NSString).deletingPathExtension
-                if let m = existing.first(where: { $0.name == c || $0.name == stem || fileName($0.path) == c }) { return m }
+                if let m = existing.first(where: { $0.name == c || $0.name == stem || fileName($0.path) == c || fileName($0.conformPath) == c }) { return m }
             }
             if let path {
                 let file = fileName(path), stem = (file as NSString).deletingPathExtension
-                return existing.first { fileName($0.path) == file } ?? existing.first { $0.name == stem }
+                return existing.first { fileName($0.path) == file || fileName($0.conformPath) == file } ?? existing.first { $0.name == stem }
             }
             return nil
         }
@@ -1766,7 +1820,13 @@ extension Importer {
             let id = resolve(l, video: ch.main.kind == .video, audio: ch.audio)
             let duration = seconds(l.rec.1 - l.rec.0)
             count += 1
-            var c = Clip(id: "c\(count)", kind: .media, name: l.clipName ?? l.reel, mediaId: id, start: rec(l.rec.0), duration: duration, sourceIn: seconds(l.src.0))
+            var sourceIn = seconds(l.src.0)
+            // A known source's timecode counts at its own rate; a source in before its first frame is zero-based.
+            if known.contains(id), let m = media.first(where: { $0.id == id }), m.timecodeStart != nil,
+               let t = m.sourceSeconds(timecode: l.srcText.0, fallback: fps), t > -0.5 / rate {
+                sourceIn = max(0, t)
+            }
+            var c = Clip(id: "c\(count)", kind: .media, name: l.clipName ?? l.reel, mediaId: id, start: rec(l.rec.0), duration: duration, sourceIn: sourceIn)
             if l.freeze || l.speed == 0 {
                 freeze(&c)
             } else {
@@ -1781,8 +1841,7 @@ extension Importer {
                 if c.reverse { c.sourceIn -= duration * c.speed }
             }
             extent[id] = max(extent[id] ?? 0, c.sourceOut, c.sourceIn + 1 / rate)
-            if let sop = l.sop, let cdl = CDL(sop: sop, sat: l.sat) { c.effects.append(cdl.effect(id: "cdl")) }
-            c.effects += lutEffects(l.luts)
+            c.effects += colorEffects(cdl: l.sop.flatMap { CDL(sop: $0, sat: l.sat) }, luts: l.luts)
             if ch.main.kind == .video && ch.audio { sounding.insert(c.id) }
             if known.contains(id), c.name == media.first(where: { $0.id == id })?.name { c.name = nil }
             return c
@@ -1851,9 +1910,10 @@ extension Importer {
         for id in placeholders {
             let ins = clips.values.flatMap { $0 }.filter { $0.mediaId == id }.map(\.sourceIn)
             guard let low = ins.min(), let m = media.firstIndex(where: { $0.id == id }) else { continue }
-            let tc = seconds(Int((low * rate + 0.5) / Double(sourceHour)) * sourceHour)
+            let hourFrames = Int((low * rate + 0.5) / Double(sourceHour)) * sourceHour
+            let tc = seconds(hourFrames)
             guard tc > 0 else { continue }
-            media[m].timecodeStart = tc
+            media[m].setTimecode(frames: hourFrames, format: TimecodeFormat(fps: rate, dropFrame: drop))
             for key in clips.keys {
                 for k in clips[key]!.indices where clips[key]![k].mediaId == id { clips[key]![k].sourceIn -= tc }
             }
@@ -1938,6 +1998,14 @@ extension Project {
         return r.isEmpty ? "AX" : r
     }
 
+    /// The reel an EDL names `m` by: its own reel, else its file name (its name without one), cut to EDL rules.
+    static func edlReel(_ m: MediaAsset) -> String {
+        let reel = m.reel?.trimmingCharacters(in: .whitespaces) ?? ""
+        let file = (Importer.fileName(m.conformPath) as NSString).deletingPathExtension
+        let name = !reel.isEmpty ? reel : file.isEmpty ? m.name : file
+        return edlReel(name.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "-", with: "_"))
+    }
+
     /// The project with sequence clips replaced by what they play, for targets without nesting. A sequence's
     /// lowest video track goes on the clip's own track, its other tracks on the next free tracks of their kind
     /// (new ones when taken); levels fold in its clip's volume and track faders. Transitions inside come along,
@@ -2006,7 +2074,9 @@ extension Project {
     /// timecode in canvas frames (drop frame as `Canvas.isDropFrame` says). Sequence clips are listed as the
     /// events they play (`flattenedSequences`). The main track's production sound rides with its picture as
     /// AA/V; a clip with a split edit is a V event plus an AA event over its audio range. Audio tracks are A and
-    /// A2, or channels 3 and 4 (NONE with an AUD line) when there is production sound. Each event names its clip
+    /// A2, or channels 3 and 4 (NONE with an AUD line) when there is production sound. Source timecode is the
+    /// media's own (its first frame's timecode plus the in point, at its rate and drop frame), the reel its reel or
+    /// file name (`edlReel`). Each event names its clip
     /// and source file in comments, speed becomes an M2 line, the clip's CDL `*ASC_SOP` and `*ASC_SAT` lines and
     /// its LUT files `*LUT:` lines, and markers LOC comments. Transitions become dissolves (wipes stay wipes)
     /// starting at the edit, so a centered one moves the edit to its start; transitions from or to nothing go
@@ -2020,13 +2090,19 @@ extension Project {
         let origin = startFrame
         func tc(_ f: Int) -> String { EDLTimecode.string(f, nominal: nominal, drop: drop) }
         func pad(_ s: String, _ n: Int) -> String { s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }
-        func reel(_ c: Clip) -> String { Project.edlReel(c.mediaId.flatMap(mediaAsset)?.name ?? "") }
+        func reel(_ c: Clip) -> String { c.mediaId.flatMap(mediaAsset).map(Project.edlReel) ?? "AX" }
+        func srcFormat(_ c: Clip) -> TimecodeFormat { c.mediaId.flatMap(mediaAsset)?.timecodeFormat(fallback: canvas.fps, dropFrame: canvas.dropFrame) ?? format }
+        /// Source frames from midnight at second `t` of the clip's media.
+        func src(_ c: Clip, _ t: Seconds) -> Int { c.mediaId.flatMap(mediaAsset)?.sourceFrames(at: t, fallback: canvas.fps) ?? grid.frames(t) }
+        /// Source frames played over `frames` record frames.
+        func srcLength(_ c: Clip, _ frames: Int) -> Int { srcFormat(c).frameCount(Double(frames * grid.num) / Double(grid.den)) }
         func clipName(_ c: Clip) -> String { c.name ?? c.mediaId.flatMap(mediaAsset)?.name ?? c.id }
         var out = ["TITLE: \(title)", "FCM: \(drop ? "DROP FRAME" : "NON-DROP FRAME")", ""]
         var event = 0
-        func line(_ reel: String, _ ch: String, _ tr: String, _ dur: Int?, _ s0: Int, _ s1: Int, _ r0: Int, _ r1: Int) {
+        func line(_ reel: String, _ ch: String, _ tr: String, _ dur: Int?, _ s0: Int, _ s1: Int, _ r0: Int, _ r1: Int, source: TimecodeFormat? = nil) {
             let d = dur.map { String(format: "%03d", $0) } ?? "   "
-            out.append("\(String(format: "%03d", event))  \(pad(reel, 8)) \(pad(ch, 5)) \(pad(tr, 4)) \(d) \(tc(s0)) \(tc(s1)) \(tc(r0 + origin)) \(tc(r1 + origin))")
+            let st: (Int) -> String = { source?.string($0) ?? tc($0) }
+            out.append("\(String(format: "%03d", event))  \(pad(reel, 8)) \(pad(ch, 5)) \(pad(tr, 4)) \(d) \(st(s0)) \(st(s1)) \(tc(r0 + origin)) \(tc(r1 + origin))")
         }
         func code(_ w: TransitionWindow) -> String { w.transition.type == "wipe" ? "W001" : "D" }
 
@@ -2043,7 +2119,7 @@ extension Project {
             if let path = c.mediaId.flatMap(mediaAsset)?.conformPath, !path.isEmpty { out.append("* SOURCE FILE: \(path)") }
             if abs(c.speed - 1) > 1e-9 || c.reverse {
                 let v = c.speed * canvas.fps * (c.reverse ? -1 : 1)
-                out.append("M2   \(pad(reel(c), 8))       \(String(format: "%05.1f", v))                \(tc(s0))")
+                out.append("M2   \(pad(reel(c), 8))       \(String(format: "%05.1f", v))                \(srcFormat(c).string(s0))")
             }
         }
 
@@ -2079,25 +2155,25 @@ extension Project {
                 let span = track.kind == .audio && inW == nil && outW == nil && !c.reverse ? c.audioRange : TimeRange(c.start, c.end)
                 var r0 = grid.frames(pairedIn?.start ?? span.start)
                 let r1 = grid.frames(pairedOut?.start ?? fadeOut?.start ?? span.end)
-                var s0 = grid.frames(span.start == c.start ? c.sourceTime(atTimeline: Double(r0) / grid.rate) : c.audioSourceRange.start)
-                if r0 < 0 { s0 -= Int((Double(r0) * c.speed).rounded()); r0 = 0 }
+                var t0 = span.start == c.start ? c.sourceTime(atTimeline: Double(r0) / grid.rate) : c.audioSourceRange.start
+                if r0 < 0 { t0 -= Double(r0 * grid.num) / Double(grid.den) * c.speed; r0 = 0 }
                 guard r1 > r0 else { continue }
-                let s1 = s0 + (r1 - r0)
+                let s0 = src(c, t0), s1 = s0 + srcLength(c, r1 - r0)
                 event += 1
                 if let w = pairedIn, let from = w.transition.from.flatMap({ clip($0) }) {
-                    let fs = grid.frames(from.sourceTime(atTimeline: Double(r0) / grid.rate))
-                    line(reel(from), ch, "C", nil, fs, fs, r0, r0)
-                    line(reel(c), ch, code(w), grid.frames(w.end - w.start), s0, s1, r0, r1)
+                    let fs = src(from, from.sourceTime(atTimeline: Double(r0) / grid.rate))
+                    line(reel(from), ch, "C", nil, fs, fs, r0, r0, source: srcFormat(from))
+                    line(reel(c), ch, code(w), grid.frames(w.end - w.start), s0, s1, r0, r1, source: srcFormat(c))
                     aud(audLine)
                     out.append("* FROM CLIP NAME: \(clipName(from))")
                     out.append("* TO CLIP NAME: \(clipName(c))")
                 } else if let w = fadeIn {
                     line("BL", ch, "C", nil, 0, 0, r0, r0)
-                    line(reel(c), ch, code(w), grid.frames(w.end - w.start), s0, s1, r0, r1)
+                    line(reel(c), ch, code(w), grid.frames(w.end - w.start), s0, s1, r0, r1, source: srcFormat(c))
                     aud(audLine)
                     out.append("* TO CLIP NAME: \(clipName(c))")
                 } else {
-                    line(reel(c), ch, "C", nil, s0, s1, r0, r1)
+                    line(reel(c), ch, "C", nil, s0, s1, r0, r1, source: srcFormat(c))
                     aud(audLine)
                     out.append("* FROM CLIP NAME: \(clipName(c))")
                 }
@@ -2112,9 +2188,9 @@ extension Project {
                 if label == "V" { flushMarkers(before: r1) }
                 if let w = fadeOut {
                     event += 1
-                    let fs = grid.frames(c.sourceTime(atTimeline: Double(r1) / grid.rate))
+                    let fs = src(c, c.sourceTime(atTimeline: Double(r1) / grid.rate))
                     let d = grid.frames(w.end - w.start)
-                    line(reel(c), ch, "C", nil, fs, fs, r1, r1)
+                    line(reel(c), ch, "C", nil, fs, fs, r1, r1, source: srcFormat(c))
                     line("BL", ch, code(w), d, 0, d, r1, r1 + d)
                     aud(audLine)
                     out.append("* FROM CLIP NAME: \(clipName(c))")
@@ -2125,12 +2201,13 @@ extension Project {
                 flushMarkers(before: nil)
                 // Split edits: the sound gets its own AA event over its audio range.
                 for c in clips.filter({ sounds($0, track) && split($0) && !$0.reverse }).sorted(by: { $0.audioRange.start < $1.audioRange.start }) {
-                    var r0 = grid.frames(c.audioRange.start), s0 = grid.frames(c.audioSourceRange.start)
+                    var r0 = grid.frames(c.audioRange.start), t0 = c.audioSourceRange.start
                     let r1 = grid.frames(c.audioRange.end)
-                    if r0 < 0 { s0 -= Int((Double(r0) * c.speed).rounded()); r0 = 0 }
+                    if r0 < 0 { t0 -= Double(r0 * grid.num) / Double(grid.den) * c.speed; r0 = 0 }
                     guard r1 > r0 else { continue }
                     event += 1
-                    line(reel(c), "AA", "C", nil, s0, s0 + (r1 - r0), r0, r1)
+                    let s0 = src(c, t0)
+                    line(reel(c), "AA", "C", nil, s0, s0 + srcLength(c, r1 - r0), r0, r1, source: srcFormat(c))
                     out.append("* FROM CLIP NAME: \(clipName(c))")
                     describe(c, s0: s0)
                     out.append("")
@@ -2148,9 +2225,11 @@ extension Project {
 extension Importer {
     /// Final Cut Pro 7 XML (xmeml 1–5), which Premiere Pro, Resolve and Hiero also write: the first
     /// sequence's video and audio tracks, clipitems with their `file` (defined once, referenced by id after),
-    /// nested sequences, transitionitems (clip edges of -1 sit at the transition's cut), generators (text,
-    /// color mattes, slugs), Time Remap speed, Audio Levels with keyframes, Basic Motion, Crop, Opacity, a CDL
-    /// in clip comments, enabled flags and markers. Audio clipitems that only repeat a video clip's sound fold
+    /// nested sequences, transitionitems (clip edges of -1 sit at the transition's cut, Premiere's `cutPointTicks`
+    /// kept as an uneven cut), generators (text, color mattes, slugs, and Premiere's synthetic black, transparent,
+    /// matte, bars and counting leader as solids), Time Remap speed, Audio Levels with keyframes, Basic Motion,
+    /// Crop, Opacity, a CDL and LUT files in clip comments (see `colorEffects`), each file's source timecode and
+    /// reel, enabled flags and markers. Audio clipitems that only repeat a video clip's sound fold
     /// into it, linked ones in sync but starting or ending elsewhere fold in as split edits, and audio fades
     /// from or to black become clip fades; video clips whose sound isn't on an audio track are silent. Files that don't exist, or that have no path, stay as offline media.
     public static func xmeml(_ data: Data, relativeTo base: URL?) throws -> ImportResult {
@@ -2231,7 +2310,7 @@ final class XMEMLReader {
         if let df = text(seq.first("timecode"), "displayformat")?.uppercased() { canvas.dropFrame = Canvas.dropFrame(df == "DF", fps: canvas.fps) }
         if let tc = seq.first("timecode") {
             let format = canvas.timecodeFormat
-            if let frames = number(tc, "frame").map({ Int($0.rounded()) }) ?? text(tc, "string").flatMap(format.frames), frames >= 0 {
+            if let frames = number(tc, "frame").map({ Int($0.rounded()) }) ?? text(tc, "string").flatMap { format.frames($0) }, frames >= 0 {
                 canvas.timecodeStart = canvas.timecodeStart(frames: frames)
             }
         }
@@ -2493,9 +2572,13 @@ final class XMEMLReader {
             }
             let pair = from != nil && to != nil && !edge.align.hasSuffix("black")
             transitionCount += 1
-            transitions.append(Transition(id: "tr\(transitionCount)", from: edge.align == "start-black" ? nil : from, to: edge.align == "end-black" ? nil : to,
-                                          type: type, duration: d, align: pair ? align : .center,
-                                          part: kind == .audio ? .audio : .both))
+            var made = Transition(id: "tr\(transitionCount)", from: edge.align == "start-black" ? nil : from, to: edge.align == "end-black" ? nil : to,
+                                  type: type, duration: d, align: pair ? align : .center,
+                                  part: kind == .audio ? .audio : .both)
+            // A cut off the middle (Premiere's cutPointTicks) keeps its place.
+            let before = edge.cut - edge.start
+            if pair, align == .center, before > 0, before < edge.end - edge.start, abs(before - (edge.end - edge.start) / 2) > 0.6 { made.cutOffset = before / fps }
+            transitions.append(made)
         }
         return (clips, disabled, transitions)
     }
@@ -2520,7 +2603,13 @@ final class XMEMLReader {
             }
             let file = f.attr("id").flatMap { fileDefs[$0] } ?? f
             let source = text(file, "mediaSource") ?? ""
-            if source == "Slug" || source == "GraphicAndType" {
+            let pathless = (text(file, "pathurl") ?? "").isEmpty
+            let generated = pathless ? Self.premiereGenerator(text(file, "name") ?? name) : nil
+            if kind == .audio, let g = generated {
+                if g == "bars" || g == "leader" { drop("Tone of \(text(file, "name") ?? name)", on: name) }
+                return nil
+            }
+            if source == "Slug" || source == "GraphicAndType" || generated != nil {
                 if let made = synthetic(e, file: file, source: source, name: name, kind: kind, duration: duration) { return made }
             }
             let id = mediaId(file, key: f.attr("id"), clipName: name, kind: kind)
@@ -2603,8 +2692,9 @@ final class XMEMLReader {
             }
             c.anim["audio.volume"] = Curve(keys: keys)
         }
-        if let note = e.first("comments")?.stringValue, let cdl = CDL(text: note) {
-            c.effects.append(cdl.effect(id: "cdl"))
+        if let comments = e.first("comments") {
+            let note = comments.elems.compactMap { $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: "; ")
+            c.effects += Importer.noteColor(note.isEmpty ? comments.stringValue ?? "" : note)
         }
         return c
     }
@@ -2627,16 +2717,49 @@ final class XMEMLReader {
             return nil
         }
         guard kind == .video else { return nil }
-        switch fileName.lowercased() {
-        case "black video":
+        switch Self.premiereGenerator(fileName) {
+        case "black":
             return Clip(id: "", kind: .solid, name: name, start: 0, duration: duration, color: .black)
-        case "transparent video":
+        case "transparent":
             warnings.append("Transparent Video \(name) imported as an empty adjustment clip")
             return Clip(id: "", kind: .adjustment, name: name, start: 0, duration: duration)
+        case "matte":
+            if let color = filterColor(e) { return Clip(id: "", kind: .solid, name: name, start: 0, duration: duration, color: color) }
+            warnings.append("Color Matte \(name): its color isn't in the file; imported as a black solid")
+            return Clip(id: "", kind: .solid, name: name, start: 0, duration: duration, color: .black)
+        case "bars":
+            warnings.append("\(fileName) \(name) imported as a gray solid; the leader option of export draws real bars and tone")
+            return Clip(id: "", kind: .solid, name: name, start: 0, duration: duration, color: RGBA(r: 0.75, g: 0.75, b: 0.75))
+        case "leader":
+            warnings.append("\(fileName) \(name) imported as a black solid")
+            return Clip(id: "", kind: .solid, name: name, start: 0, duration: duration, color: .black)
         default:
             warnings.append("Premiere \(fileName) kept as offline media")
             return nil
         }
+    }
+
+    /// Premiere's synthetic media by file name: black, transparent, matte, bars or leader; nil for anything else.
+    static func premiereGenerator(_ fileName: String) -> String? {
+        let n = fileName.lowercased()
+        if n == "black video" || n == "slug" { return "black" }
+        if n == "transparent video" { return "transparent" }
+        if n.hasPrefix("color matte") { return "matte" }
+        if n.contains("bars and tone") || n.hasPrefix("smpte bars") || n == "bars" { return "bars" }
+        if n.contains("counting leader") { return "leader" }
+        return nil
+    }
+
+    /// A fill color in a clip's filters, as Premiere and Final Cut write mattes (0–255 channels).
+    func filterColor(_ e: XMLElement) -> RGBA? {
+        for effect in filters(e) {
+            for p in effect.elems where p.name == "parameter" {
+                guard let v = p.first("value"), number(v, "red") != nil else { continue }
+                func channel(_ n: String) -> Double { min(max((number(v, n) ?? 0) / 255, 0), 1) }
+                return RGBA(r: channel("red"), g: channel("green"), b: channel("blue"))
+            }
+        }
+        return nil
     }
 
     func generator(_ e: XMLElement, effect: XMLElement?, name: String, kind: TrackKind, duration: Seconds) -> Clip? {
@@ -2687,8 +2810,12 @@ final class XMEMLReader {
                            width: hasVideo ? Int(number(sample, "width") ?? number(file, "width") ?? Double(canvas.width)) : 0,
                            height: hasVideo ? Int(number(sample, "height") ?? number(file, "height") ?? Double(canvas.height)) : 0,
                            fps: hasVideo && !isImage ? Importer.niceFps(fr) : 0, hasVideo: hasVideo, hasAudio: hasAudio, isImage: isImage)
-        if let tc = file.first("timecode"), let frame = number(tc, "frame"), frame > 0, !isImage {
-            m.timecodeStart = frame / (rate(tc) ?? fr)
+        if let tc = file.first("timecode"), !isImage {
+            let display = text(tc, "displayformat")?.uppercased()
+            let format = TimecodeFormat(fps: rate(tc) ?? fr, dropFrame: display == "DF" ? true : display == "NDF" ? false : nil)
+            if let frames = number(tc, "frame").map({ Int($0.rounded()) }) ?? text(tc, "string").flatMap({ format.frames(reading: $0) }), frames > 0 {
+                m.setTimecode(frames: frames, format: format)
+            }
         }
         if let reel = text(file.first("timecode")?.first("reel"), "name"), !reel.isEmpty { m.reel = reel }
         if let rate = number(fileMedia?.first("audio")?.first("samplecharacteristics"), "samplerate"), rate > 0 { m.sampleRate = rate }
@@ -2729,13 +2856,15 @@ extension Project {
     /// frames. Video tracks come bottom first, then audio: the sound of video clips on an audio track of its
     /// own after each video track's, then the audio tracks. Each file is described at its first use and
     /// referenced by id after. Dissolves (wipes stay wipes, dips become Dip to Black) are transitionitems,
-    /// with the clips' edges under them written as -1 and their media spanning the transition. Speed is a
-    /// Time Remap filter, opacity Opacity, scale, position and rotation Basic Motion, and crop Crop; the CDL is a
-    /// clip comment. Sound clipitems are linked to their picture and span the audio range, so split edits keep
+    /// with the clips' edges under them written as -1 and their media spanning the transition; an uneven one
+    /// keeps its cut as Premiere's `cutPointTicks`. Speed is a Time Remap filter, opacity Opacity, scale, position
+    /// and rotation Basic Motion, and crop Crop; the CDL and LUT files are a clip comment (`ASC_SOP …; LUT <path>`).
+    /// Sound clipitems are linked to their picture and span the audio range, so split edits keep
     /// their own in and out; levels are Audio Levels (keyframed when animated, track faders and master gain
     /// folded in) and fades 0 dB cross fades from or to black. Text clips become Text generators, solids
     /// Color mattes, nested sequences nested sequences; adjustment and generator clips are left out. The
-    /// sequence's timecode is the canvas's start timecode, and each file declares its own audio sample rate.
+    /// sequence's timecode is the canvas's start timecode; each file declares its own audio sample rate and its
+    /// source timecode (at its own rate and drop frame) with its reel. Clip in and out points stay zero-based.
     public func xmeml() -> String {
         let grid = FrameGrid(fps: canvas.fps)
         let timebase = max(1, Int(grid.rate.rounded()))
@@ -2773,7 +2902,13 @@ extension Project {
                 kids.append(leaf("pathurl", m.conformURL.absoluteString.replacingOccurrences(of: "file:///", with: "file://localhost/")))
             }
             kids += [rate(), leaf("duration", "\(m.isImage ? 1 : f(m.duration))")]
-            kids.append(timecode(f(m.timecodeStart ?? 0)))
+            // The file's own timecode, at its rate and drop frame, with its reel.
+            let tf = m.timecodeFormat(fallback: canvas.fps, dropFrame: canvas.dropFrame)
+            let tcFrames = m.isImage ? 0 : m.timecodeFrames(fallback: canvas.fps) ?? 0
+            var tcKids = [XMLElem("rate", children: [leaf("timebase", "\(tf.nominal)"), leaf("ntsc", tf.frameNum == 1001 ? "TRUE" : "FALSE")]),
+                          leaf("string", tf.string(tcFrames)), leaf("frame", "\(tcFrames)"), leaf("displayformat", tf.dropFrame ? "DF" : "NDF")]
+            if let reel = m.reel, !reel.isEmpty { tcKids.append(XMLElem("reel", children: [leaf("name", reel)])) }
+            kids.append(XMLElem("timecode", children: tcKids))
             var mediaKids: [XMLElem] = []
             if m.hasVideo {
                 mediaKids.append(XMLElem("video", children: [XMLElem("samplecharacteristics", children: [
@@ -2797,6 +2932,10 @@ extension Project {
             /// Sequence frames of a transitionitem; a centered one keeps its cut on a frame.
             func frames(_ w: TransitionWindow) -> (start: Int, end: Int, cut: Int) {
                 let d = f(w.end - w.start)
+                if w.transition.from != nil, w.transition.to != nil, w.transition.cutOffset != nil {
+                    let cut = f(w.start + w.head)
+                    return (cut - f(w.head), cut - f(w.head) + d, cut)
+                }
                 switch (w.transition.from, w.transition.to, w.transition.align) {
                 case (nil, _, _), (_, _, .start): return (f(w.start), f(w.start) + d, f(w.start))
                 case (_, nil, _), (_, _, .end): return (f(w.end) - d, f(w.end), f(w.end))
@@ -2822,8 +2961,10 @@ extension Project {
                 case ("dip", _): (name, id, category) = ("Dip to Color Dissolve", "Dip to Color Dissolve", "Dissolve")
                 default: (name, id, category) = ("Cross Dissolve", "Cross Dissolve", "Dissolve")
                 }
+                // Premiere's cut point within an uneven transition, in its ticks.
+                let ticks = tr.from != nil && tr.to != nil && tr.cutOffset != nil ? [leaf("cutPointTicks", "\((at.cut - at.start) * 254_016_000_000 * grid.num / grid.den)")] : []
                 return XMLElem("transitionitem", children: [
-                    leaf("start", "\(at.start)"), leaf("end", "\(at.end)"), leaf("alignment", align), rate(),
+                    leaf("start", "\(at.start)"), leaf("end", "\(at.end)"), leaf("alignment", align)] + ticks + [rate(),
                     effect(name, id: id, category: category, type: "transition", mediaType: kind == .audio ? "audio" : "video", []),
                 ])
             }
@@ -2975,8 +3116,10 @@ extension Project {
                                 parameter("opacity", "opacity", number(t.opacity * 100), min: "0", max: "100"),
                             ])]))
                         }
-                        if c.kind == .media, let cdl = c.cdl {
-                            kids.append(XMLElem("comments", children: [leaf("mastercomment1", cdl.text)]))
+                        // The grade as a note: Premiere has no place for a CDL or LUT.
+                        let grade = c.kind == .media ? (c.cdl.map { [$0.text] } ?? []) + c.lutFiles.map { "LUT \($0)" } : []
+                        if !grade.isEmpty {
+                            kids.append(XMLElem("comments", children: [leaf("mastercomment1", grade.joined(separator: "; "))]))
                         }
                     }
                     if c.kind == .media || c.kind == .sequence { kids += links(c) }

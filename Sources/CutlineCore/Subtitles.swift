@@ -49,8 +49,11 @@ extension Project {
 
     /// Subtitles for the words heard on the timeline, with the caption replacements and hidden words applied.
     /// With `range`, only cues inside it, clipped to it and timed from its start.
-    public func subtitles(_ format: SubtitleFormat, transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil) -> String {
+    /// `offset` delays every cue, e.g. by a leader before the program, so times count from the file's first frame.
+    public func subtitles(_ format: SubtitleFormat, transcripts: [String: Transcript], maxCharsPerLine: Int = 42, maxLines: Int = 2, range: TimeRange? = nil, offset: Seconds = 0) -> String {
+        let shift = Self.ms(offset)
         let cues = subtitleCues(transcripts: transcripts, maxCharsPerLine: maxCharsPerLine, maxLines: maxLines, range: range)
+            .map { SubtitleCue(startMs: $0.startMs + shift, endMs: $0.endMs + shift, lines: $0.lines) }
         switch format {
         case .srt:
             return cues.enumerated().map { i, c in

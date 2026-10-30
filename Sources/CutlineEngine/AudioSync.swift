@@ -132,19 +132,22 @@ public enum AudioSync {
         output.alwaysCopiesSampleData = false
         reader.add(output)
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read audio of \(url.lastPathComponent)") }
-        let limit = Int(window * sampleRate)
-        var samples: [Float] = []
-        samples.reserveCapacity(limit)
-        while samples.count < limit, let buffer = output.copyNextSampleBuffer() {
-            guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
-            var length = 0
-            var ptr: UnsafeMutablePointer<CChar>?
-            guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
-            let count = min(length / MemoryLayout<Float>.size, limit - samples.count)
-            ptr.withMemoryRebound(to: Float.self, capacity: count) { samples.append(contentsOf: UnsafeBufferPointer(start: $0, count: count)) }
+        let samples = try await runBlocking { _ -> [Float] in
+            let limit = Int(window * sampleRate)
+            var samples: [Float] = []
+            samples.reserveCapacity(limit)
+            while samples.count < limit, let buffer = output.copyNextSampleBuffer() {
+                guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+                var length = 0
+                var ptr: UnsafeMutablePointer<CChar>?
+                guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
+                let count = min(length / MemoryLayout<Float>.size, limit - samples.count)
+                ptr.withMemoryRebound(to: Float.self, capacity: count) { samples.append(contentsOf: UnsafeBufferPointer(start: $0, count: count)) }
+            }
+            if reader.status == .failed { throw reader.error ?? EditError("Audio decode failed for \(url.lastPathComponent)") }
+            reader.cancelReading()
+            return samples
         }
-        if reader.status == .failed { throw reader.error ?? EditError("Audio decode failed for \(url.lastPathComponent)") }
-        reader.cancelReading()
         return samples
     }
 }

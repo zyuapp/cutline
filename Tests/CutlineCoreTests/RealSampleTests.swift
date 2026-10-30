@@ -182,13 +182,15 @@ private func expectValid(_ p: Project) throws {
     #expect(cut.missingMedia == ["/folder/titles.mov", "/folder/wind-up.mov", "/folder/punchline.mov", "/folder/credits.mov"])
     try expectValid(cut.project)
 
-    // 2 frames before the cut and 3 after: centered over 6 frames to cover both, offline media growing to fit.
+    // 2 frames before the cut and 3 after: kept as they are, the cut 2 frames in, offline media growing to fit.
     let tr = try otio("transition.otio")
     let t = try #require(tr.project.transitions.first)
     #expect(tr.project.transitions.count == 1 && t.from == "c2" && t.to == "c3")
-    #expect(t.align == .center && frames(t.duration, 24) == 6)
-    #expect(tr.warnings == [#"Transition "Transition" runs 0.08s before its cut and 0.12s after; centered and widened to 0.25s"#])
-    #expect(timing(tr.project.tracks[0]) == ["0+3@3", "3+6@2", "9+4@3", "13+6@0"])
+    #expect(t.align == .center && frames(t.duration, 24) == 5 && t.cutOffset.map { frames($0, 24) } == 2)
+    #expect(tr.warnings.isEmpty, "\(tr.warnings)")
+    let w = try tr.project.window(t)
+    #expect(frames(w.head, 24) == 2 && frames(w.tail, 24) == 3)
+    #expect(timing(tr.project.tracks[0]) == ["0+3@3", "3+6@2", "9+4@2", "13+6@0"])
     try expectValid(tr.project)
 
     let clip = try otio("clip_example.otio")
@@ -237,7 +239,8 @@ private func expectValid(_ p: Project) throws {
     #expect(p.media.first { $0.id == "sc01-master-layera-sh030-temp" }?.timecodeStart.map { frames($0, 30) } == 99)
     #expect(p.media.first?.path == "D:/media/sc01_sh010_anim.mov")
     #expect(markerFrames(p, fps: 30) == [113, 298, 395, 492])
-    #expect(p.transitions.map { "\($0.from ?? "-")>\($0.to ?? "-") \(frames($0.duration, 30)) \($0.align)" } == ["c4>- 19 center", "c7>c8 26 center"])
+    #expect(p.transitions.map { "\($0.from ?? "-")>\($0.to ?? "-") \(frames($0.duration, 30)) \($0.align)" } == ["c4>- 19 center", "c7>c8 25 center"])
+    #expect(p.transitions[1].cutOffset.map { frames($0, 30) } == 12)
     #expect(r.warnings.contains("Nested sc01_sh010_anim has nothing in it; kept as offline media (×2)"))
     #expect(r.warnings.contains("Generator test_title (Slug) kept as offline media"))
     try expectValid(p)
@@ -351,14 +354,14 @@ private func expectValid(_ p: Project) throws {
     let fps = 24000.0 / 1001
     #expect(p.canvas.fps == 23.976)
     let v1 = p.tracks[0].clips
-    #expect(v1.map(\.kind) == [.media, .solid, .solid, .media, .adjustment, .text])
+    // Premiere's counting leader and bars are synthetic too: solids, not offline media.
+    #expect(v1.map(\.kind) == [.solid, .solid, .solid, .solid, .adjustment, .text])
     #expect(v1.map { frames($0.start, fps) } == [0, 264, 383, 502, 621, 737])
-    #expect(v1[1].color == .black && v1[2].color == RGBA(r: 0, g: 0, b: 1))
+    #expect(v1[0].color == .black && v1[1].color == .black && v1[2].color == RGBA(r: 0, g: 0, b: 1) && v1[3].color == RGBA(r: 0.75, g: 0.75, b: 0.75))
     #expect(v1[5].text?.text.hasPrefix("A center align Title Card\nwith Menlo Font and\n") == true)
-    #expect(r.missingMedia == ["Universal Counting Leader", "HD Bars and Tone"])
-    // The leader's and the bars' sound fold into their pictures.
-    #expect(v1[0].volume == 1 && v1[3].volume == 1)
+    #expect(r.missingMedia.isEmpty && p.media.isEmpty)
     #expect(p.tracks.filter { $0.kind == .audio }.allSatisfy { $0.clips.isEmpty })
+    #expect(r.warnings.contains { $0.hasPrefix("Tone of HD Bars and Tone") })
     #expect(r.warnings.contains("Graphic Graphic: its text is kept, its styling isn't"))
     try expectValid(p)
 }

@@ -16,6 +16,9 @@ public struct Transition: Codable, Equatable, Sendable {
     public var part: TransitionPart
     public var ease: Easing
     public var params: [String: ParamValue]
+    /// Seconds from the start to the cut for a transition running unevenly over it (as other editors place
+    /// them); nil places it by `align`.
+    public var cutOffset: Seconds?
 
     public init(id: String, from: String?, to: String?, type: String, duration: Seconds, align: TransitionAlign = .center, part: TransitionPart = .both, ease: Easing = .easeInOut, params: [String: ParamValue] = [:]) {
         self.id = id
@@ -29,7 +32,7 @@ public struct Transition: Codable, Equatable, Sendable {
         self.params = params
     }
 
-    enum CodingKeys: String, CodingKey { case id, from, to, type, duration, align, part, ease, params }
+    enum CodingKeys: String, CodingKey { case id, from, to, type, duration, align, part, ease, params, cutOffset }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -42,6 +45,21 @@ public struct Transition: Codable, Equatable, Sendable {
         part = try c.decodeIfPresent(TransitionPart.self, forKey: .part) ?? .both
         ease = try c.decodeIfPresent(Easing.self, forKey: .ease) ?? .easeInOut
         params = try c.decodeIfPresent([String: ParamValue].self, forKey: .params) ?? [:]
+        cutOffset = try c.decodeIfPresent(Seconds.self, forKey: .cutOffset)
+    }
+
+    /// Start and end of the transition across a cut at `cut`.
+    public func span(around cut: Seconds) -> (start: Seconds, end: Seconds) {
+        let d = duration
+        if let o = cutOffset {
+            let o = min(max(o, 0), d)
+            return (cut - o, cut - o + d)
+        }
+        switch align {
+        case .center: return (cut - d / 2, cut + d / 2)
+        case .start: return (cut, cut + d)
+        case .end: return (cut - d, cut)
+        }
     }
 
     public var hasVideo: Bool { part != .audio }
@@ -103,12 +121,8 @@ extension Project {
             guard b.clip == a.clip + 1, abs(cb.start - ca.end) < canvas.frameDuration / 2 else {
                 throw EditError("\(ca.id) and \(cb.id) aren't adjacent: a transition needs \(cb.id) to start where \(ca.id) ends (\(fmt2(ca.end))s), but it starts at \(fmt2(cb.start))s")
             }
-            let cut = cb.start, d = tr.duration
-            let (s, e): (Seconds, Seconds) = switch tr.align {
-            case .center: (cut - d / 2, cut + d / 2)
-            case .start: (cut, cut + d)
-            case .end: (cut - d, cut)
-            }
+            let cut = cb.start
+            let (s, e) = tr.span(around: cut)
             return TransitionWindow(transition: tr, trackId: tracks[a.track].id, start: s, end: e, tail: e - cut, head: cut - s)
         case let (a?, nil):
             let c = tracks[a.track].clips[a.clip]
@@ -132,12 +146,8 @@ extension Project {
     public func audioWindow(_ tr: Transition) throws -> TransitionWindow {
         let w = try window(tr)
         guard let f = tr.from, let t = tr.to, let a = clip(f), let b = clip(t) else { return w }
-        let cut = (a.audioRange.end + b.audioRange.start) / 2, d = tr.duration
-        let (s, e): (Seconds, Seconds) = switch tr.align {
-        case .center: (cut - d / 2, cut + d / 2)
-        case .start: (cut, cut + d)
-        case .end: (cut - d, cut)
-        }
+        let cut = (a.audioRange.end + b.audioRange.start) / 2
+        let (s, e) = tr.span(around: cut)
         return TransitionWindow(transition: tr, trackId: w.trackId, start: s, end: e, tail: e - a.end, head: b.start - s)
     }
 

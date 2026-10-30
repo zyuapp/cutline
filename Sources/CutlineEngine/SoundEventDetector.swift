@@ -15,10 +15,10 @@ public enum SoundEventDetector {
         guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
             throw EditError("\(mediaId) has no audio")
         }
-        return try await Task.detached(priority: .userInitiated) {
+        return try await runBlocking { _ in
             let windows = try classify(asset: asset, track: track, mediaId: mediaId)
             return SoundEvents(mediaId: mediaId, events: SoundEvents.merge(windows).map(rounded))
-        }.value
+        }
     }
 
     static func classify(asset: AVAsset, track: AVAssetTrack, mediaId: String) throws -> [SoundEvent] {

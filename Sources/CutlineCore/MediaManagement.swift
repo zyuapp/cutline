@@ -247,6 +247,11 @@ public struct ConsolidatePlan: Equatable, Sendable {
                 // A trimmed copy of a mezzanine no longer lines up with the camera original.
                 m.originalPath = nil
                 m.transcoded = nil
+                // Its first frame keeps the source timecode it had in the original.
+                if let frames = m.timecodeFrames(fallback: project.canvas.fps) {
+                    let f = m.timecodeFormat(fallback: project.canvas.fps, dropFrame: project.canvas.dropFrame)
+                    m.setTimecode(frames: frames + f.frameCount(r.start), format: f)
+                }
             }
             return m
         }

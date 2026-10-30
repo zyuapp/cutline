@@ -401,7 +401,7 @@ extension Toolbox {
             "Eases for animation keys: " + Easing.allCases.map(\.rawValue).joined(separator: ", "),
             "Parameter paths: transform.{scale,x,y,rotation,opacity,fit,crop.left|top|right|bottom}, blend, fade.{in,out}, audio.{volume,fade_in,fade_out,lead,lag,channels}, text.*, color, fx.<id>.<param>. catalog paths=true lists them all.",
             "Units: lengths are fractions of frame height; positions are fractions of the frame with 0,0 top left; angles are degrees clockwise.",
-            "Time anchors (anywhere a time is taken): seconds, \"m:ss.f\", \"<media>.w12\" / \"<media>.w12.end\" (transcript words; source-time arguments resolve them in the media), \"<clip id>.start\" / \".end\", \"marker:<label>\", \"start\", \"end\", each with optional +/- seconds.",
+            "Time anchors (anywhere a time is taken): seconds, \"m:ss.f\", \"<media>.w12\" / \"<media>.w12.end\" (transcript words; source-time arguments resolve them in the media), \"<media>.b8\" / \"<media>.d2\" / \"<media>.s3\" (beats, downbeats, shots), \"beat:12\", \"<media>@01:00:12:10\" (that media's source timecode at its own rate, \";\" before the frames for drop frame; a source time), \"tc:00:00:10:00\" (timeline timecode), \"<clip id>.start\" / \".end\", \"marker:<label>\", \"start\", \"end\", each with optional +/- seconds.",
             "Every edit tool takes dry_run:true to preview its changes. batch groups edits into one undo step and can name results with as:\"x\" for later \"$x\".",
         ]
         return lines.joined(separator: "\n")

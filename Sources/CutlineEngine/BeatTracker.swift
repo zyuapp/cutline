@@ -314,19 +314,21 @@ public enum BeatTracker {
         reader.add(output)
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read audio of \(mediaId)") }
 
-        var samples: [Float] = []
-        if let duration = try? await asset.load(.duration), duration.seconds.isFinite {
-            samples.reserveCapacity(Int(duration.seconds * sampleRate) + 1)
+        let expected = (try? await asset.load(.duration)).map { $0.seconds.isFinite ? Int($0.seconds * sampleRate) + 1 : 0 } ?? 0
+        let samples = try await runBlocking { _ -> [Float] in
+            var samples: [Float] = []
+            samples.reserveCapacity(expected)
+            while let buffer = output.copyNextSampleBuffer() {
+                guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+                var length = 0
+                var ptr: UnsafeMutablePointer<CChar>?
+                guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
+                let n = length / MemoryLayout<Float>.size
+                ptr.withMemoryRebound(to: Float.self, capacity: n) { samples.append(contentsOf: UnsafeBufferPointer(start: $0, count: n)) }
+            }
+            if reader.status == .failed { throw reader.error ?? EditError("Audio decode failed for \(mediaId)") }
+            return samples
         }
-        while let buffer = output.copyNextSampleBuffer() {
-            guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
-            var length = 0
-            var ptr: UnsafeMutablePointer<CChar>?
-            guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &ptr) == noErr, let ptr else { continue }
-            let n = length / MemoryLayout<Float>.size
-            ptr.withMemoryRebound(to: Float.self, capacity: n) { samples.append(contentsOf: UnsafeBufferPointer(start: $0, count: n)) }
-        }
-        if reader.status == .failed { throw reader.error ?? EditError("Audio decode failed for \(mediaId)") }
         return samples
     }
 }

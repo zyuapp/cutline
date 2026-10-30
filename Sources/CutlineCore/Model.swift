@@ -164,8 +164,11 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     public var hasAudio: Bool
     /// True for still images, which can be shown for any duration.
     public var isImage: Bool
-    /// Source timecode of the first frame, in seconds (e.g. 3600 for 01:00:00:00).
+    /// Source timecode of the first frame as real time: its label's frame count × the frame duration
+    /// (01:00:00:00 is 3600 at 25 fps, 3603.6 at 29.97 non-drop).
     public var timecodeStart: Seconds?
+    /// That timecode as labeled, "hh:mm:ss:ff" or "hh:mm:ss;ff" for drop frame; see `timecodeFrames`.
+    public var timecodeLabel: String?
     public var reel: String?
     /// Audio sample rate in Hz, when known.
     public var sampleRate: Double?

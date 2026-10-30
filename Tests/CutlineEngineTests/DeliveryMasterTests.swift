@@ -35,6 +35,10 @@ func exportWritesTimecodeTrackAtProjectStart(_ preset: ExportPreset) async throw
     defer { try? FileManager.default.removeItem(at: url) }
     try await Exporter.export(built, to: url, options: ExportOptions(preset: .prores_proxy, range: TimeRange(1, 2)))
     #expect(try await TimecodeTrack.read(url) == "01:00:01;00")
+    // Re-importing the export reads the same timecode back.
+    let m = try await MediaProbe.probe(url, id: "export")
+    #expect(m.timecodeString() == "01:00:01;00", "\(String(describing: m.timecodeLabel)) \(String(describing: m.timecodeStart)) \(m.fps)")
+    #expect(abs((m.timecodeStart ?? 0) - 107_922.0 * 1001 / 30000) < 1e-6)
 }
 
 @Test func leaderPrependsBarsToneSlateAndShiftsTimecode() async throws {

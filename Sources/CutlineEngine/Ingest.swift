@@ -220,9 +220,10 @@ public enum MediaIngest {
             m.audioChannels = chs
         }
         if m.timecodeStart == nil, let tc = info.timecode, let fps = info.video?.frameRate, fps > 0 {
-            let f = TimecodeFormat(fps: fps)
-            m.timecodeStart = f.frames(tc).map(f.seconds)
+            let f = TimecodeFormat(fps: fps, label: tc)
+            if let frames = f.frames(tc) { m.setTimecode(frames: frames, format: f) }
         }
+        if let reel = info.reel { m.reel = reel }
         return m
     }
 
@@ -235,6 +236,11 @@ public enum MediaIngest {
         m.transcoded = MediaAsset.pendingTranscode + summary(info)
         m.fieldOrder = v == nil ? nil : info.fieldOrder
         m.audioChannels = mezzanineChannels(info)
+        if let tc = info.timecode, let fps = v?.frameRate, fps > 0 {
+            let f = TimecodeFormat(fps: fps, label: tc)
+            if let frames = f.frames(tc) { m.setTimecode(frames: frames, format: f) }
+        }
+        m.reel = info.reel
         return m
     }
 

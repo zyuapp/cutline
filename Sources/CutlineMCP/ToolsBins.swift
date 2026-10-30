@@ -82,12 +82,12 @@ extension Toolbox {
             }
             guard !rows.isEmpty else { return .text(p.media.isEmpty ? "No media yet; media_import adds files." : "No media match.") }
             let columns = Array(Set(rows.flatMap { ($0.metadata ?? [:]).keys })).sorted()
-            var lines = ["id | name | bin | " + (columns.isEmpty ? "" : columns.joined(separator: " | ") + " | ") + "format | keywords | on timeline"]
+            var lines = ["id | name | bin | " + (columns.isEmpty ? "" : columns.joined(separator: " | ") + " | ") + "format | source TC | reel | keywords | on timeline"]
             for m in rows {
                 let format = m.isImage ? "image \(m.width)×\(m.height)" : (m.hasVideo ? "\(m.width)×\(m.height) \(fmt2(m.fps))fps \(fmt2(m.duration))s" : "audio \(fmt2(m.duration))s") + (m.log.map { " \($0.rawValue)" } ?? "") + (m.channelSummary.map { ", " + $0 } ?? "")
                 let tags = (m.tags ?? []).map { $0.rating.map { r in "★\(r)" } ?? $0.label }
                 let cols = columns.map { m.metadata?[$0] ?? "–" }
-                lines.append(([m.id, m.name, m.bin ?? "–"] + cols + [format, tags.isEmpty ? "–" : tags.joined(separator: ", "), used[m.id].map { "\($0) clip\($0 == 1 ? "" : "s")" } ?? "unused"]).joined(separator: " | "))
+                lines.append(([m.id, m.name, m.bin ?? "–"] + cols + [format, m.timecodeString() ?? "–", m.reel ?? "–", tags.isEmpty ? "–" : tags.joined(separator: ", "), used[m.id].map { "\($0) clip\($0 == 1 ? "" : "s")" } ?? "unused"]).joined(separator: " | "))
             }
             let bins = Set(p.media.compactMap(\.bin)).sorted()
             if !bins.isEmpty { lines.append("Bins: " + bins.joined(separator: ", ")) }

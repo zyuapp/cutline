@@ -149,8 +149,8 @@ private func cubeFile(_ f: ColorMath.Transform, size: Int = 33) throws -> URL {
     #expect(xml.contains("ASC_SAT \(sent.sat); LUT \(url.path)</note>"))
     let viaFCP = try Importer.fcpxml(Data(xml.utf8), relativeTo: nil).project
     expectCarried(viaFCP, "FCPXML")
-    // The CDL already carries the LUT's look, so the LUT comes back switched off.
-    #expect(viaFCP.tracks[0].clips[0].effects.first { $0.type == "color.lut" }?.enabled == false)
+    // The CDL is the LUT's own fit and the .cube is here, so the LUT itself comes back in place of the CDL.
+    #expect(viaFCP.tracks[0].clips[0].effects.map(\.type) == ["color.lut"] && viaFCP.tracks[0].clips[0].effects[0].enabled)
 
     let edl = p.edl(title: "LUT")
     #expect(edl.contains("*ASC_SAT \(sent.sat)\n*LUT: \(url.path)\n"))

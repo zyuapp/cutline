@@ -81,6 +81,12 @@ public enum ShotColor {
         CGRect(x: face.minX + face.width * 0.25, y: face.minY + face.height * 0.45, width: face.width * 0.5, height: face.height * 0.4)
     }
 
+    /// `featurePrint` on its own thread, for callers on Swift's cooperative pool.
+    public static func featurePrintOffPool(_ img: CGImage?) async -> VNFeaturePrintObservation? {
+        guard let img else { return nil }
+        return try? await runBlocking { _ in featurePrint(img) }
+    }
+
     public static func featurePrint(_ img: CGImage) -> VNFeaturePrintObservation? {
         let req = VNGenerateImageFeaturePrintRequest()
         try? VNImageRequestHandler(cgImage: img).perform([req])

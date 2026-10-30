@@ -81,6 +81,29 @@ private func project(_ box: Toolbox, _ dir: URL, _ extra: [String: JSON] = [:]) 
     #expect(e.plainText.contains("Timecode starts at 01:00:00:00"), "\(e.plainText)")
     let xml = try String(contentsOf: dir.appendingPathComponent("air.xml"), encoding: .utf8)
     #expect(xml.contains("A001_C002.mxf") && !xml.contains("mezzanine"))
+    #expect(xml.contains("<string>10:00:00:00</string>"), "\(xml)")
+    // Re-importing it finds the mezzanine by its camera original instead of adding a copy.
+    let back = await box.call("timeline_import", ["path": .string(dir.appendingPathComponent("air.xml").path)])
+    #expect(back.plainText.contains("1 media matched to the project's, 0 added"), "\(back.plainText)")
+    #expect(try box.session.project().media.map(\.id) == ["a001-c002"])
+}
+
+@Test(.enabled(if: tools != nil, skip)) func sourceTimecodeShowsAtImportAndPlacesClips() async throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let mov = dir.appendingPathComponent("A001C002.mov")
+    try await FFmpeg.run(tools!.ffmpeg, ["-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30000/1001", "-t", "2",
+                                          "-c:v", "prores_ks", "-profile:v", "0", "-timecode", "14:22:10:05", "-metadata:s:v", "reel_name=A001", mov.path])
+    let box = Toolbox()
+    try await project(box, dir, ["fps": 29.97])
+    let r = await box.call("media_import", ["paths": [.string(mov.path)], "analyze": false])
+    #expect(r.plainText.contains("TC 14:22:10:05 (non-drop), reel A001"), "\(r.plainText)")
+    let list = await box.call("media_list", [:])
+    #expect(list.plainText.contains("| 14:22:10:05 | A001 |"), "\(list.plainText)")
+    let add = await box.call("clip_add", ["media_id": "a001c002", "source_in": "a001c002@14:22:10:20", "duration": 1])
+    #expect(!add.isError, "\(add.plainText)")
+    let clip = try #require(try box.session.project().tracks[0].clips.first)
+    #expect(abs(clip.sourceIn - 15.0 * 1001 / 30000) < 1e-9)
 }
 
 @Test func nearMissPresetNamesPointAtTheRealOnes() {
