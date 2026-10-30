@@ -27,7 +27,7 @@ extension Toolbox {
             "edl_fps": "EDL frame rate, default 30",
         ], hide: ["master_peak_nits"]),
         "project_open": ToolBrief(text: "Open a .cutline project.", args: ["open_preview": "Default false", "path": ""]),
-        "project_status": ToolBrief(text: "The project: canvas, media, tracks and clips, effects, captions, comments, warnings. target=<clip> lists its parameters; detail=json the raw project.", args: [
+        "project_status": ToolBrief(text: "The project: canvas, media, tracks, clips, effects, captions, comments, warnings. target=<clip> lists its parameters; detail=json the raw project.", args: [
             "target": "Clip id", "detail": "",
         ]),
         "canvas_set": ToolBrief(text: "Change canvas size, frame rate, color space, timecode or background; media refits, text scales.", args: [
@@ -47,7 +47,7 @@ extension Toolbox {
             "start": "", "end": "", "duration": "", "track": "", "countdown": "", "preroll": "", "mute_program": "", "takes": "", "script": "Teleprompter text", "wait": "", "id": "Collect an earlier recording",
         ], hide: ["analyze", "test_input"]),
         "preview_state": ToolBrief(text: "The preview playhead and play state (\"here\", \"this part\")."),
-        "media_import": ToolBrief(text: "Import files and folders (MXF/DNx get mezzanines, RAW is developed); analyzes transcripts, pauses and scene cuts. Returns the media ids.", args: [
+        "media_import": ToolBrief(text: "Import files and folders (MXF/DNx get mezzanines, RAW is developed); analyzes transcripts, pauses and scene cuts. Returns media ids.", args: [
             "paths": "Files or folders", "relink": "Find missing media inside paths instead", "analyze": "Default true", "language": "Default en-US",
             "fps": "",
         ]),
@@ -59,7 +59,7 @@ extension Toolbox {
             "features": "Default all the media allows",
             "channel": "Channel(s) analysis listens to: \"ch3\", \"ch3+ch4\", \"mix:1,3\", auto",
             "background": "Return at once", "language": "Default en-US", "vocabulary": "Names/terms to spell; kept",
-        ], hide: ["log", "signal_range"]),
+        ], hide: ["log", "signal_range", "enroll"]),
         "media_remove": ToolBrief(text: "Remove unused media.", args: ["media_id": ""]),
         "media_transcript": ToolBrief(text: "What a media file says, in SOURCE time with word ids (for source_cut, assemble, source_in/out); fillers *um*, unsure [word?], pauses ≥0.4 s.", args: [
             "media_id": "", "start": "Source time", "end": "Source time", "words": "Every word with its time", "low_confidence": "Only unsure words",
@@ -169,7 +169,7 @@ extension Toolbox {
             "type": "Effect type (catalog)", "params": "", "id": "Default from type, e.g. vignette1", "index": "Stack position, 0 first",
             "mix": "0…1", "enabled": "", "remove": "Remove this id (or every effect of type)", "scope": "shot: only the shot at at", "at": "",
         ]),
-        "catalog": ToolBrief(text: "Reference: effects, transitions, eases, paths, anchors; type, search, recipe or tool for details; plugins lists Audio Units.", args: [
+        "catalog": ToolBrief(text: "Reference: effects, transitions, eases, paths, anchors; type, recipe or tool for details; search a task; plugins: Audio Units.", args: [
             "type": "Effect, transition or raw", "search": "", "paths": "", "recipe": "Name or \"all\"", "plugins": "", "tool": "Tool name",
         ]),
         "transition_set": ToolBrief(text: "Add, change or remove transitions on cuts (borrowing handles), or in/out over what lies beneath. Types in catalog; part sound/both crossfades audio.", args: [
@@ -195,7 +195,7 @@ extension Toolbox {
             "media_id": "", "at": "Source time of box", "box": "{x, y, width, height} frame fractions", "face": "Face track index instead of box",
             "corners": "[[x,y]×4] TL, TR, BR, BL of a flat surface", "end": "Source time; before at tracks backwards", "label": "", "list": "List tracks",
         ]),
-        "analysis_read": ToolBrief(text: "Read analysis compactly: summary, beats, speakers, shots, sounds, faces, levels; without media_id the timeline's beats and jobs. Source seconds.", args: [
+        "analysis_read": ToolBrief(text: "Read analysis: summary, beats, speakers, shots, sounds, faces, levels; no media_id: timeline beats and jobs. Source seconds.", args: [
             "media_id": "Omit for the timeline", "what": "Default summary", "start": "", "end": "",
             "wait": "Seconds to wait for running analysis (≤600)", "start_missing": "Start analysis that never ran",
         ]),
@@ -219,7 +219,7 @@ extension Toolbox {
             "tracks": "Each track's sound too", "platform": "Text against its UI-free area", "reference": "For compare: clip id or time",
         ]),
         "recipe": ToolBrief(text: recipeDescription, args: ["name": "", "args": "", "wait": "Seconds for needed analysis"]),
-        "batch": ToolBrief(text: "Run edit tools in order as ONE undo step; all or nothing. as:\"x\" names a result for \"$x\" later.", args: [
+        "batch": ToolBrief(text: "Edit tools in order as ONE undo step, all or nothing. as:\"x\" names a result \"$x\"; $last, $last_clip… work anywhere.", args: [
             "operations": "[{tool, args, as}]", "operations[].tool": "Edit tool", "operations[].args": "", "operations[].as": "",
             "label": "History label", "if_history": "Only if the current entry is this id", "verify": "Timeline times to render after",
         ]),

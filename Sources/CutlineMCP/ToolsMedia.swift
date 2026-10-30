@@ -35,6 +35,7 @@ extension Toolbox {
             "log": Schema.string("Set the camera log encoding instead of analyzing (\"none\" for normal video); log clips are converted into the canvas color space with input.tone and input.exposure", values: ["none"] + LogProfile.allCases.map(\.rawValue)),
             "signal_range": Schema.string("Whether log code values are legal (video, default) or full range", values: ["video", "full"]),
             "channel": Schema.string("Source channel(s) transcript, speakers, beats, sounds and sync listen to, kept for later analysis: \"ch3\", \"ch3+ch4\", \"mix:1,3\", left, right; \"auto\" (default) uses the first track, or for multichannel files every channel with sound. media_list shows each file's channels"),
+            "enroll": Schema.bool("Speakers: true pins every word you named (transcript_edit rename or speaker) and labels the rest of each named voice from them; false analyzes afresh, dropping names and pins; default keeps pins and names"),
             "vocabulary": Schema.strings("Names and terms the transcript should spell this way (characters, products), kept for later analysis; [] clears. Caption replacement targets and named speakers are added automatically. The recognizer's alternative readings that contain a term are preferred, and sound-alike names are respelled"),
         ], required: ["media_id"])) { [unowned self] args in
             if let log = args.optString("log") {
@@ -85,7 +86,7 @@ extension Toolbox {
                     let job = session.jobs.enqueue(m.id, requested, bundle: try session.requireBundle().url, language: language, explicit: explicit)
                     lines.append("\(id): queued \(job)")
                 } else {
-                    lines.append("\(id): " + (try await session.analyze(m, features: requested, language: language, explicit: explicit)).ifEmptyText("nothing to analyze"))
+                    lines.append("\(id): " + (try await session.analyze(m, features: requested, language: language, explicit: explicit, enroll: args.optBool("enroll"))).ifEmptyText("nothing to analyze"))
                 }
             }
             return .text(lines.joined(separator: "\n"))

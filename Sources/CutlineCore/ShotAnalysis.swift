@@ -123,10 +123,13 @@ public struct FaceSample: Codable, Equatable, Sendable {
 public struct FaceTrack: Codable, Equatable, Sendable {
     public var id: Int
     public var samples: [FaceSample]
+    /// The same number on every track showing one person across shots; nil until faces are compared.
+    public var person: Int?
 
-    public init(id: Int, samples: [FaceSample]) {
+    public init(id: Int, samples: [FaceSample], person: Int? = nil) {
         self.id = id
         self.samples = samples
+        self.person = person
     }
 
     public var start: Seconds { samples.first?.t ?? 0 }

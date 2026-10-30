@@ -14,14 +14,15 @@ public enum Diarizer {
 
     /// Decodes the first audio track to 16 kHz mono and analyzes it. With `faces` (active-speaker analysis of the same
     /// media) and their `faceTracks`, two faces on screen together are never one speaker and turns by the same talking
-    /// face join more readily.
-    public static func analyze(url: URL, transcript: Transcript, faces: ActiveSpeakers? = nil, faceTracks: [FaceTrack] = []) async throws -> SpeakerAnalysis {
+    /// face (the same person, when tracks carry `person`) join more readily. With `enrollment`, pinned words keep their
+    /// speaker and name the rest of their voice.
+    public static func analyze(url: URL, transcript: Transcript, faces: ActiveSpeakers? = nil, faceTracks: [FaceTrack] = [], enrollment: Enrollment? = nil) async throws -> SpeakerAnalysis {
         let samples = try await decodeMono(url: url)
-        return analyze(samples: samples, sampleRate: decodeRate, transcript: transcript, faces: faces, faceTracks: faceTracks)
+        return analyze(samples: samples, sampleRate: decodeRate, transcript: transcript, faces: faces, faceTracks: faceTracks, enrollment: enrollment)
     }
 
     /// Labels speakers and scores emphasis for `transcript` over mono `samples`.
-    public static func analyze(samples: [Float], sampleRate: Double, transcript: Transcript, maxSpeakers: Int = 6, faces: ActiveSpeakers? = nil, faceTracks: [FaceTrack] = []) -> SpeakerAnalysis {
+    public static func analyze(samples: [Float], sampleRate: Double, transcript: Transcript, maxSpeakers: Int = 6, faces: ActiveSpeakers? = nil, faceTracks: [FaceTrack] = [], enrollment: Enrollment? = nil) -> SpeakerAnalysis {
         let words = transcript.words
         let features = FrameFeatures(samples: samples, sampleRate: sampleRate)
         let emphasis = emphasisScores(words: words, features: features)
@@ -31,7 +32,8 @@ public enum Diarizer {
         }
         let v = VoiceFrames(features)
         let bySentence = isPunctuated(words)
-        let units = bySentence ? sentenceUnits(words, order: order) : order.map { Segment(start: words[$0].start, end: max(words[$0].start, words[$0].end), words: [$0]) }
+        var units = bySentence ? sentenceUnits(words, order: order) : order.map { Segment(start: words[$0].start, end: max(words[$0].start, words[$0].end), words: [$0]) }
+        if let pinned = enrollment?.pinned, pinned.contains(where: { $0 != nil }) { units = splitAtPins(units, pinned, words: words) }
         let costs = units.indices.map { u -> Double in
             guard u > 0 else { return 0 }
             let a = words[units[u - 1].words.last!], b = words[units[u].words[0]]
@@ -89,29 +91,55 @@ public enum Diarizer {
                 labels = capSpeakers(labels, max: max(1, maxSpeakers), unitFrames: unitFrames, v: v, cannot: apart)
             }
         }
+        let scene = scenes(units)
         labels = renumber(labels)
+        let named = enrollment.map { enroll($0, labels: labels, units: units, scene: scene, unitFrames: unitFrames, v: v) } ?? units.map { _ in UnitIdentity() }
+        let links = sceneIdentity(labels, scene: scene, unitFrames: unitFrames, v: v)
 
-        var speakerStats = [GaussStats](repeating: GaussStats(dims: v.dims), count: (labels.max() ?? 0) + 1)
-        for (u, fr) in unitFrames.enumerated() { speakerStats[labels[u]] = speakerStats[labels[u]] + v.stats(fr) }
+        // Display names: enrolled names, else S1, S2… for the remaining voices in order of first appearance.
+        var numbers: [Int: Int] = [:]
+        let display = units.indices.map { u -> String in
+            if let n = named[u].name { return n }
+            if numbers[labels[u]] == nil { numbers[labels[u]] = numbers.count + 1 }
+            return "S\(numbers[labels[u]]!)"
+        }
         var speakers: [String] = []
+        for n in display where !speakers.contains(n) { speakers.append(n) }
+        let ids = display.map { speakers.firstIndex(of: $0)! }
+        // Voice confidence is against the voice clusters, whatever names they were given.
+        var voiceStats = [GaussStats](repeating: GaussStats(dims: v.dims), count: (labels.max() ?? 0) + 1)
+        for (u, fr) in unitFrames.enumerated() { voiceStats[labels[u]] = voiceStats[labels[u]] + v.stats(fr) }
         var segments: [SpeakerSegment] = []
         var wordSpeakers = [String?](repeating: nil, count: words.count)
         var u = 0
         while u < units.count {
             var e = u
-            while e + 1 < units.count, labels[e + 1] == labels[u] { e += 1 }
-            let name = "S\(labels[u] + 1)"
-            if !speakers.contains(name) { speakers.append(name) }
+            while e + 1 < units.count, ids[e + 1] == ids[u] { e += 1 }
+            let name = display[u]
             let turnWords = units[u...e].flatMap(\.words)
             for i in turnWords { wordSpeakers[i] = name }
-            let confidence = turnConfidence(Array(unitFrames[u...e].joined()), label: labels[u], stats: speakerStats, v: v)
+            var weight: [Int: Int] = [:]
+            for k in u...e { weight[labels[k], default: 0] += unitFrames[k].count }
+            let voice = weight.max { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) }!.key
+            let confidence = turnConfidence((u...e).filter { labels[$0] == voice }.flatMap { unitFrames[$0] }, label: voice, stats: voiceStats, v: v)
+            let vias = Set((u...e).map { named[$0].via ?? "" })
+            let via = vias.count == 1 ? vias.first.flatMap { $0.isEmpty ? nil : $0 } : nil
+            let identity: Double? = via == "pinned" || via == "enrolled" ? 1 : (u...e).compactMap { links[scene[$0]]?[labels[$0]] }.min()
             let start = words[turnWords[0]].start
             let end = turnWords.map { max(words[$0].start, words[$0].end) }.max()!
             if let last = segments.last, last.end > start { segments[segments.count - 1].end = start }
-            segments.append(SpeakerSegment(start: start, end: end, speaker: name, confidence: (confidence * 100).rounded() / 100))
+            segments.append(SpeakerSegment(start: start, end: end, speaker: name, confidence: (confidence * 100).rounded() / 100, identity: identity.map { ($0 * 100).rounded() / 100 }, via: via))
             u = e + 1
         }
-        return SpeakerAnalysis(mediaId: transcript.mediaId, speakers: speakers, segments: segments, wordSpeakers: wordSpeakers, emphasis: emphasis)
+        let pins = enrollment.flatMap { e -> [SpeakerPin]? in
+            var out: [SpeakerPin] = []
+            for (i, n) in e.pinned.enumerated() {
+                guard let n else { continue }
+                if let last = out.last, last.to == i - 1, last.speaker == n { out[out.count - 1].to = i } else { out.append(SpeakerPin(from: i, to: i, speaker: n)) }
+            }
+            return out.isEmpty ? nil : out
+        }
+        return SpeakerAnalysis(mediaId: transcript.mediaId, speakers: speakers, segments: segments, wordSpeakers: wordSpeakers, emphasis: emphasis, pins: pins)
     }
 
     // MARK: Segments
@@ -120,6 +148,24 @@ public enum Diarizer {
         var start: Double
         var end: Double
         var words: [Int]
+    }
+
+    /// `units` split wherever the pinned speaker changes between neighbouring words.
+    static func splitAtPins(_ units: [Segment], _ pinned: [String?], words: [Word]) -> [Segment] {
+        func pin(_ i: Int) -> String? { pinned.indices.contains(i) ? pinned[i] : nil }
+        var out: [Segment] = []
+        for unit in units {
+            var cur: [Int] = []
+            for w in unit.words {
+                if let last = cur.last, pin(last) != pin(w) {
+                    out.append(Segment(start: words[cur[0]].start, end: cur.map { max(words[$0].start, words[$0].end) }.max()!, words: cur))
+                    cur = []
+                }
+                cur.append(w)
+            }
+            out.append(Segment(start: words[cur[0]].start, end: cur.map { max(words[$0].start, words[$0].end) }.max()!, words: cur))
+        }
+        return out
     }
 
     /// Whether the transcript marks sentence ends often enough to trust them as the only places turns change.
@@ -164,10 +210,11 @@ public enum Diarizer {
     }
 
     /// The face confidently talking in each unit, and pairs of units whose talking faces were on screen together
-    /// (so two people).
+    /// (so two people). Tracks of one person (`FaceTrack.person`) count as one face, numbered below zero apart from
+    /// track ids.
     static func faceLinks(_ faces: ActiveSpeakers?, tracks: [FaceTrack], units: [Segment]) -> (faceOf: [Int?], cannot: Set<Pair>) {
         guard let faces, !faces.spans.isEmpty else { return ([], []) }
-        let faceOf: [Int?] = units.map { unit in
+        let trackOf: [Int?] = units.map { unit in
             var best: (overlap: Double, span: ActiveSpeakers.Span)?
             for s in faces.spans {
                 let o = min(s.end, unit.end) - max(s.start, unit.start)
@@ -176,12 +223,14 @@ public enum Diarizer {
             guard let best, best.overlap >= 0.5 * (unit.end - unit.start), best.span.isConfident else { return nil }
             return best.span.face
         }
+        let person = Dictionary(tracks.compactMap { t in t.person.map { (t.id, -1 - $0) } }, uniquingKeysWith: { a, _ in a })
+        let faceOf = trackOf.map { $0.map { person[$0] ?? $0 } }
         let ranges = Dictionary(tracks.map { ($0.id, ($0.start, $0.end)) }, uniquingKeysWith: { a, _ in a })
         var cannot = Set<Pair>()
-        let talking = units.indices.filter { faceOf[$0] != nil }
+        let talking = units.indices.filter { trackOf[$0] != nil }
         for (i, a) in talking.enumerated() {
             for b in talking[(i + 1)...] {
-                guard let fa = faceOf[a], let fb = faceOf[b], fa != fb, let ra = ranges[fa], let rb = ranges[fb] else { continue }
+                guard faceOf[a] != faceOf[b], let ra = ranges[trackOf[a]!], let rb = ranges[trackOf[b]!] else { continue }
                 if min(ra.1, rb.1) - max(ra.0, rb.0) > 0.5 { cannot.insert(Pair(a, b)) }
             }
         }
