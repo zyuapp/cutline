@@ -185,8 +185,8 @@ private let midGrey: [LogProfile: Float] = [
 }
 
 @Test func colorMatchMovesStatisticsOntoTheReference() {
-    let warm: [SIMD3<Float>] = (0..<200).map { i in let v = Float(i) / 200; return SIMD3(min(1, v * 0.9 + 0.1), v * 0.7, v * 0.5) }
-    let cool: [SIMD3<Float>] = (0..<200).map { i in let v = Float(i) / 200; return SIMD3(v * 0.5, v * 0.7, min(1, v * 0.9 + 0.1)) }
+    let warm: [SIMD3<Float>] = (0..<200).map { i in let v = Float(i) / 200; return SIMD3(min(1, v * 0.95 + 0.04), v * 0.85, v * 0.72) }
+    let cool: [SIMD3<Float>] = (0..<200).map { i in let v = Float(i) / 200; return SIMD3(v * 0.78, v * 0.85, min(1, v * 0.95 + 0.04)) }
     let a = ColorMatch.stats(warm), b = ColorMatch.stats(cool)
     let f = ColorMatch.transform(from: a, to: b)
     let matched = ColorMatch.stats(warm.map(f))

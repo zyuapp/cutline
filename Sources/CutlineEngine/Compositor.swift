@@ -31,12 +31,50 @@ public final class RenderScene: @unchecked Sendable {
 
     var canvasRect: CGRect { CGRect(x: 0, y: 0, width: project.canvas.width, height: project.canvas.height) }
 
+    /// Shows where one clip effect acts instead of the picture (see `EffectRenderer.matte`).
+    public struct MatteView: Sendable {
+        public var clip: String
+        public var effect: String
+
+        public init(clip: String, effect: String) {
+            self.clip = clip
+            self.effect = effect
+        }
+    }
+
+    /// When set, every frame is the matte of this clip effect in white on black, placed like the clip.
+    public var matteView: MatteView?
+
     /// Draws the frame at a timeline time. `source` returns the decoded frame of a clip.
     func render(at t: Seconds, background: Bool = true, source: (String) -> CVPixelBuffer?) -> CIImage {
+        if let view = matteView { return matteFrame(view, at: t, source: source) }
+        return composite(at: t, background: background, source: source)
+    }
+
+    func matteFrame(_ view: MatteView, at t: Seconds, source: (String) -> CVPixelBuffer?) -> CIImage {
+        let canvas = canvasRect
+        let black = CIImage(color: .black).cropped(to: canvas)
+        guard let ti = project.tracks.firstIndex(where: { $0.kind == .video && $0.clips.contains { $0.id == view.clip } }),
+              let clip = project.tracks[ti].clip(at: t), clip.id == view.clip else { return black }
+        if clip.kind == .adjustment {
+            let local = t - clip.start
+            let below = composite(at: t, background: true, tracks: ti, source: source)
+            let ctx = EffectRenderer.Context(unit: canvas.height, time: t, opaque: true, gradeSpace: gradeSpace)
+            let m = EffectRenderer.matte(clip.effects, id: view.effect, to: below, context: ctx) { e, name in clip.anim["fx.\(e.id).\(name)"]?.value(at: local) }
+            return (m ?? black).cropped(to: canvas)
+        }
+        return (layer(clip, at: t, source: source) ?? black).composited(over: black).cropped(to: canvas)
+    }
+
+    /// The frame from the first `tracks` video tracks (all by default).
+    func composite(at t: Seconds, background: Bool = true, tracks limit: Int = .max, source: (String) -> CVPixelBuffer?) -> CIImage {
         let canvas = canvasRect
         let unit = canvas.height
         var out = CIImage(color: background ? CIColor(cgColor: project.canvas.background.cgColor) : .clear).cropped(to: canvas)
-        for track in project.tracks where track.kind == .video && !track.hidden {
+        // Where pictures lie, so adjustment layers leave a black background (letterbox bars) black.
+        let bg = project.canvas.background
+        var cover = background && max(bg.r, bg.g, bg.b) > 0.02 ? out : CIImage(color: .clear).cropped(to: canvas)
+        for (ti, track) in project.tracks.enumerated() where ti < limit && track.kind == .video && !track.hidden {
             if let w = windows[track.id]?.first(where: { $0.contains(t) }) {
                 let a = w.transition.from.flatMap { project.clip($0) }
                 let b = w.transition.to.flatMap { project.clip($0) }
@@ -47,6 +85,7 @@ public final class RenderScene: @unchecked Sendable {
                 }
                 let mode = (p < 0.5 ? a ?? b : b ?? a)?.blend ?? .normal
                 out = EffectRenderer.blend(combined, over: out, mode: mode).cropped(to: canvas)
+                cover = combined.composited(over: cover)
                 continue
             }
             guard let clip = track.clip(at: t) else { continue }
@@ -57,6 +96,7 @@ public final class RenderScene: @unchecked Sendable {
                 let ctx = EffectRenderer.Context(unit: unit, time: t, opaque: true, gradeSpace: gradeSpace)
                 var adjusted = EffectRenderer.apply(clip.effects, to: out, context: ctx) { e, name in clip.anim["fx.\(e.id).\(name)"]?.value(at: local) }
                 adjusted = EffectRenderer.apply(track.effects, to: adjusted, context: ctx) { _, _ in nil }
+                adjusted = EffectRenderer.confine(adjusted, to: cover)
                 if opacity < 0.999 { adjusted = alpha(adjusted, opacity) }
                 out = adjusted.composited(over: out).cropped(to: canvas)
                 continue
@@ -69,6 +109,7 @@ public final class RenderScene: @unchecked Sendable {
                 placed = EffectRenderer.apply(track.effects, to: placed, context: EffectRenderer.Context(unit: unit, time: t, opaque: false, gradeSpace: gradeSpace)) { _, _ in nil }
             }
             out = EffectRenderer.blend(placed, over: out, mode: clip.blend).cropped(to: canvas)
+            cover = placed.composited(over: cover)
         }
         if project.captions.enabled, let caption = captionImage(at: t) {
             out = caption.composited(over: out)
@@ -115,16 +156,20 @@ public final class RenderScene: @unchecked Sendable {
             guard e.width > 0, e.height > 0 else { return nil }
             // Bring the picture to canvas pixel scale first so effect sizes are resolution independent.
             switch xf.fit {
-            case .fit:
-                let s = min(canvas.width / e.width, canvas.height / e.height)
-                img = img.transformed(by: CGAffineTransform(scaleX: s, y: s), highQualityDownsample: s < 1)
-            case .fill:
-                let s = max(canvas.width / e.width, canvas.height / e.height)
-                img = img.transformed(by: CGAffineTransform(scaleX: s, y: s), highQualityDownsample: s < 1)
+            case .fit, .fill:
+                // Whole-pixel sizes keep the picture's edges hard, with no half-covered rows next to letterbox bars.
+                let s = xf.fit == .fit ? min(canvas.width / e.width, canvas.height / e.height) : max(canvas.width / e.width, canvas.height / e.height)
+                let sx = max(1, (e.width * s).rounded()) / e.width, sy = max(1, (e.height * s).rounded()) / e.height
+                img = img.transformed(by: CGAffineTransform(scaleX: sx, y: sy), highQualityDownsample: s < 1)
             case .stretch:
                 img = img.transformed(by: CGAffineTransform(scaleX: canvas.width / e.width, y: canvas.height / e.height))
             }
             layer = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
+            if opaque {
+                // Decoded frames count as opaque everywhere, so color kernels can leave unpremultiplied color
+                // outside the picture (graded or smeared letterbox bars); an explicit transparent surround prevents that.
+                layer = layer!.composited(over: CIImage(color: .clear).cropped(to: layer!.extent))
+            }
             if let fx = clip.effects.first(where: { $0.type == "distort.stabilize" && $0.enabled }), let m = project.mediaAsset(mid), let path = stabilization(clip, m, smoothing: fx.params["smoothing"]?.number ?? 1) {
                 let strength = fx.params["strength"]?.number ?? 1
                 let extra = fx.params["zoom"]?.number ?? 0
@@ -170,7 +215,11 @@ public final class RenderScene: @unchecked Sendable {
         // Effects run before the clip is scaled, so lengths are divided by the scale to stay in final frame units.
         var ctx = EffectRenderer.Context(unit: unit / max(CGFloat(xf.scale), 0.01), time: t, opaque: opaque, gradeSpace: gradeSpace)
         if clip.kind == .media, let mid = clip.mediaId { ctx.source = MaskCache.Key(mediaId: mid, time: images[mid] != nil ? 0 : clip.sourceTime(atTimeline: t)) }
-        if !clip.effects.isEmpty {
+        if let view = matteView, view.clip == clip.id {
+            guard let m = EffectRenderer.matte(clip.effects, id: view.effect, to: layer, context: ctx, param: param) else { return nil }
+            layer = m
+            xf.opacity = 1
+        } else if !clip.effects.isEmpty {
             layer = EffectRenderer.apply(clip.effects, to: layer, context: ctx, param: param)
         }
         return place(layer, center: center, xf: xf)

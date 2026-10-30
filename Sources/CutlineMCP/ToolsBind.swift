@@ -8,7 +8,9 @@ extension Toolbox {
         Sources: "beats" / "downbeats" (pulses out_hi on each beat of the timeline's music, decaying to out_lo over decay=0.25s), \
         "audio:<media id>" (loudness where that media plays; map dB, default [-40, 0, out_lo, out_hi]), \
         "face:<media id>[:n].x|y|size" and "track:<track id>.x|y|width|height" (a face or tracked object, in canvas fractions where the media plays; \
-        for transform.x/y the value is the offset from center, for anything else (text.x/y, fx.<id>.limit_x/y, effect centers) the absolute position; add offset to place beside it). \
+        for transform.x/y the value is the offset from center, for anything else (text.x/y, effect centers) the absolute position; add offset to place beside it). \
+        On the clip that plays the media, fx.<id>.* paths (limit_x/limit_y, limit_width/limit_height, center_x/center_y) get the position and size inside that clip's own picture, which is what its effects use, so a window follows the subject even when the picture is letterboxed, cropped or scaled: \
+        {"fx.skin1.limit_x": {"source": "face:<media>.x"}, "fx.skin1.limit_y": {"source": "face:<media>.y"}, "fx.skin1.limit_height": {"source": "face:<media>.size", "offset": 0.05}}. \
         Example: {"transform.scale": {"source": "beats", "map": [0, 1, 1, 1.06]}} pumps scale on every beat. \
         To reframe a clip on a face or object in its own picture, add "keep_centered": true on transform.x/y: the picture pans so the subject stays centered (clamped so the frame stays covered).
         """
@@ -111,6 +113,18 @@ extension Toolbox {
                     let room = field == "y" ? max(0, (ph - 1) / 2) : max(0, (pw - 1) / 2)
                     let shift = field == "y" ? 0.5 - r0.midY : 0.5 - r0.midX
                     return min(room, max(-room, shift)) + offset
+                }
+                if path.hasPrefix("fx."), host.id == c.id {
+                    // The clip's own effects work in fractions of its cropped picture, not of the canvas.
+                    let crop = host.resolvedTransform(at: local).crop
+                    let cw = max(0.0001, 1 - crop.left - crop.right), ch = max(0.0001, 1 - crop.top - crop.bottom)
+                    let v: Double = switch field {
+                    case "y": (near.box.midY - crop.top) / ch
+                    case "width": near.box.width / cw
+                    case "height", "size": near.box.height / ch
+                    default: (near.box.midX - crop.left) / cw
+                    }
+                    return v + offset
                 }
                 let r = Toolbox.canvasRect(near.box, in: host, media: m, canvas: p.canvas, at: local + c.start - host.start)
                 let v: Double = switch field {

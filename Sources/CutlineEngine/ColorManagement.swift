@@ -22,6 +22,14 @@ public enum ColorManagement {
         }
     }
 
+    /// The encoded code values (0…1) a color renders to in a working space, as the compositor draws it.
+    public static func codeValues(_ c: RGBA, in w: WorkingSpace) -> SIMD3<Float> {
+        var px = [Float](repeating: 0, count: 4)
+        let img = CIImage(color: CIColor(cgColor: c.cgColor)).cropped(to: CGRect(x: 0, y: 0, width: 1, height: 1))
+        CIContext(options: [.cacheIntermediates: false]).render(img, toBitmap: &px, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf, colorSpace: colorSpace(w))
+        return SIMD3(px[0], px[1], px[2])
+    }
+
     /// Values for `AVVideoComposition.colorPrimaries`, `colorTransferFunction` and `colorYCbCrMatrix`
     /// (the same strings as the CoreVideo attachment values).
     public static func videoCompositionTags(_ w: WorkingSpace) -> (primaries: String, transfer: String, matrix: String) {

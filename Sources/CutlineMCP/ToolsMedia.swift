@@ -202,7 +202,11 @@ extension Toolbox {
             "start": Schema.time("Range start for count"),
             "end": Schema.time("Range end for count"),
             "size": Schema.string("small (default) or large for detail checks such as text legibility", values: ["small", "large"]),
+            "view": Schema.string("picture (default), or matte: white where one clip effect acts and black where it doesn't (its limit window and/or qualifier, mask, chroma key or person/subject mask), to check a key or secondary; needs clip, and effect unless the clip has one masked effect", values: ["picture", "matte"]),
+            "clip": Schema.string("For view matte: the clip whose effect to show"),
+            "effect": Schema.string("For view matte: the effect id on that clip"),
         ])) { [unowned self] args in
+            if args.optString("view") == "matte" { return try await self.matteFrames(args) }
             let built = try await session.timeline()
             let p = built.scene.project
             guard p.duration > 0 else { throw EditError("The timeline is empty") }
@@ -258,6 +262,61 @@ extension Toolbox {
             let fillers = shown.filter { Word(text: $0.text, start: 0, end: 0).isFiller }.count
             return .text(lines.joined(separator: "\n") + "\n\(shown.count) words, \(fillers) fillers, timeline \(fmt2(p.duration))s")
         })
+    }
+
+    /// timeline_frames view:"matte": renders where one clip effect acts, white on black.
+    func matteFrames(_ args: Args) async throws -> ToolResult {
+        let b = try session.requireBundle()
+        let p = try session.project()
+        let clipId = try args.string("clip")
+        guard let clip = p.clip(clipId) else { throw EditError("No clip \(clipId)") }
+        func masked(_ e: Effect) -> Bool {
+            let limit = e.params["limit"]?.string ?? "none"
+            return (EffectCatalog.type(e.type)?.category == "mask" && e.type != "mask.matte") || limit != "none" || clip.anim["fx.\(e.id).limit"] != nil
+        }
+        let list = clip.effects.map { "\($0.id) (\($0.type))" }.joined(separator: ", ").ifEmptyText("none")
+        let effectId: String
+        if let id = args.optString("effect") {
+            effectId = id
+        } else {
+            let candidates = clip.effects.filter(masked)
+            guard candidates.count == 1 else { throw EditError("Pass effect: \(clipId) has \(candidates.isEmpty ? "no masked effects" : "several masked effects"). Effects: \(list)") }
+            effectId = candidates[0].id
+        }
+        guard let fx = clip.effects.first(where: { $0.id == effectId }) else { throw EditError("\(clipId) has no effect \(effectId). Effects: \(list)") }
+        if fx.type == "mask.matte" { throw EditError("\(effectId) is a track matte; look at its matte track with timeline_frames instead") }
+        let built = try await TimelineBuilder.build(p, transcripts: b.transcripts(for: p), library: session.library)
+        built.scene.matteView = RenderScene.MatteView(clip: clipId, effect: effectId)
+        let frame = 1 / p.canvas.fps
+        let times = try Toolbox.sampleTimes(args, start: clip.start, end: max(clip.start + frame, clip.end - frame), defaultCount: 4)
+        let large = args.optString("size") == "large"
+        let cell = large ? (p.canvas.width >= p.canvas.height ? 960.0 : 540.0) : Toolbox.cellWidth(width: p.canvas.width, height: p.canvas.height, count: times.count)
+        var frames = try await Frames.timeline(built, times: times, maxSize: CGSize(width: cell * 1.5, height: cell * 1.5))
+        var lines = ["Matte of \(effectId) (\(fx.type)) on \(clipId): white is where it acts fully, gray partly, black not at all."]
+        for (i, f) in frames.enumerated() {
+            let inside = f.time >= clip.start && f.time < clip.end
+            let (full, partial) = Toolbox.matteCoverage(f.image)
+            frames[i].label += inside ? "" : " (clip not playing)"
+            lines.append("\(fmt2(f.time))s  " + (inside ? "\(Int((full * 100).rounded()))% of the frame white, \(Int((partial * 100).rounded()))% partial" : "\(clipId) is not on screen"))
+        }
+        guard let jpeg = Frames.contactSheet(frames, columns: large ? min(2, frames.count) : nil, cellWidth: cell) else { throw EditError("Could not render frames") }
+        var r = ToolResult.text(lines.joined(separator: "\n"))
+        r.addImage(jpeg)
+        return r
+    }
+
+    /// Shares of a gray image above 0.9 and between 0.1 and 0.9.
+    static func matteCoverage(_ img: CGImage) -> (Double, Double) {
+        let w = img.width, h = img.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue), let data = ctx.data else { return (0, 0) }
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let px = data.assumingMemoryBound(to: UInt8.self)
+        var full = 0, partial = 0
+        for i in 0..<(w * h) {
+            if px[i] >= 230 { full += 1 } else if px[i] > 25 { partial += 1 }
+        }
+        let n = Double(max(1, w * h))
+        return (Double(full) / n, Double(partial) / n)
     }
 
     static let mediaExtensions: Set<String> = Set(["mov", "mp4", "m4v", "mkv", "avi", "mp3", "m4a", "wav", "aif", "aiff", "caf", "aac", "flac"]).union(MediaProbe.imageExtensions)

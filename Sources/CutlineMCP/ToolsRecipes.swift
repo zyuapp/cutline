@@ -4,7 +4,7 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color"]
+    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color", "grade_group"]
 
     static let recipeDocs = """
         duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
@@ -21,7 +21,8 @@ extension Toolbox {
         glitch: {at: [times or anchors], duration: 0.3, amount: 0.8}; adds glitch hits on an adjustment track. \
         whip_pan: {cut: "clip_a|clip_b", direction: left, duration: 0.35}. \
         template: {template: name (omit to list templates), at: time, values: {field: text}}. \
-        match_color: {clips: [ids] (default every media clip on V1), reference: clip id whose look the others match, strength: 0.8}; shot matching like Resolve's: measures each shot's color and exposure and adds a match LUT (effect "match") in front of its other color effects. \
+        match_color: {clips: [ids] (default every media clip on V1), reference: clip id whose look the others match, strength: 0.8}; shot matching like Resolve's: measures each shot's tones and color (inside its crop, ignoring letterbox bars; robust to a few extreme pixels) and adds a match LUT (effect "match") in front of its other color effects; colorfulness changes at most ±25% and black and white stay put. \
+        grade_group: {clips: [ids] (or track: "V1" for every media clip on it), id: "group1", effect: {type: "color.wheels", params: {...}}}; adds one shared effect with that id to every clip (adding clips to an existing group copies its current settings). Change the whole group at once with param_set target "group:group1" and fx.group1.<param>; effect_add target "group:group1" works too. \
         sync_audio: {clips: [video clip ids] (default every clip of that camera media on V1), audio: media id of the separate recorder, track: audio track (default new "Production sound"), keep_camera: false}; lines up dual-system sound by waveform, links it to the picture and mutes the camera mic. \
         follow: {clip: the graphic, title or overlay to move, target: "track:<id>" (media_track) or "face:<media>[:n]", offset_x: 0, offset_y: -0.1 (fractions of the frame; negative is above), smooth: 0.2}; keeps the clip on its subject wherever the media plays. \
         kinetic_text: {start, end (timeline or word anchors), preset: pop, unit: word, size: 0.09, y: 0.5, color, highlight: color, uppercase: false, max_width: 0.8}; spoken words appear as they are said. \
@@ -186,7 +187,7 @@ extension Toolbox {
                 let url = dir.appendingPathComponent("match-\(id)-\(refId).cube")
                 try Toolbox.writeCube(ColorMath.cubeData(size: 33, f), size: 33, title: "Match \(id) to \(refId)", to: url)
                 files[id] = url
-                report.append(String(format: "%@ (L %.0f→%.0f, a %.1f→%.1f, b %.1f→%.1f)", id, st.mean.x, refStats.mean.x, st.mean.y, refStats.mean.y, st.mean.z, refStats.mean.z))
+                report.append(String(format: "%@ (median L %.0f→%.0f, a %.1f→%.1f, b %.1f→%.1f, colorfulness %.1f→%.1f)", id, st.mean.x, refStats.mean.x, st.mean.y, refStats.mean.y, st.mean.z, refStats.mean.z, st.chroma, refStats.chroma))
             }
             let made = files
             return try runEdit("Match \(made.count) shot(s) to \(Toolbox.clipName(refId, current))", dry: dry) { p in
@@ -196,6 +197,42 @@ extension Toolbox {
                     p.tracks[loc.track].clips[loc.clip].effects.insert(Effect(id: "match", type: "color.lut", params: ["file": .string(url.path)]), at: 0)
                 }
                 return "Matched to \(refId): " + report.joined(separator: "; ") + ". Tune with param_set fx.match.mix."
+            }
+        case "grade_group":
+            let group = a.optString("id") ?? "group1"
+            guard group.range(of: #"^[A-Za-z][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else { throw EditError("Group ids are letters, digits and _, starting with a letter") }
+            var ids = a.strings("clips") ?? []
+            if let tid = a.optString("track") {
+                guard let i = current.trackIndex(tid) else { throw EditError("No track \(tid)") }
+                ids += current.tracks[i].clips.filter { $0.kind == .media || $0.kind == .sequence }.map(\.id)
+            }
+            guard !ids.isEmpty else { throw EditError("Pass clips (ids) or track") }
+            for id in ids where current.clip(id) == nil { throw EditError("No clip \(id)") }
+            let spec = Args(a.raw["effect"])
+            let existing = current.tracks.flatMap(\.clips).compactMap { $0.effects.first { $0.id == group } }.first
+            guard let type = spec.optString("type") ?? existing?.type ?? (a.has("effect") ? nil : "color.wheels") else { throw EditError("effect needs a type, e.g. {\"type\": \"color.wheels\", \"params\": {\"saturation\": 0.1}}") }
+            guard let et = EffectCatalog.type(type), !EffectCatalog.isAudio(type), et.category != "generator" else { throw EditError("\(type) is not a picture effect") }
+            if let existing, existing.type != type { throw EditError("Group \(group) is a \(existing.type); pick another id") }
+            return try runEdit("Grade group \(group) on \(ids.count) clip(s)", dry: dry) { p in
+                var raw: [String: JSON] = ["id": .string(group), "type": .string(type)]
+                if let params = spec.raw["params"] { raw["params"] = params }
+                if let mix = spec.raw["mix"] { raw["mix"] = mix }
+                var added: [String] = [], updated: [String] = []
+                for id in ids {
+                    guard let loc = p.locateClip(id) else { continue }
+                    var c = p.tracks[loc.track].clips[loc.clip]
+                    let had = c.effects.contains { $0.id == group }
+                    let plan = try Toolbox.planEffect(&c.effects, Args(raw: raw), owner: id)
+                    if !had, let existing, let i = c.effects.firstIndex(where: { $0.id == group }) {
+                        c.effects[i].params = existing.params
+                        c.effects[i].mix = existing.mix
+                    }
+                    for (path, v) in plan.values { try c.set(path, v) }
+                    p.tracks[loc.track].clips[loc.clip] = c
+                    if had { updated.append(id) } else { added.append(id) }
+                }
+                let members = Toolbox.groupMembers(group, p)
+                return "Group \(group) (\(type)): " + (added.isEmpty ? "" : "added to \(added.joined(separator: ", ")). ") + (updated.isEmpty ? "" : "updated on \(updated.joined(separator: ", ")). ") + "\(members.count) clip(s) share it; change them together with param_set {\"target\": \"group:\(group)\", \"set\": {\"fx.\(group).<param>\": …}}."
             }
         case "sync_audio":
             let audioId = try a.string("audio")
@@ -365,18 +402,40 @@ extension Toolbox {
 }
 
 extension Toolbox {
-    /// Lab statistics of a clip's picture from three frames across what it plays.
+    /// Clips in a grade group: every clip carrying an effect with the group's id.
+    static func groupMembers(_ group: String, _ p: Project) -> [String] {
+        p.tracks.flatMap(\.clips).filter { c in c.effects.contains { $0.id == group } }.map(\.id)
+    }
+
+    /// Targets for "group:<id>", or nil when `name` is not a group reference.
+    static func groupTargets(_ name: String, _ p: Project) throws -> [Target]? {
+        guard name.hasPrefix("group:") else { return nil }
+        let group = String(name.dropFirst(6))
+        let members = groupMembers(group, p)
+        guard !members.isEmpty else { throw EditError("No clips in group \(group); create it with recipe grade_group {clips, id: \"\(group)\", effect}") }
+        return members.map { .clip($0) }
+    }
+
+    /// Lab statistics of a clip's picture from five frames across what it plays, inside its crop and
+    /// without letterbox or pillarbox bars.
     static func colorStats(_ c: Clip, _ p: Project) async throws -> ColorMatch.Stats {
         guard let m = c.mediaId.flatMap({ p.mediaAsset($0) }), m.hasVideo else { throw EditError("\(c.id) has no picture") }
-        let times = m.isImage ? [0.0] : [0.2, 0.5, 0.8].map { min(c.sourceIn, c.sourceOut) + abs(c.sourceOut - c.sourceIn) * $0 }
+        let times = m.isImage ? [0.0] : [0.1, 0.3, 0.5, 0.7, 0.9].map { min(c.sourceIn, c.sourceOut) + abs(c.sourceOut - c.sourceIn) * $0 }
+        let crop = c.transform.crop
         var pixels: [SIMD3<Float>] = []
-        for f in try await Frames.media(m, times: times, maxSize: CGSize(width: 160, height: 160)) {
+        for f in try await Frames.media(m, times: times, maxSize: CGSize(width: 240, height: 240)) {
             let w = f.image.width, h = f.image.height
             guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let data = ctx.data else { continue }
             ctx.draw(f.image, in: CGRect(x: 0, y: 0, width: w, height: h))
-            let px = data.assumingMemoryBound(to: UInt8.self)
-            for i in stride(from: 0, to: w * h, by: 2) {
-                pixels.append(SIMD3(Float(px[i * 4]) / 255, Float(px[i * 4 + 1]) / 255, Float(px[i * 4 + 2]) / 255))
+            let px = UnsafePointer(data.assumingMemoryBound(to: UInt8.self))
+            let area = PictureArea.active(bytes: px, width: w, height: h, rowBytes: w * 4)
+            let x0 = max(area.x, Int(Double(w) * crop.left)), x1 = min(area.x + area.width, w - Int(Double(w) * crop.right))
+            let y0 = max(area.y, Int(Double(h) * crop.top)), y1 = min(area.y + area.height, h - Int(Double(h) * crop.bottom))
+            for y in y0..<max(y0, y1) {
+                for x in x0..<max(x0, x1) where (x + y) % 2 == 0 {
+                    let i = (y * w + x) * 4
+                    pixels.append(SIMD3(Float(px[i]) / 255, Float(px[i + 1]) / 255, Float(px[i + 2]) / 255))
+                }
             }
         }
         return ColorMatch.stats(pixels)

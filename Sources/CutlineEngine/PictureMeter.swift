@@ -16,6 +16,8 @@ public struct FrameStats: Sendable {
     /// Mean chroma: positive cb is blue, positive cr is red.
     public var cb: Double
     public var cr: Double
+    /// Share of the frame that is picture rather than letterbox, pillarbox or background bars; stats cover only the picture.
+    public var picture: Double = 1
 }
 
 /// Numbers an agent can grade and check the picture with.
@@ -32,6 +34,8 @@ public struct PictureReport: Sendable {
 public enum PictureMeter {
     /// Reads every frame of the built timeline (at a small render size) between `range`.
     public static func measure(_ built: BuiltTimeline, range: TimeRange? = nil) async throws -> PictureReport {
+        let bg = built.scene.project.canvas.background
+        let background = ColorManagement.codeValues(bg, in: built.scene.project.canvas.colorSpace)
         let comp = built.composition
         let reader = try AVAssetReader(asset: comp)
         let tracks = try await comp.loadTracks(withMediaType: .video)
@@ -46,7 +50,7 @@ public enum PictureMeter {
         var frames: [FrameStats] = []
         while let sample = output.copyNextSampleBuffer() {
             guard let pb = CMSampleBufferGetImageBuffer(sample) else { continue }
-            frames.append(stats(pb, time: CMSampleBufferGetPresentationTimeStamp(sample).seconds))
+            frames.append(stats(pb, time: CMSampleBufferGetPresentationTimeStamp(sample).seconds, background: background))
         }
         if reader.status == .failed { throw reader.error ?? EditError("Reading the picture failed") }
         return analyze(frames)
@@ -94,21 +98,28 @@ public enum PictureMeter {
         return PictureReport(frames: frames, black: black, flashes: flashes, flashFrames: flashFrames)
     }
 
-    static func stats(_ pb: CVPixelBuffer, time: Seconds) -> FrameStats {
+    /// Statistics of one BGRA frame over its active picture, skipping letterbox or pillarbox bars
+    /// (near-black, or the `background` color).
+    static func stats(_ pb: CVPixelBuffer, time: Seconds, background: SIMD3<Float>? = nil) -> FrameStats {
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb), row = CVPixelBufferGetBytesPerRow(pb)
         guard let base = CVPixelBufferGetBaseAddress(pb)?.assumingMemoryBound(to: UInt8.self) else {
             return FrameStats(time: time, luma: 0, p2: 0, p98: 0, clipped: 0, crushed: 0, saturation: 0, cb: 0, cr: 0)
         }
+        return stats(base, width: w, height: h, rowBytes: row, time: time, background: background)
+    }
+
+    static func stats(_ base: UnsafePointer<UInt8>, width w: Int, height h: Int, rowBytes row: Int, time: Seconds, background: SIMD3<Float>? = nil) -> FrameStats {
+        let area = PictureArea.active(bytes: base, width: w, height: h, rowBytes: row, order: (2, 1, 0), background: background)
         var hist = [Int](repeating: 0, count: 256)
         var sumY = 0.0, sumS = 0.0, sumCb = 0.0, sumCr = 0.0
         var clipped = 0, crushed = 0
-        let step = max(1, Int(sqrt(Double(w * h) / 40_000)))
+        let step = max(1, Int(sqrt(Double(area.width * area.height) / 40_000)))
         var n = 0
-        for y in stride(from: 0, to: h, by: step) {
+        for y in stride(from: area.y, to: area.y + area.height, by: step) {
             let p = base + y * row
-            for x in stride(from: 0, to: w, by: step) {
+            for x in stride(from: area.x, to: area.x + area.width, by: step) {
                 let b = Double(p[x * 4]) / 255, g = Double(p[x * 4 + 1]) / 255, r = Double(p[x * 4 + 2]) / 255
                 let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
                 hist[min(255, Int(luma * 255))] += 1
@@ -132,7 +143,7 @@ public enum PictureMeter {
             }
             return 1
         }
-        return FrameStats(time: time, luma: sumY / total, p2: percentile(0.02), p98: percentile(0.98), clipped: Double(clipped) / total, crushed: Double(crushed) / total, saturation: sumS / total, cb: sumCb / total, cr: sumCr / total)
+        return FrameStats(time: time, luma: sumY / total, p2: percentile(0.02), p98: percentile(0.98), clipped: Double(clipped) / total, crushed: Double(crushed) / total, saturation: sumS / total, cb: sumCb / total, cr: sumCr / total, picture: Double(area.width * area.height) / Double(max(1, w * h)))
     }
 
     // MARK: Text legibility

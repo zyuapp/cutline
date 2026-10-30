@@ -50,6 +50,98 @@ public enum ColorMath {
         }
     }
 
+    // MARK: Wheels
+
+    /// Primary color wheels. Every field is 0 when neutral; each RGB triple is added to its master value.
+    public struct Wheels: Equatable, Sendable {
+        /// Lift and gain map a channel as `(v + lift * (1 - v)) * (1 + gain)`: lift moves black, gain scales white.
+        public var lift = SIMD3<Float>(repeating: 0)
+        /// Midtone power: the channel becomes `v^(2^-gamma)`, so positive brightens.
+        public var gamma = SIMD3<Float>(repeating: 0)
+        public var gain = SIMD3<Float>(repeating: 0)
+        /// Added to every tone.
+        public var offset = SIMD3<Float>(repeating: 0)
+        /// White balance in linear light, -1 cool … 1 warm, and -1 green … 1 magenta.
+        public var temperature: Float = 0
+        public var tint: Float = 0
+        /// Contrast around `pivot`: `(v - pivot) * (1 + contrast) + pivot`.
+        public var contrast: Float = 0
+        public var pivot: Float = 0.5
+        /// Tone-weighted lightness changes peaking at luma 1/3 and 2/3.
+        public var shadows: Float = 0
+        public var highlights: Float = 0
+        /// Chroma around luma scaled by `1 + saturation`.
+        public var saturation: Float = 0
+
+        public init() {}
+
+        /// Reads `color.wheels` parameters: master `lift`/`gamma`/`gain`/`offset` plus `_r`/`_g`/`_b` per channel,
+        /// `temperature`/`tint` in -100…100, and the rest as named.
+        public init(_ n: (String) -> Double) {
+            func triple(_ name: String) -> SIMD3<Float> {
+                Float(n(name)) + SIMD3(Float(n(name + "_r")), Float(n(name + "_g")), Float(n(name + "_b")))
+            }
+            lift = triple("lift")
+            gamma = triple("gamma")
+            gain = triple("gain")
+            offset = triple("offset")
+            temperature = Float(n("temperature") / 100)
+            tint = Float(n("tint") / 100)
+            contrast = Float(n("contrast"))
+            pivot = Float(n("pivot"))
+            shadows = Float(n("shadows"))
+            highlights = Float(n("highlights"))
+            saturation = Float(n("saturation"))
+        }
+
+        public var isIdentity: Bool {
+            var neutral = Wheels()
+            neutral.pivot = pivot
+            return self == neutral
+        }
+    }
+
+    /// Applies, in order: white balance, offset, lift/gamma/gain, contrast around the pivot,
+    /// shadows/highlights, saturation. Results are clamped to 0…1.
+    public static func wheels(_ w: Wheels) -> Transform {
+        if w.isIdentity { return { clamp($0) } }
+        let t = min(max(w.temperature, -1), 1) * 0.4, g = min(max(w.tint, -1), 1) * 0.4
+        var balance = SIMD3<Float>(1 + t, 1 - g, 1 - t)
+        balance /= (balance * lumaWeights).sum()
+        let exponent = SIMD3<Float>(pow(2, -w.gamma.x), pow(2, -w.gamma.y), pow(2, -w.gamma.z))
+        let k = 1 + w.contrast
+        return { c in
+            var v = clamp(c)
+            if balance != SIMD3(repeating: 1) { v = encode(decode(v) * balance) }
+            v += w.offset
+            v = (v + w.lift * (1 - v)) * (1 + w.gain)
+            v = pointwiseMax(v, .zero)
+            v = SIMD3(pow(v.x, exponent.x), pow(v.y, exponent.y), pow(v.z, exponent.z))
+            if k != 1 { v = (v - w.pivot) * k + w.pivot }
+            if w.shadows != 0 || w.highlights != 0 {
+                let l = min(max(luma(v), 0), 1)
+                let ws = 6.75 * l * (1 - l) * (1 - l), wh = 6.75 * l * l * (1 - l)
+                v += 0.25 * (w.shadows * ws + w.highlights * wh)
+            }
+            if w.saturation != 0 {
+                let l = luma(v)
+                v = l + (v - l) * max(0, 1 + w.saturation)
+            }
+            return clamp(v)
+        }
+    }
+
+    /// sRGB transfer function, encoded → linear.
+    static func decode(_ v: SIMD3<Float>) -> SIMD3<Float> {
+        func f(_ x: Float) -> Float { x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4) }
+        return SIMD3(f(v.x), f(v.y), f(v.z))
+    }
+
+    static func encode(_ v: SIMD3<Float>) -> SIMD3<Float> {
+        func f(_ x: Float) -> Float { x <= 0.0031308 ? 12.92 * max(x, 0) : 1.055 * pow(x, 1 / 2.4) - 0.055 }
+        return SIMD3(f(v.x), f(v.y), f(v.z))
+    }
+
     // MARK: Curves
 
     /// Tone curves from point lists like `"0,0 0.25,0.18 0.75,0.82 1,1"` (x,y in 0…1),

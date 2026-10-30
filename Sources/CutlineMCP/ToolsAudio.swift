@@ -5,7 +5,7 @@ import Foundation
 
 extension Toolbox {
     func registerAudioTools() {
-        add(Tool(name: "timeline_measure", description: "Measure the edit as exported. sound: integrated loudness (LUFS), short-term and momentary maximums, loudness range and sample peak for the mix (and each track with tracks:true); targets −14 LUFS for streaming and social, −16 podcasts, −23 broadcast; peaks at or below −1 dBFS. picture: exposure (luma with 2nd/98th percentiles), clipped whites, crushed blacks, saturation and color cast per shot, shot-to-shot mismatches, black stretches, flash frames and photosensitive flashing. text: each title's and caption's contrast against the picture behind it (WCAG; aim for 4.5:1) and whether it sits inside the title-safe area.", schema: Schema.object([
+        add(Tool(name: "timeline_measure", description: "Measure the edit as exported. sound: integrated loudness (LUFS), short-term and momentary maximums, loudness range and sample peak for the mix (and each track with tracks:true); targets −14 LUFS for streaming and social, −16 podcasts, −23 broadcast; peaks at or below −1 dBFS. picture: exposure (luma with 2nd/98th percentiles), clipped whites, crushed blacks, saturation and color cast per shot, shot-to-shot mismatches, black stretches, flash frames and photosensitive flashing; letterbox or pillarbox bars and background around fit pictures are left out of picture and scopes numbers. text: each title's and caption's contrast against the picture behind it (WCAG; aim for 4.5:1) and whether it sits inside the title-safe area.", schema: Schema.object([
             "start": Schema.time("From this timeline time or anchor"),
             "end": Schema.time("Until this timeline time or anchor"),
             "what": Schema.strings("Any of sound, picture, text, scopes; default sound, picture and text. scopes renders waveform, RGB parade, vectorscope and histogram of the frame at `at`, with their numbers"),
@@ -34,7 +34,7 @@ extension Toolbox {
             return r
         })
 
-        add(Tool(name: "recipe", description: "Common multi-step edits, each one undoable step that reports exactly what it changed (dry_run:true previews). Sound: duck, loudness_normalize, split_edit. Time: speed_ramp, freeze_frame. Framing: punch_in, pip, split_screen, reframe. Rhythm: beat_cut. Style: look, glitch, whip_pan, kinetic_text. Reuse: template, multicam_switch. catalog recipe=<name> gives each recipe's arguments.", schema: Schema.object([
+        add(Tool(name: "recipe", description: "Common multi-step edits, each one undoable step that reports exactly what it changed (dry_run:true previews). Sound: duck, loudness_normalize, split_edit. Time: speed_ramp, freeze_frame. Framing: punch_in, pip, split_screen, reframe. Rhythm: beat_cut. Style: look, glitch, whip_pan, kinetic_text. Color: match_color, grade_group. Reuse: template, multicam_switch. catalog recipe=<name> gives each recipe's arguments.", schema: Schema.object([
             "name": Schema.string("Recipe", values: Toolbox.recipeNames),
             "args": ["type": "object", "description": "The recipe's arguments; catalog recipe=<name> lists them"],
             "dry_run": Schema.bool("Report what would change without applying it"),
@@ -114,8 +114,9 @@ extension Toolbox {
             if let img = Scopes.render(image, kind: kind, size: size, context: ctx, space: space) { cells.append(LabeledFrame(time: t, label: name, image: img)) }
         }
         var lines = ["Scopes at \(fmt2(t))s (code values 0–1):"]
-        if let s = Scopes.stats(image, context: ctx, space: space) {
+        if let s = Scopes.stats(image, context: ctx, space: space, background: p.canvas.background) {
             func ch(_ c: Scopes.ChannelStats) -> String { "\(fmt2(c.low))–\(fmt2(c.high)) median \(fmt2(c.median))" }
+            if s.picture < 0.98 { lines.append("  Numbers cover the picture only (\(Int((s.picture * 100).rounded()))% of the frame); letterbox, pillarbox or background bars are left out") }
             lines.append("  Luma \(ch(s.parade.luma)); R \(ch(s.parade.red)); G \(ch(s.parade.green)); B \(ch(s.parade.blue))")
             lines.append("  Clipped \(fmt1(s.clipped * 100))%, crushed \(fmt1(s.crushed * 100))%")
             let v = s.vectorscope
@@ -142,6 +143,8 @@ extension Toolbox {
             if crush > 0.02 { s += ", crushed blacks \(fmt1(crush * 100))%" }
             let cast = Toolbox.castName(cb: cb, cr: cr)
             if !cast.isEmpty { s += ", cast \(cast)" }
+            let picture = fs.map(\.picture).reduce(0, +) / n
+            if picture < 0.98 { s += " (picture \(Int((picture * 100).rounded()))% of frame, bars excluded)" }
             return s
         }
         var lines = ["Picture (\(r.frames.count) frames): " + summary(r.frames[...])]
