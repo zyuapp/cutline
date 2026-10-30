@@ -208,7 +208,7 @@ extension Toolbox {
         let b = try session.requireBundle()
         let transcripts = b.transcripts(for: p)
         var bare = p
-        for i in bare.tracks.indices { bare.tracks[i].clips.removeAll { $0.kind == .text } }
+        for i in bare.tracks.indices { bare.tracks[i].clips.removeAll { $0.kind == .text || $0.generatorText(at: min($0.duration * 0.5, max(0.5, $0.duration * 0.3))) != nil } }
         bare.captions.enabled = false
         let built = try await TimelineBuilder.build(bare, transcripts: transcripts, library: session.library, renderScale: min(1, 640 / Double(max(p.canvas.width, p.canvas.height))))
         let captions = p.captions.enabled ? p.captionSegments(transcripts: transcripts) : []

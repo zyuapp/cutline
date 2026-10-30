@@ -185,7 +185,10 @@ extension Project {
     // MARK: Rhythm
 
     /// Lays footage on a track so each cut lands on a beat. `pool` is source spans to draw from, in order.
-    public mutating func beatCut(pool: [(mediaId: String, range: TimeRange)], beats: [Seconds], every: Int, trackId: String) throws -> String {
+    /// Cuts footage from `pool` on every `every`-th beat. With `from` (the start of the cut range) before the first
+    /// beat, `align` decides what plays there: `.fill` stretches the first shot back to `from` so no background shows;
+    /// `.firstBeat` trims the head of the `music` clips so their first beat lands on `from`.
+    public mutating func beatCut(pool: [(mediaId: String, range: TimeRange)], beats: [Seconds], every: Int, trackId: String, from: Seconds? = nil, align: BeatAlign = .fill, music: [String] = []) throws -> String {
         guard !pool.isEmpty else { throw EditError("No footage to cut") }
         var marks: [Seconds] = []
         for i in stride(from: 0, to: beats.count, by: max(1, every)) {
@@ -193,6 +196,32 @@ extension Project {
             if marks.last.map({ t > $0 + 1e-6 }) ?? true { marks.append(t) }
         }
         guard marks.count >= 2 else { throw EditError("Need at least two beats in the range") }
+        var lead = ""
+        if let from, marks[0] > canvas.snap(from) + 1e-6 {
+            let start = canvas.snap(from), shift = marks[0] - start
+            switch align {
+            case .fill, .zero:
+                marks[0] = start
+                lead = " The first shot also covers \(fmt2(start))–\(fmt2(start + shift))s before the first beat."
+            case .firstBeat:
+                guard !music.isEmpty else { throw EditError("align first_beat needs the music clip on the timeline") }
+                for id in music {
+                    guard var c = clip(id) else { continue }
+                    if c.start <= start + 1e-6 {
+                        let cut = shift + (start - c.start)
+                        guard cut < c.duration else { continue }
+                        c.sourceIn += cut * c.speed
+                        c.duration -= cut
+                        c.start = start
+                    } else {
+                        c.start -= shift
+                    }
+                    try replaceClip(c)
+                }
+                marks = marks.map { $0 - shift }
+                lead = " The music now starts \(fmt2(shift))s later in the song so its first beat lands at \(fmt2(start))s."
+            }
+        }
         var placed: [String] = []
         var next = 0
         var used: [String: Seconds] = [:]
@@ -218,7 +247,7 @@ extension Project {
                 break
             }
         }
-        return "Cut \(placed.count) shots on \(trackId) to the beat (every \(every) beat\(every == 1 ? "" : "s")) from \(fmt2(marks.first!))s to \(fmt2(marks.last!))s."
+        return "Cut \(placed.count) shots on \(trackId) to the beat (every \(every) beat\(every == 1 ? "" : "s")) from \(fmt2(marks.first!))s to \(fmt2(marks.last!))s." + lead
     }
 
     // MARK: Reframing
@@ -271,4 +300,14 @@ extension Project {
         }
         return "Canvas is now \(width)×\(height). \(followed) clip(s) pan to follow their subject, \(centered) centered."
     }
+}
+
+/// What a beat cut does before the first beat of its range.
+public enum BeatAlign: String, CaseIterable, Sendable {
+    /// The first shot starts at the range start and runs to the second cut.
+    case fill
+    /// Same as `fill`: the picture starts at the range start.
+    case zero
+    /// The music is trimmed so its first beat is at the range start.
+    case firstBeat = "first_beat"
 }

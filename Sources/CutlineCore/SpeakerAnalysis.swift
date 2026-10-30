@@ -5,11 +5,14 @@ public struct SpeakerSegment: Codable, Equatable, Sendable {
     public var start: Seconds
     public var end: Seconds
     public var speaker: String
+    /// 0…1: how clearly the voice in this turn belongs to `speaker` rather than another; nil when unscored.
+    public var confidence: Double?
 
-    public init(start: Seconds, end: Seconds, speaker: String) {
+    public init(start: Seconds, end: Seconds, speaker: String, confidence: Double? = nil) {
         self.start = start
         self.end = end
         self.speaker = speaker
+        self.confidence = confidence
     }
 }
 

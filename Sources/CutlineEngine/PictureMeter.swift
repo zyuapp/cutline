@@ -176,6 +176,16 @@ public enum PictureMeter {
                 let name = "\(clip.id) \"\(spec.text.prefix(24))\""
                 samples.append((name, t, box, TextStyleColors(text: spec.color, background: spec.background, stroke: spec.strokeWidth > 0.04 ? spec.stroke : nil)))
             }
+            // Lower thirds, callouts and counters are titles too.
+            for clip in track.clips where clip.kind == .generator {
+                let local = min(clip.duration * 0.5, max(0.5, clip.duration * 0.3))
+                guard let words = clip.generatorText(at: local), let gen = clip.effects.first(where: { GeneratorCatalog.type($0.type) != nil }),
+                      let img = GeneratorRenderer.render(type: gen.type, value: { clip.generatorValue($0, at: local) ?? .number(0) }, canvas: canvas.size),
+                      let drawn = opaqueBounds(img) else { continue }
+                let xf = clip.resolvedTransform(at: local)
+                let box = CGRect(x: 0.5 + (drawn.minX - 0.5) * xf.scale + xf.x, y: 0.5 + (drawn.minY - 0.5) * xf.scale + xf.y, width: drawn.width * xf.scale, height: drawn.height * xf.scale)
+                samples.append(("\(clip.id) \"\(words.text.prefix(24))\"", clip.start + local, box, TextStyleColors(text: words.color, background: words.background, stroke: nil)))
+            }
         }
         if project.captions.enabled {
             let style = project.captions.style
@@ -195,6 +205,23 @@ public enum PictureMeter {
             out.append(TextCheck(label: label, time: t, box: box, contrast: contrast, safeOverflow: overflow))
         }
         return out
+    }
+
+    /// The box around a canvas-sized image's visible pixels, in fractions of the image (origin top left).
+    static func opaqueBounds(_ img: CGImage) -> CGRect? {
+        let w = img.width, h = img.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue) else { return nil }
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let data = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        var x0 = w, x1 = -1, y0 = h, y1 = -1
+        for y in 0..<h {
+            let row = data + y * ctx.bytesPerRow
+            for x in 0..<w where row[x] > 8 {
+                x0 = min(x0, x); x1 = max(x1, x); y0 = min(y0, y); y1 = max(y1, y)
+            }
+        }
+        guard x1 >= x0, y1 >= y0 else { return nil }
+        return CGRect(x: Double(x0) / Double(w), y: Double(y0) / Double(h), width: Double(x1 - x0 + 1) / Double(w), height: Double(y1 - y0 + 1) / Double(h))
     }
 
     struct TextStyleColors {

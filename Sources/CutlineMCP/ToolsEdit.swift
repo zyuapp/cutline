@@ -36,7 +36,7 @@ extension Toolbox {
             "italic": Schema.bool("Italic"),
             "underline": Schema.bool("Underline"),
             "highlight": Schema.string("Hex marker box behind these characters"),
-        ]), "Style parts of the text differently (one word in another color, a bigger name, a highlighted phrase). Replaces existing spans; [] clears. Static titles show every span property; word/letter animators show fonts and sizes"),
+        ]), "Style parts of the text differently (one word in another color, a bigger name, a highlighted phrase). Replaces existing spans; [] clears. Every span property shows on static and animated titles; text_add warns about spans that match nothing"),
     ]
 
     func registerEditTools() {
@@ -187,7 +187,7 @@ extension Toolbox {
                 trackId = p.addTrack(kind: .video, name: "Text", index: p.tracks.lastIndex { $0.kind == .video }.map { $0 + 1 } ?? 0).id
             }
             let placed = try p.addClip(clip, trackId: trackId, mode: .place)
-            return "Added text \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))"
+            return "Added text \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))" + spec.spanWarnings.map { "\nWarning: " + $0 }.joined()
         })
 
         addEdit(EditTool(name: "clip_update", description: "Change a clip's timing or place: move it (start, track), trim it (source_in/source_out keep the start; duration or end trim the tail), change speed (keeps the source range), rename it, or change a title's words. Appearance, audio levels and animation go through param_set and effect_add. If the new end collides with the next clip, pass ripple=true to shift later clips on that track.", schema: Schema.object([

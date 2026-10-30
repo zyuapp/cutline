@@ -286,3 +286,55 @@ private func render(_ type: String, _ params: [String: ParamValue] = [:], canvas
     let blurred = Pixels(try #require(AnimatedText.render(layout, states: [TextAnimator.UnitState(blur: 0.2), .rest], spec: spec)))
     #expect(blurred.opaqueCount > 50)
 }
+
+@Test func animatedTextKeepsSpanColorsHighlightsAndUnderlines() throws {
+    let orange = RGBA(hex: "#FF5533")!
+    var spec = TextSpec(text: "TEARS OF STEEL", size: 0.2, color: .white, shadow: false)
+    spec.spans = [TextSpan(match: "STEEL", color: orange), TextSpan(match: "OF", underline: true), TextSpan(match: "TEARS", highlight: RGBA(r: 0, g: 0, b: 1))]
+    for unit in [TextAnimator.Unit.word, .char] {
+        let layout = try #require(AnimatedText.layout(spec, canvasHeight: 180, canvasWidth: 640, unit: unit))
+        let full = Pixels(try #require(AnimatedText.render(layout, states: [], spec: spec)))
+        func count(in r: CGRect, _ match: ([Int]) -> Bool) -> Int {
+            var n = 0
+            for y in max(0, Int(r.minY))..<min(full.height, Int(r.maxY)) { for x in max(0, Int(r.minX))..<min(full.width, Int(r.maxX)) where match(full.at(x, y)) { n += 1 } }
+            return n
+        }
+        func box(_ word: String) -> CGRect {
+            let range = (spec.text as NSString).range(of: word)
+            return layout.units.filter { NSIntersectionRange($0.range, range).length > 0 }.map(\.rect).reduce(CGRect.null) { $0.union($1) }
+        }
+        let steel = box("STEEL"), tears = box("TEARS"), of = box("OF")
+        // STEEL is orange (255, 85, 51) and never white; the rest of the text stays white.
+        #expect(count(in: steel) { abs($0[0] - 255) < 3 && abs($0[1] - 85) < 3 && abs($0[2] - 51) < 3 && $0[3] == 255 } > 50, "\(unit)")
+        #expect(count(in: steel) { $0 == [255, 255, 255, 255] } == 0, "\(unit)")
+        #expect(count(in: tears) { $0 == [255, 255, 255, 255] } > 50, "\(unit)")
+        // A blue box behind TEARS, a white rule under OF.
+        #expect(count(in: tears.insetBy(dx: -4, dy: -4)) { $0 == [0, 0, 255, 255] } > 100, "\(unit)")
+        let under = CGRect(x: of.minX, y: of.maxY - of.height * 0.35, width: of.width, height: of.height * 0.35)
+        let rows = (Int(under.minY)..<Int(under.maxY)).filter { y in (Int(of.minX + 2)..<Int(of.maxX - 2)).allSatisfy { full.at($0, y)[3] > 200 } }
+        #expect(!rows.isEmpty, "\(unit): no underline under OF")
+        // A tinting animator recolors the plain text but not the span color.
+        let green = RGBA(r: 0, g: 1, b: 0)
+        let tinted = Pixels(try #require(AnimatedText.render(layout, states: layout.units.map { _ in TextAnimator.UnitState(color: green) }, spec: spec)))
+        var orangeLeft = 0, greenTears = 0
+        for y in Int(steel.minY)..<Int(steel.maxY) { for x in Int(steel.minX)..<Int(steel.maxX) where tinted.at(x, y) == full.at(x, y) && full.at(x, y)[3] == 255 { orangeLeft += 1 } }
+        for y in Int(tears.minY)..<Int(tears.maxY) { for x in Int(tears.minX)..<Int(tears.maxX) where tinted.at(x, y) == [0, 255, 0, 255] { greenTears += 1 } }
+        #expect(orangeLeft > 50 && greenTears > 50, "\(unit)")
+    }
+}
+
+@Test func textChecksIncludeLowerThirds() async throws {
+    var p = Project(name: "Titles")
+    var lower = Clip(id: "lt", kind: .generator, start: 0, duration: 4)
+    lower.effects = [Effect(id: "gen", type: "lower_third", params: ["title": .string("Celia"), "subtitle": .string("Robotics"), "x": .number(0.02), "y": .number(0.9)])]
+    p.tracks[0].clips = [lower]
+    let gray = CGContext(data: nil, width: 64, height: 36, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    gray.setFillColor(CGColor(gray: 0.5, alpha: 1))
+    gray.fill(CGRect(x: 0, y: 0, width: 64, height: 36))
+    let bg = gray.makeImage()!
+    let checks = try await PictureMeter.checkText(p, captions: []) { _ in bg }
+    let check = try #require(checks.first { $0.label.hasPrefix("lt \"Celia") })
+    #expect(check.box.minX < 0.05 && check.box.maxY > 0.9)
+    #expect(check.safeOverflow > 0)
+    #expect(check.contrast > 1 && check.contrast < 21)
+}
