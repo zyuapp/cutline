@@ -63,6 +63,14 @@ struct EditorView: View {
                 }
                 .coordinateSpace(.named("stage"))
                 .onPreferenceChange(PictureFrameKey.self) { picture = $0 }
+                .overlay(alignment: .bottom) {
+                    if let rec = doc.recording {
+                        RecordingPanel(doc: doc, rec: rec)
+                            .padding(.bottom, 92)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .animation(.smooth(duration: 0.3), value: doc.recording == nil)
                 .clipped()
                 TimelineTrackView(doc: doc, selectedComment: model.selectedComment) { id in
                     model.selectedComment = id

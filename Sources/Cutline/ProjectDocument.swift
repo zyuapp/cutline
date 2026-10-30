@@ -5,7 +5,7 @@ import CutlineEngine
 import Observation
 
 /// The open `.cutline` bundle as the preview sees it. The agent writes the files; this
-/// watches them and rebuilds playback. The only thing the preview writes is comments.
+/// watches them and rebuilds playback. The preview writes comments, and recorded takes under media/recordings.
 @MainActor
 @Observable
 final class ProjectDocument {
@@ -31,6 +31,8 @@ final class ProjectDocument {
     /// Clips added or changed by the latest edit, for a brief highlight on the timeline.
     private(set) var changedClips: Set<String> = []
     private(set) var changedAt: Date?
+    /// The voice-over recording in progress, if the agent asked for one.
+    var recording: VoiceOverController?
 
     struct ExportState: Equatable {
         var progress: Double
@@ -185,6 +187,7 @@ final class ProjectDocument {
             let state = info["state"] as? String
             let progress = info["progress"] as? Double
             let exportPath = info["path"] as? String
+            let request = info["request"] as? String
             MainActor.assumeIsolated {
                 guard let self else { return }
                 switch action {
@@ -194,6 +197,9 @@ final class ProjectDocument {
                     guard let time else { return }
                     if play { self.player.play(from: time, to: end) } else { self.player.pause(); self.player.seek(time) }
                     NSApp.activate()
+                case "record":
+                    guard let request else { return }
+                    self.startRecording(URL(fileURLWithPath: request))
                 case "export":
                     switch state {
                     case "started": self.exportState = ExportState(progress: 0)

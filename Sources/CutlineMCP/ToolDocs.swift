@@ -43,6 +43,9 @@ extension Toolbox {
         "preview_seek": ToolBrief(text: "Move the human's preview playhead or play a range.", args: [
             "time": "Timeline time or anchor", "end": "Play until here", "play": "", "open": "Open the preview app",
         ]),
+        "voiceover_record": ToolBrief(text: "Record voice-over/ADR in the preview app (countdown, meter, teleprompter, program from start − preroll); imports, transcribes and places the best take at start in sync. Warns on clipping or quiet takes.", args: [
+            "start": "", "end": "", "duration": "", "track": "", "countdown": "", "preroll": "", "mute_program": "", "takes": "", "script": "Teleprompter text", "wait": "", "id": "Collect an earlier recording",
+        ], hide: ["analyze", "test_input"]),
         "preview_state": ToolBrief(text: "The preview playhead and play state (\"here\", \"this part\")."),
         "media_import": ToolBrief(text: "Import (or relink) files and folders; analyzes transcripts, pauses and scene cuts. MXF/DNx/MPEG-2 get a ProRes mezzanine; camera RAW is developed; interlaced media is deinterlaced. Returns the media ids.", args: [
             "paths": "Files or folders", "relink": "Find missing media inside paths instead", "analyze": "Default true", "language": "Default en-US",

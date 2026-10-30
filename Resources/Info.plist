@@ -16,6 +16,7 @@
 	<key>LSApplicationCategoryType</key><string>public.app-category.video</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSHumanReadableCopyright</key><string>MIT License</string>
+	<key>NSMicrophoneUsageDescription</key><string>Cutline records voice-over and ADR takes when Claude asks you to read a line.</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
