@@ -521,7 +521,8 @@ extension Project {
     /// higher video tracks connect at lanes 1, 2, … and audio tracks at lanes -1, -2, …, each attached to
     /// the storyline item under its start. Text clips become Basic Titles (text, font, size, color, alignment,
     /// Position), solids the Custom solid generator, each with the whole Cutline clip as `com.cutline.clip` metadata;
-    /// speed becomes a `timeMap`. Adjustment clips have no FCP equivalent and become gaps on the storyline or are left
+    /// speed, reverse, freezes and speed ramps become a `timeMap` (linear between points where the speed changes);
+    /// stretch is a non-uniform scale of the fit picture. Adjustment clips have no FCP equivalent and become gaps on the storyline or are left
     /// out above it. Butting audio-track clips whose sound overlaps share a secondary storyline.
     /// Transitions sit between the items they join, with a `filter-video` for the picture and a `filter-audio`
     /// (Audio Crossfade) for the sound; connected clips joined by transitions go in a secondary storyline.
@@ -646,10 +647,13 @@ extension Project {
                 ])]))
             }
             if t.fit == .fill { kids.append(XMLElem("adjust-conform", [("type", "fill")])) }
-            if t.x != 0 || t.y != 0 || t.scale != 1 || t.rotation != 0 {
+            // Stretch is the fit picture scaled unevenly.
+            let k = t.fit == .stretch ? conformScale(clip) : (x: 1.0, y: 1.0)
+            let sx = t.scale * k.x, sy = t.scale * k.y
+            if t.x != 0 || t.y != 0 || sx != 1 || sy != 1 || t.rotation != 0 {
                 var attrs: [(String, String)] = []
                 if t.x != 0 || t.y != 0 { attrs.append(("position", "\(num(t.x * w / h * 100)) \(num(-t.y * 100))")) }
-                if t.scale != 1 { attrs.append(("scale", "\(num(t.scale)) \(num(t.scale))")) }
+                if sx != 1 || sy != 1 { attrs.append(("scale", "\(num(sx)) \(num(sy))")) }
                 if t.rotation != 0 { attrs.append(("rotation", num(-t.rotation))) }
                 kids.append(XMLElem("adjust-transform", attrs))
             }
@@ -661,9 +665,15 @@ extension Project {
             let parts = (clip.cdl.map { [$0.text] } ?? []) + clip.lutFiles.map { "LUT \($0)" } + (ctx.luts[clip.id].map { ["\(Self.gradeLUTTag) \($0)"] } ?? [])
             return parts.isEmpty ? nil : XMLElem("note", text: parts.joined(separator: "; "))
         }
-        /// The clip's local start, which is in retimed time when the speed is not 1.
+        /// The clip's local start, which is in retimed time when the speed is not 1. A time-mapped clip's local time
+        /// starts at its source in, past any split-edit lead.
         func localStart(_ clip: Clip) -> Int {
-            abs(clip.speed - 1) > 1e-9 && clip.speed > 0 ? grid.frames(clip.sourceIn / clip.speed) : grid.frames(clip.sourceIn)
+            if clip.needsTimeMap { return grid.frames(clip.sourceIn) + max(0, grid.frames(clip.audioLead)) }
+            return abs(clip.speed - 1) > 1e-9 && clip.speed > 0 ? grid.frames(clip.sourceIn / clip.speed) : grid.frames(clip.sourceIn)
+        }
+        /// Source seconds in thousandths of a frame.
+        func sourceTime(_ s: Seconds) -> RationalTime {
+            RationalTime(n: Int((s * Double(grid.den) * 1000 / Double(grid.num)).rounded()) * grid.num, d: grid.den * 1000)
         }
         /// A media clip's first frame in its asset's time: the asset's timecode plus its local start.
         func clipStart(_ clip: Clip, _ asset: MediaAsset) -> RationalTime { assetStart(asset) + RationalTime(frames: localStart(clip), grid) }
@@ -685,7 +695,14 @@ extension Project {
             if sound, let role = clip.role { attrs.append(("audioRole", role)) }
             var children: [XMLElem] = []
             if !audioOnly, asset.hasVideo, let n = note(clip) { children.append(n) }
-            if abs(clip.speed - 1) > 1e-9, clip.speed > 0, !asset.isImage {
+            if clip.needsTimeMap, !asset.isImage {
+                // Points where the playback bends, over the sound's reach too.
+                let lead = max(0, grid.frames(clip.audioLead)), lag = max(0, grid.frames(clip.audioLag))
+                let local = origin + RationalTime(frames: localStart(clip), grid)
+                children.append(XMLElem("timeMap", children: clip.timeMap(frames: -lead, frames + lag, grid: grid).map { p in
+                    XMLElem("timept", [("time", (local + RationalTime(frames: p.frame, grid)).fcp), ("value", (origin + sourceTime(p.source)).fcp), ("interp", "linear")])
+                }))
+            } else if abs(clip.speed - 1) > 1e-9, clip.speed > 0, !asset.isImage {
                 // Local time runs from the asset's timecode, as source time does.
                 let end = localStart(clip) + frames
                 let p = Int((clip.speed * 1000).rounded())

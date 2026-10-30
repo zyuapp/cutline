@@ -11,7 +11,11 @@ extension Project {
     /// SourceMob carrying the source timecode and reel. Dissolves are VideoDissolve and sound crossfades
     /// MonoAudioDissolve transitions (on the sound cut, so split edits keep their own); fades are those against
     /// filler. Levels are MonoAudioGain operation groups, Amplitude constant or keyframed (track faders and the
-    /// master folded in); constant speed is a VideoSpeedControl. Markers are DescriptiveMarkers on an event slot.
+    /// master folded in). Speed, reverse, freezes and ramps are Motion Control (VideoSpeedControl) as Media Composer
+    /// writes it: SpeedRatio plus its input offset map at output frames (every frame of a ramp). Crop, scale (fit,
+    /// fill and stretch as scale of the media fit whole), rotation, position and opacity are the baseline Video Crop,
+    /// Scale, Rotate, Position and Opacity effects around the clip, keyed when animated. Multicam clips are their
+    /// active angles. Markers are DescriptiveMarkers on an event slot.
     /// Titles and solids are filler carrying the Cutline clip in a "Cutline clip" comment.
     public func aaf(handles: Seconds = 2, date: Date = Date()) -> Data { scopedToTimeline().aaf(InterchangeContext(), handles: handles, date: date) }
 
@@ -290,16 +294,14 @@ struct AAFWriter {
             return o
         }
         let lo = ranges[id]?.lo ?? 0
-        let speed = piece.speed
-        let sourceLength = speed == 1 ? piece.length : Int((Double(piece.length) * speed).rounded())
         let slotID = source.map { $0 + 2 } ?? 1
-        var seg = sourceClip(kind, length: sourceLength, mob: master, slot: slotID, start: piece.source - lo)
-        if abs(speed - 1) > 1e-9 {
-            operations.insert(AAFDef.videoSpeedControl)
-            let param = AAFObject(AAFClass.constantValue, [(0x4c01, .data(AAFDef.speedRatio.bytes)), (0x4d01, .data(AAFCodec.indirectRational(speed)))])
-            seg = AAFObject(AAFClass.operationGroup, [(0x0201, dataDef(kind)), (0x0202, i64(piece.length)), (0x0b01, weakDef(AAFTag.operationDefs, AAFDef.videoSpeedControl)),
-                                                      (0x0b02, .vector([seg])), (0x0b03, .vector([param]))])
+        var seg: AAFObject
+        if let w = warp(piece) {
+            seg = motionControl(sourceClip(kind, length: w.length, mob: master, slot: slotID, start: w.start - lo), w, kind: kind, length: piece.length)
+        } else {
+            seg = sourceClip(kind, length: piece.length, mob: master, slot: slotID, start: piece.source - lo)
         }
+        if channel == nil, let c = piece.clip { seg = pictureOperations(seg, piece: piece, clip: c) }
         if channel != nil, let c = piece.clip, let t = piece.track {
             let level = p.bakedLevel(c, track: t, grid: grid)
             let param: AAFObject?
@@ -329,6 +331,123 @@ struct AAFWriter {
         }
         if channel != nil, let hint = piece.hint { notes.append(("Cutline sound", hint)) }
         if !notes.isEmpty { seg.set(0x0204, comments(notes)) }
+        return seg
+    }
+
+    // MARK: Motion and picture
+
+    /// A warped piece as Media Composer's Motion Control reads it: the input's first frame and length (the frames the
+    /// output shows), the input frame offset at output frames (a reversed clip's first output frame shows the frame
+    /// before its source out), the speed, and SpeedRatio, output over input length, negative reversed.
+    struct Warp {
+        var start: Int
+        var length: Int
+        var offsets: [(frame: Int, value: Double)]
+        var speeds: [(frame: Int, value: Double)]
+        var ratio: (Int, Int)
+    }
+
+    func warp(_ piece: Piece) -> Warp? {
+        guard let c = piece.clip, c.kind == .media, c.isWarped, let m = c.mediaId.flatMap(p.mediaAsset), !m.isImage, piece.length > 0 else { return nil }
+        let at = piece.start - f(c.start), n = piece.length
+        let shift = c.reverse ? 1.0 : 0.0
+        let pts = c.timeMap(frames: at, at + n, grid: grid, step: 1).map { (frame: $0.frame - at, value: $0.source * grid.rate - shift) }
+        func value(_ k: Double) -> Double {
+            guard let i = pts.lastIndex(where: { Double($0.frame) <= k }), i + 1 < pts.count else { return pts.last!.value }
+            let a = pts[i], b = pts[i + 1]
+            return a.value + (b.value - a.value) * (k - Double(a.frame)) / Double(b.frame - a.frame)
+        }
+        let shown = [value(0), value(Double(n - 1))] + pts.filter { $0.frame < n }.map(\.value)
+        let first = Int((shown.min()! + 1e-6).rounded(.down)), last = Int((shown.max()! + 1e-6).rounded(.down))
+        let length = last - first + 1
+        let sign = c.reverse ? -1.0 : 1.0
+        var speeds: [(frame: Int, value: Double)] = []
+        for q in pts where q.frame < n || speeds.isEmpty {
+            let v = sign * c.speed(atLocal: Double((q.frame + at) * grid.num) / Double(grid.den))
+            if speeds.last.map({ abs($0.value - v) > 1e-9 }) ?? true { speeds.append((q.frame, v)) }
+        }
+        return Warp(start: first, length: length, offsets: pts.map { ($0.frame, $0.value - Double(first)) }, speeds: speeds, ratio: (c.reverse ? -n : n, length))
+    }
+
+    func controlPoints(_ pts: [(time: (Int, Int), value: Double)]) -> AAFValue {
+        .vector(pts.map { AAFObject(AAFClass.controlPoint, [(0x1a02, .data(AAFCodec.indirectRational($0.value))), (0x1a03, rational($0.time))]) })
+    }
+
+    func constant(_ id: AUID, _ v: Double) -> AAFObject {
+        AAFObject(AAFClass.constantValue, [(0x4c01, .data(id.bytes)), (0x4d01, .data(AAFCodec.indirectRational(v)))])
+    }
+
+    func varying(_ id: AUID, _ pts: [(time: (Int, Int), value: Double)]) -> AAFObject {
+        AAFObject(AAFClass.varyingValue, [(0x4c01, .data(id.bytes)), (0x4e01, weakDef(AAFTag.interpolationDefs, AAFDef.linearInterpolation)), (0x4e02, controlPoints(pts))])
+    }
+
+    mutating func operation(_ op: AUID, kind: AUID, length: Int, input: AAFObject, _ params: [AAFObject]) -> AAFObject {
+        operations.insert(op)
+        return AAFObject(AAFClass.operationGroup, [(0x0201, dataDef(kind)), (0x0202, i64(length)), (0x0b01, weakDef(AAFTag.operationDefs, op)),
+                                                   (0x0b02, .vector([input])), (0x0b03, .vector(params))])
+    }
+
+    /// Motion Control as Media Composer writes it: SpeedRatio, the input offset map in output frames and the speed map.
+    mutating func motionControl(_ input: AAFObject, _ w: Warp, kind: AUID, length: Int) -> AAFObject {
+        let ratio = AAFObject(AAFClass.constantValue, [(0x4c01, .data(AAFDef.speedRatio.bytes)), (0x4d01, .data(AAFCodec.indirect(AAFDef.rationalType, AAFCodec.rational(w.ratio.0, w.ratio.1))))])
+        return operation(AAFDef.videoSpeedControl, kind: kind, length: length, input: input, [
+            ratio, varying(AAFDef.avidSpeedOffsetMap, w.offsets.map { (($0.frame, 1), $0.value) }), varying(AAFDef.avidSpeedMap, w.speeds.map { (($0.frame, 1), $0.value) }),
+        ])
+    }
+
+    /// The clip's crop, scale (its fit as scale of the media fit whole), rotation, position and opacity as the
+    /// baseline Video Crop, Scale, Rotate, Position and Opacity effects, innermost first; animated ones keyed.
+    mutating func pictureOperations(_ input: AAFObject, piece: Piece, clip c: Clip) -> AAFObject {
+        guard c.kind == .media, piece.length > 0 else { return input }
+        let t = c.transform
+        let local0 = Double(piece.start * grid.num) / Double(grid.den) - c.start
+        let span = Double(piece.length * grid.num) / Double(grid.den)
+        let k = p.conformScale(c)
+        /// Times to key an animated parameter: the piece's ends, its keys and every 0.1 s of eased segments.
+        func times(_ paths: [String]) -> [Seconds]? {
+            let curves = paths.compactMap { c.anim[$0] }
+            guard !curves.isEmpty else { return nil }
+            var at = [local0, local0 + span]
+            for curve in curves {
+                at += curve.keys.map(\.t)
+                if curve.expression != nil { at += stride(from: local0, to: local0 + span, by: 0.1).map { $0 } }
+                for (a, b) in zip(curve.keys, curve.keys.dropFirst()) where b.ease != .linear || b.bezier != nil {
+                    at += stride(from: a.t + 0.1, to: b.t, by: 0.1).map { $0 }
+                }
+            }
+            var out: [Seconds] = []
+            for x in at.filter({ $0 >= local0 - 1e-9 && $0 <= local0 + span + 1e-9 }).sorted() where out.last.map({ x - $0 > 1e-6 }) ?? true { out.append(x) }
+            return out
+        }
+        /// The parameter, or nil when it stays `neutral` (unless `always`).
+        func param(_ id: AUID, _ paths: [String], neutral: Double, always: Bool = false, _ value: @escaping (Transform) -> Double) -> AAFObject? {
+            if let at = times(paths) {
+                let pts = at.map { x -> (time: (Int, Int), value: Double) in
+                    ((Int(((x - local0) / span * Double(piece.length) * 1000).rounded()), piece.length * 1000), value(c.resolvedTransform(at: x)))
+                }
+                return always || pts.contains(where: { abs($0.value - neutral) > 1e-9 }) ? varying(id, pts) : nil
+            }
+            let v = value(t)
+            return always || abs(v - neutral) > 1e-9 ? constant(id, v) : nil
+        }
+        var seg = input
+        let crop = [param(AAFDef.cropLeft, [], neutral: -1) { -1 + 2 * $0.crop.left }, param(AAFDef.cropRight, [], neutral: 1) { 1 - 2 * $0.crop.right },
+                    param(AAFDef.cropTop, [], neutral: -1) { -1 + 2 * $0.crop.top }, param(AAFDef.cropBottom, [], neutral: 1) { 1 - 2 * $0.crop.bottom }].compactMap { $0 }
+        if !crop.isEmpty { seg = operation(AAFDef.videoCrop, kind: AAFDef.picture, length: piece.length, input: seg, crop) }
+        let scale = [param(AAFDef.scaleX, ["transform.scale"], neutral: 1) { k.x * $0.scale }, param(AAFDef.scaleY, ["transform.scale"], neutral: 1) { k.y * $0.scale }].compactMap { $0 }
+        if !scale.isEmpty {
+            // Both axes, so a reader sees the picture's aspect even when one is neutral.
+            let both = [param(AAFDef.scaleX, ["transform.scale"], neutral: 1, always: true) { k.x * $0.scale }, param(AAFDef.scaleY, ["transform.scale"], neutral: 1, always: true) { k.y * $0.scale }].compactMap { $0 }
+            seg = operation(AAFDef.videoScale, kind: AAFDef.picture, length: piece.length, input: seg, both)
+        }
+        if let r = param(AAFDef.rotation, ["transform.rotation"], neutral: 0, { $0.rotation / 360 }) {
+            seg = operation(AAFDef.videoRotate, kind: AAFDef.picture, length: piece.length, input: seg, [r])
+        }
+        let position = [param(AAFDef.positionOffsetX, ["transform.x"], neutral: 0) { 2 * $0.x }, param(AAFDef.positionOffsetY, ["transform.y"], neutral: 0) { 2 * $0.y }].compactMap { $0 }
+        if !position.isEmpty { seg = operation(AAFDef.videoPosition, kind: AAFDef.picture, length: piece.length, input: seg, position) }
+        if let o = param(AAFDef.opacityLevel, ["transform.opacity"], neutral: 1, { $0.opacity }) {
+            seg = operation(AAFDef.videoOpacity, kind: AAFDef.picture, length: piece.length, input: seg, [o])
+        }
         return seg
     }
 
@@ -364,8 +483,8 @@ struct AAFWriter {
     func collect(_ s: Slot, kind: AUID) -> [(media: String, lo: Int, hi: Int)] {
         s.pieces.compactMap { piece in
             guard let id = piece.media, id != "-" else { return nil }
-            let len = piece.speed == 1 ? piece.length : Int((Double(piece.length) * piece.speed).rounded())
-            return (id, piece.source, piece.source + len)
+            if let w = warp(piece) { return (id, w.start, w.start + w.length) }
+            return (id, piece.source, piece.source + piece.length)
         }
     }
 
@@ -503,6 +622,8 @@ struct AAFWriter {
         }
         var composition = mob(AAFClass.compositionMob, id: AAFMobID(seed: p.name + "\u{1}composition"), name: p.name, slots: slots)
         composition.set(0x4408, .data(AAFDef.usageTopLevel.bytes))
+        // AAF has no sequence raster; Cutline sizes the timeline from it on import.
+        composition.set(0x4406, comments([("Cutline canvas", "\(p.canvas.width)x\(p.canvas.height)")]))
         mobs.insert(composition, at: 0)
         return assemble(mobs)
     }
@@ -519,23 +640,37 @@ struct AAFWriter {
     func assemble(_ mobs: [AAFObject]) -> AAFDocument {
         var params: [AAFObject] = []
         var ops: [AAFObject] = []
-        func param(_ id: AUID, _ name: String) -> AAFValue {
-            if !params.contains(where: { $0.auid(0x1b01) == id }) {
+        func param(_ list: [(AUID, String)]) -> AAFValue {
+            for (id, name) in list where !params.contains(where: { $0.auid(0x1b01) == id }) {
                 params.append(definition(AAFClass.parameterDefinition, id, name, [(0x1f01, .weak(AAFWeakRef(tag: AAFTag.types, keyPid: 0x0005, key: AAFDef.rationalType.bytes)))]))
             }
-            return .weakSet([AAFWeakRef(tag: AAFTag.parameterDefs, keyPid: 0x1b01, key: id.bytes)])
+            return .weakSet(list.map { AAFWeakRef(tag: AAFTag.parameterDefs, keyPid: 0x1b01, key: $0.0.bytes) })
         }
-        for op in [AAFDef.videoDissolve, AAFDef.monoAudioDissolve, AAFDef.monoAudioGain, AAFDef.videoSpeedControl] where operations.contains(op) {
+        func picture(_ op: AUID, _ name: String, _ list: [(AUID, String)], timeWarp: Bool = false) -> AAFObject {
+            definition(AAFClass.operationDefinition, op, name, [(0x1e01, dataDef(AAFDef.picture)), (0x1e02, .data(AAFCodec.bool(timeWarp))), (0x1e07, .data(AAFCodec.i32(1))), (0x1e09, param(list))])
+        }
+        let order = [AAFDef.videoDissolve, AAFDef.monoAudioDissolve, AAFDef.monoAudioGain, AAFDef.videoSpeedControl, AAFDef.videoCrop, AAFDef.videoScale,
+                     AAFDef.videoRotate, AAFDef.videoPosition, AAFDef.videoOpacity]
+        for op in order where operations.contains(op) {
             switch op {
             case AAFDef.videoDissolve:
-                ops.append(definition(AAFClass.operationDefinition, op, "VideoDissolve", [(0x1e01, dataDef(AAFDef.picture)), (0x1e07, .data(AAFCodec.i32(2))), (0x1e09, param(AAFDef.level, "Level"))]))
+                ops.append(definition(AAFClass.operationDefinition, op, "VideoDissolve", [(0x1e01, dataDef(AAFDef.picture)), (0x1e07, .data(AAFCodec.i32(2))), (0x1e09, param([(AAFDef.level, "Level")]))]))
             case AAFDef.monoAudioDissolve:
                 ops.append(definition(AAFClass.operationDefinition, op, "MonoAudioDissolve", [(0x1e01, dataDef(AAFDef.sound)), (0x1e07, .data(AAFCodec.i32(2)))]))
             case AAFDef.monoAudioGain:
-                ops.append(definition(AAFClass.operationDefinition, op, "MonoAudioGain", [(0x1e01, dataDef(AAFDef.sound)), (0x1e07, .data(AAFCodec.i32(1))), (0x1e09, param(AAFDef.amplitude, "Amplitude"))]))
+                ops.append(definition(AAFClass.operationDefinition, op, "MonoAudioGain", [(0x1e01, dataDef(AAFDef.sound)), (0x1e07, .data(AAFCodec.i32(1))), (0x1e09, param([(AAFDef.amplitude, "Amplitude")]))]))
+            case AAFDef.videoSpeedControl:
+                ops.append(picture(op, "Motion Control", [(AAFDef.speedRatio, "SpeedRatio"), (AAFDef.avidSpeedOffsetMap, "PARAM_SPEED_OFFSET_MAP_U"), (AAFDef.avidSpeedMap, "PARAM_SPEED_MAP_U")], timeWarp: true))
+            case AAFDef.videoCrop:
+                ops.append(picture(op, "Video Crop", [(AAFDef.cropLeft, "CropLeft"), (AAFDef.cropRight, "CropRight"), (AAFDef.cropTop, "CropTop"), (AAFDef.cropBottom, "CropBottom")]))
+            case AAFDef.videoScale:
+                ops.append(picture(op, "Video Scale", [(AAFDef.scaleX, "ScaleX"), (AAFDef.scaleY, "ScaleY")]))
+            case AAFDef.videoRotate:
+                ops.append(picture(op, "Video Rotate", [(AAFDef.rotation, "Rotation")]))
+            case AAFDef.videoPosition:
+                ops.append(picture(op, "Video Position", [(AAFDef.positionOffsetX, "PositionOffsetX"), (AAFDef.positionOffsetY, "PositionOffsetY")]))
             default:
-                ops.append(definition(AAFClass.operationDefinition, op, "VideoSpeedControl", [(0x1e01, dataDef(AAFDef.picture)), (0x1e02, .data(AAFCodec.bool(true))),
-                                                                                              (0x1e07, .data(AAFCodec.i32(1))), (0x1e09, param(AAFDef.speedRatio, "SpeedRatio"))]))
+                ops.append(picture(op, "Video Opacity", [(AAFDef.opacityLevel, "OpacityLevel")]))
             }
         }
         let dataDefs = [(AAFDef.picture, "Picture"), (AAFDef.sound, "Sound"), (AAFDef.timecode, "Timecode"), (AAFDef.descriptiveMetadata, "DescriptiveMetadata")]
@@ -551,7 +686,7 @@ struct AAFWriter {
         let identification = AAFObject(AAFClass.identification, [
             (0x3c01, str("Cutline")), (0x3c02, str("Cutline")),
             (0x3c03, .data(AAFCodec.u16(1) + AAFCodec.u16(0) + AAFCodec.u16(0) + AAFCodec.u16(0) + [1])),
-            (0x3c04, str("1.0")), (0x3c05, .data(AUID("6c8f3a52-1b7e-4d0e-9a35-c07d1e2f6a41").bytes)), (0x3c06, stamp),
+            (0x3c04, str("1.1")), (0x3c05, .data(AUID("6c8f3a52-1b7e-4d0e-9a35-c07d1e2f6a41").bytes)), (0x3c06, stamp),
             (0x3c08, str("macOS")), (0x3c09, .data(AAFMobID(seed: p.name + "\u{1}generation").bytes.suffix(16).map { $0 })),
         ])
         let header = AAFObject(AAFClass.header, [

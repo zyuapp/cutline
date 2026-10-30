@@ -427,7 +427,7 @@ extension Importer {
     /// The primary storyline becomes V1; connected clips and secondary storylines at positive lanes become
     /// video tracks above it, audio at negative lanes audio tracks. Compound clips (`ref-clip`) become nested
     /// sequences. Times honour `tcStart` (kept as the canvas's start timecode), asset start timecode and
-    /// constant-speed `timeMap`s. Multicam media become multicam sequences (an angle per `mc-angle`), and butting
+    /// `timeMap`s: constant speed, reverse, freezes, and ramps as held speeds between points. Multicam media become multicam sequences (an angle per `mc-angle`), and butting
     /// `mc-clip`s of one multicam one multicam clip cut at each `mc-source` change; `audio-channel-source` `srcCh`
     /// becomes `audio.channels`. Expanded audio (`audioStart`/`audioDuration`) becomes split edits, volume
     /// keyframes audio.volume animation, an `ASC_SOP` in a clip's note a `color.cdl` effect and a `LUT <path>`
@@ -815,13 +815,19 @@ final class FCPReader {
         }
     }
 
-    /// Local time → source time and the constant speed of a `timeMap`.
-    func timeMap(_ e: XMLElement) -> (map: (Seconds) -> Seconds, speed: Double) {
-        guard let tm = e.first("timeMap") else { return ({ $0 }, 1) }
-        let pts = tm.elems.filter { $0.name == "timept" }.compactMap { p -> (t: Seconds, v: Seconds)? in
+    /// A `timeMap`'s points, local time to source time, in time order; empty without one.
+    func timePoints(_ e: XMLElement) -> [(t: Seconds, v: Seconds)] {
+        guard let tm = e.first("timeMap") else { return [] }
+        return tm.elems.filter { $0.name == "timept" }.compactMap { p -> (t: Seconds, v: Seconds)? in
             guard let t = time(p.attr("time")), let v = time(p.attr("value")) else { return nil }
             return (t, v)
         }.sorted { $0.t < $1.t }
+    }
+
+    /// Local time → source time and the constant speed of a `timeMap`.
+    func timeMap(_ e: XMLElement) -> (map: (Seconds) -> Seconds, speed: Double) {
+        guard e.first("timeMap") != nil else { return ({ $0 }, 1) }
+        let pts = timePoints(e)
         guard pts.count >= 2, pts.last!.t > pts.first!.t else {
             warnings.append("Freeze frame on \(label(e)) imported at normal speed")
             let p = pts.first ?? (0, 0)
@@ -876,10 +882,13 @@ final class FCPReader {
         var clip = Clip(id: "", kind: .media, name: e.attr("name") ?? m.name, mediaId: m.id, start: 0, duration: duration)
         if let tc = e.attr("tcFormat"), dropFrame[m.id] == nil { dropFrame[m.id] = tc == "DF" }
         if !m.isImage {
-            let (map, speed) = timeMap(e)
-            clampSpeed(&clip, speed, e)
-            clip.sourceIn = map(start) - asset.start
-            if clip.reverse { clip.sourceIn -= duration * clip.speed }
+            let pts = timePoints(e)
+            if !pts.isEmpty {
+                // Speed, reverse, freeze or ramp from the map, in the clip's local seconds and the asset's own time.
+                if let w = Importer.retime(&clip, map: pts.map { ($0.t - start, $0.v - asset.start) }, tolerance: 0.1 / max(canvas.fps, 1)) { warnings.append(w) }
+            } else {
+                clip.sourceIn = start - asset.start
+            }
         }
         let audioOnly = e.name == "audio" || e.attr("srcEnable") == "audio" || !m.hasVideo
         if e.attr("srcEnable") == "video" { clip.volume = 0 }
@@ -1098,8 +1107,17 @@ final class FCPReader {
                     clip.transform.y = -p.1 / 100
                 }
                 if let s = pair(k.attr("scale")) {
-                    if abs(abs(s.0) - abs(s.1)) > 1e-3 { warnings.append("Non-uniform scale on \(what) averaged") }
-                    clip.transform.scale = (abs(s.0) + abs(s.1)) / 2
+                    if abs(abs(s.0) - abs(s.1)) > 1e-3 * max(abs(s.0), abs(s.1)), clip.transform.fit == .fit {
+                        // An uneven scale of the fit picture: a stretch, else averaged.
+                        let m = clip.mediaId.flatMap { id in media.first { $0.id == id } }
+                        if canvas.setConform(&clip, media: m, x: abs(s.0), y: abs(s.1)) != nil {
+                            clip.transform.scale = (abs(s.0) + abs(s.1)) / 2
+                            warnings.append("Non-uniform scale on \(what) averaged")
+                        }
+                    } else {
+                        if abs(abs(s.0) - abs(s.1)) > 1e-3 { warnings.append("Non-uniform scale on \(what) averaged") }
+                        clip.transform.scale = (abs(s.0) + abs(s.1)) / 2
+                    }
                 }
                 if let r = k.attr("rotation").flatMap({ Double($0) }) { clip.transform.rotation = -r }
                 if k.elems.contains(where: { $0.first("keyframeAnimation") != nil }) { warnings.append("Transform keyframes on \(what) not kept") }
@@ -2734,8 +2752,8 @@ extension Importer {
     /// sequence's video and audio tracks, clipitems with their `file` (defined once, referenced by id after),
     /// nested sequences, transitionitems (clip edges of -1 sit at the transition's cut, Premiere's `cutPointTicks`
     /// kept as an uneven cut), generators (text, color mattes, slugs, and Premiere's synthetic black, transparent,
-    /// matte, bars and counting leader as solids), Time Remap speed, Audio Levels with keyframes, Basic Motion,
-    /// Crop, Opacity, a CDL and LUT files in clip comments (see `colorEffects`), each file's source timecode and
+    /// matte, bars and counting leader as solids), Time Remap speed, reverse and keyframes (ramps and freezes), Audio
+    /// Levels with keyframes, Basic Motion (its scale of the media's own pixels read as fit, fill or a scaled fit), Crop, Opacity, a CDL and LUT files in clip comments (see `colorEffects`), each file's source timecode and
     /// reel, enabled flags and markers. Audio clipitems that only repeat a video clip's sound fold
     /// into it, linked ones in sync but starting or ending elsewhere fold in as split edits, and audio fades
     /// from or to black become clip fades; video clips whose sound isn't on an audio track are silent. A video
@@ -3185,6 +3203,7 @@ final class XMEMLReader {
 
         // Speed: the frames used against the frames shown, else the Time Remap filter.
         var speed = 1.0, reverse = false, freeze = false
+        var graph: [(when: Double, value: Double)] = [], basicScale: Double?
         var levelKeys: [(when: Double, gain: Double)] = []
         var levelBase = 1.0
         let shown = (mediaEnd - mediaStart) / fps, used = (outF - inF) / cr
@@ -3195,9 +3214,12 @@ final class XMEMLReader {
             func param(_ key: String) -> XMLElement? { params.first { ($0.first("parameterid")?.stringValue ?? "").lowercased() == key } }
             switch id {
             case "timeremap", "speed":
-                if text(param("variablespeed"), "value") == "1" || param("graphdict")?.first("keyframe") != nil {
-                    drop("Variable speed", on: name)
+                // Variable speed: source frames (`value`) at frames from the clipitem's first (`when`).
+                graph = (param("graphdict")?.elems ?? []).filter { $0.name == "keyframe" }.compactMap { k in
+                    guard let w = number(k, "when"), let v = number(k, "value") else { return nil }
+                    return (w, v)
                 }
+                if text(param("variablespeed"), "value") == "1", graph.isEmpty { drop("Variable speed", on: name) }
                 if text(param("reverse"), "value")?.uppercased() == "TRUE" { reverse = true }
                 if let v = number(param("speed"), "value") {
                     if v < 0 { reverse = true }
@@ -3217,7 +3239,7 @@ final class XMEMLReader {
                     if !keys.isEmpty { levelKeys = keys }
                 }
             case "basic":
-                if let v = number(param("scale"), "value") { c.transform.scale = max(0, v) / 100 }
+                if let v = number(param("scale"), "value") { basicScale = max(0, v) / 100 }
                 if let v = number(param("rotation"), "value") { c.transform.rotation = v }
                 if let center = param("center")?.first("value") {
                     c.transform.x = number(center, "horiz") ?? 0
@@ -3239,7 +3261,16 @@ final class XMEMLReader {
                 drop("Filter \(effectName)", on: name)
             }
         }
-        if freeze {
+        // Basic Motion scales the media's own pixels: its fit or fill size, or a stretch's width.
+        if let k = basicScale {
+            let m = c.kind == .media ? c.mediaId.flatMap { id in media.first { $0.id == id } } : nil
+            let x = k / (canvas.mediaFitScale(m) ?? 1)
+            if let w = canvas.setConform(&c, media: m, x: x, y: x) { warnings.append(w) }
+        }
+        if !graph.isEmpty, c.kind == .media {
+            let map = graph.map { ((mediaStart + $0.when - start) / fps, $0.value / cr) }
+            if let w = Importer.retime(&c, map: map, tolerance: 0.1 / max(fps, 1)) { warnings.append(w) }
+        } else if freeze {
             Importer.freeze(&c)
         } else {
             if speed < 0.01 || speed > 100 {
@@ -3490,8 +3521,9 @@ extension Project {
     /// picture cut and sound crossfades are audio transitionitems on the sound cut, with the clips' edges under them
     /// written as -1 and their media spanning the transition; an uneven one keeps its cut as Premiere's
     /// `cutPointTicks`. Every in, out, start and end counts from the same frame, so a clipitem plays as many source
-    /// frames as it lasts at normal speed. Speed is a Time Remap filter, opacity Opacity, scale, position
-    /// and rotation Basic Motion, and crop Crop; the CDL and LUT files are a clip comment (`ASC_SOP …; LUT <path>`).
+    /// frames as it lasts at normal speed. Speed and reverse are a Time Remap filter, ramps and freezes its keyframes
+    /// (`graphdict`: the source frame at frames from the clipitem's first); opacity is Opacity, scale (the fit or fill
+    /// size in the media's own pixels; a stretch is written fit), position and rotation Basic Motion, and crop Crop; the CDL and LUT files are a clip comment (`ASC_SOP …; LUT <path>`).
     /// Sound clipitems are linked to their picture and span the audio range, so split edits keep
     /// their own in and out; levels are Audio Levels (keyframed when animated, track faders and master gain
     /// folded in) and fades 0 dB cross fades from or to black. Sound overlapping the next clip's on its track is a
@@ -3732,8 +3764,15 @@ extension Project {
                     case .media:
                         guard let m = c.mediaId.flatMap({ scope.mediaAsset($0) }) else { continue }
                         let inF: Int, outF: Int
+                        // A ramp or freeze: Time Remap keys at the clipitem's frames, over the source range they reach.
+                        let lo = r0 - head - f(c.start), hi = r1 + tail - f(c.start)
+                        let graph = c.isRetimed && !m.isImage ? c.timeMap(frames: lo, hi, grid: grid) : []
                         if m.isImage {
                             (inF, outF) = (0, length)
+                        } else if let a = graph.first, let b = graph.last {
+                            inF = f(min(a.source, b.source))
+                            outF = max(f(max(a.source, b.source)), inF + 1)
+                            sourceFrame = inF
                         } else if c.reverse {
                             (inF, outF) = (f(min(c.sourceIn, c.sourceOut)) - played(head), f(max(c.sourceIn, c.sourceOut)) + played(tail))
                         } else {
@@ -3741,10 +3780,23 @@ extension Project {
                             sourceFrame = f(heard ? c.audioSourceRange.start : c.sourceIn)
                             (inF, outF) = (sourceFrame + played(r0 - s - head), sourceFrame + played(r1 - s + tail))
                         }
-                        if c.reverse { sourceFrame = f(min(c.sourceIn, c.sourceOut)) }
+                        if c.reverse, graph.isEmpty { sourceFrame = f(min(c.sourceIn, c.sourceOut)) }
                         kids += [leaf("in", "\(inF)"), leaf("out", "\(outF)"), file(m)]
                         if kind == .audio { kids.append(XMLElem("sourcetrack", children: [leaf("mediatype", "audio"), leaf("trackindex", "\(c.channels?.sourceChannels.first ?? 1)")])) }
-                        if abs(c.speed - 1) > 1e-9 || c.reverse {
+                        if let a = graph.first, let b = graph.last {
+                            let average = (b.source - a.source) / max(Double((b.frame - a.frame) * grid.num) / Double(grid.den), 1e-9)
+                            var keys = XMLElem("parameter", children: [leaf("parameterid", "graphdict"), leaf("name", "graphdict")])
+                            keys.children += graph.map { p in
+                                XMLElem("keyframe", children: [leaf("when", "\(p.frame - lo)"), leaf("value", number((p.source * grid.rate * 1000).rounded() / 1000))])
+                            }
+                            kids.append(XMLElem("filter", children: [effect("Time Remap", id: "timeremap", category: "motion", type: "motion", mediaType: "video", [
+                                parameter("variablespeed", "variablespeed", "1"),
+                                parameter("speed", "speed", number((average * 100 * 1000).rounded() / 1000)),
+                                parameter("reverse", "reverse", c.reverse ? "TRUE" : "FALSE"),
+                                parameter("frameblending", "frameblending", "FALSE"),
+                                keys,
+                            ])]))
+                        } else if abs(c.speed - 1) > 1e-9 || c.reverse {
                             kids.append(XMLElem("filter", children: [effect("Time Remap", id: "timeremap", category: "motion", type: "motion", mediaType: "video", [
                                 parameter("variablespeed", "variablespeed", "0"),
                                 parameter("speed", "speed", number(c.speed * 100 * (c.reverse ? -1 : 1))),
@@ -3814,9 +3866,12 @@ extension Project {
                     }
                     if kind == .video {
                         let t = c.transform
-                        if t.scale != 1 || t.x != 0 || t.y != 0 || t.rotation != 0 {
+                        // Basic Motion scales the media's own pixels: the fit, fill (or a stretch's fit) size times the clip's scale.
+                        let conform = scope.canvas.conformScale(c.kind == .media ? c.mediaId.flatMap { scope.mediaAsset($0) } : nil, crop: t.crop, fit: t.fit == .stretch ? .fit : t.fit)
+                        let pixels = (scope.canvas.mediaFitScale(c.kind == .media ? c.mediaId.flatMap { scope.mediaAsset($0) } : nil) ?? 1) * conform.x * t.scale
+                        if abs(pixels - 1) > 1e-6 || t.x != 0 || t.y != 0 || t.rotation != 0 {
                             kids.append(XMLElem("filter", children: [effect("Basic Motion", id: "basic", category: "motion", type: "motion", mediaType: "video", [
-                                parameter("scale", "Scale", number(t.scale * 100), min: "0", max: "1000"),
+                                parameter("scale", "Scale", number(pixels * 100), min: "0", max: "1000"),
                                 parameter("rotation", "Rotation", number(t.rotation), min: "-8640", max: "8640"),
                                 XMLElem("parameter", children: [leaf("parameterid", "center"), leaf("name", "Center"),
                                                                 XMLElem("value", children: [leaf("horiz", number(t.x)), leaf("vert", number(t.y))])]),

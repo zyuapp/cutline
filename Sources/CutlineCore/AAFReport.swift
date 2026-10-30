@@ -7,9 +7,14 @@ extension Project {
     /// What an AAF export can't carry, clip by clip.
     func aafLosses(_ options: InterchangeOptions) -> [String] {
         var out: [String] = []
-        let flat = flattenedSequences()
+        let flat = flatteningMulticam().flattenedSequences()
         func label(_ c: Clip) -> String { c.name.map { "\(c.id) (\($0))" } ?? c.id }
-        if !sequences.isEmpty { out.append("\(sequences.count) nested sequence(s) → flattened into the clips they play") }
+        let nested = sequences.filter { $0.multicam == nil }
+        if !nested.isEmpty { out.append("\(nested.count) nested sequence(s) → flattened into the clips they play") }
+        for c in tracks.flatMap(\.clips) {
+            guard let setup = multicamSetup(c) else { continue }
+            out.append("\(label(c)) multicam clip (\(setup.angles.count) angles) → its active angles as plain clips; the other angles and the switching aren't carried (no multigroup)")
+        }
         var short: [String] = []
         for track in flat.tracks {
             if track.kind == .audio, track.muted, !track.clips.isEmpty { out.append("Track \(track.id) (\(track.name)) is muted → left out of the AAF, which has no track mute") }
@@ -37,16 +42,18 @@ extension Project {
                 var lost: [String] = []
                 if track.kind == .video {
                     let t = c.transform
-                    if t != Transform() { lost.append("position, scale, rotation, crop and opacity") }
-                    let keyed = c.anim.keys.filter { $0 != "audio.volume" }.sorted()
+                    if t.anchorX != 0.5 || t.anchorY != 0.5 { lost.append("anchor point") }
+                    if t.rotateX != 0 || t.rotateY != 0 || t.threeD || t.z != 0 { lost.append("3D placement") }
+                    if t.motionBlur > 0 { lost.append("motion blur") }
+                    // Speed curves go in Motion Control; scale, position, rotation and opacity keys in the picture effects.
+                    let carried: Set<String> = ["audio.volume", "time.speed", "transform.scale", "transform.x", "transform.y", "transform.rotation", "transform.opacity"]
+                    let keyed = c.anim.keys.filter { !carried.contains($0) }.sorted()
                     if !keyed.isEmpty { lost.append("keyframes on " + keyed.prefix(4).joined(separator: ", ")) }
                     if c.blend != .normal { lost.append("\(c.blend.rawValue) blend") }
                     if c.fadeIn > 0 || c.fadeOut > 0 { lost.append("picture fades") }
                     let fx = c.effects.filter { $0.enabled && EffectCatalog.type($0.type)?.category != "audio" }.map(\.type)
                     if !fx.isEmpty { lost.append("effects and grade (\(fx.prefix(4).joined(separator: ", ")))") }
                 }
-                if c.isRetimed { lost.append("speed ramp (written at 1×)") }
-                if c.reverse { lost.append("reverse (plays forward)") }
                 if m.hasAudio, !m.isImage {
                     let afx = c.effects.filter { $0.enabled && EffectCatalog.type($0.type)?.category == "audio" }.map(\.type)
                     if !afx.isEmpty { lost.append(afx.joined(separator: ", ")) }
