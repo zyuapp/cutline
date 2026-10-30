@@ -211,6 +211,10 @@ public enum TimelineBuilder {
             }
         }
 
+        // Tracks that stop early would leave a reader waiting for frames; pad them with empty time to the end.
+        for t in comp.tracks where t.mediaType == .video && !t.segments.isEmpty && t.timeRange.end < time(duration) {
+            t.insertEmptyTimeRange(CMTimeRange(start: t.timeRange.end, end: time(duration)))
+        }
         let scene = RenderScene(project: project, captions: project.captions.enabled && dryTrack == nil ? project.captionSegments(transcripts: transcripts) : [], trackIDs: trackIDs, orientations: orientations, images: images)
         let vc = AVMutableVideoComposition()
         vc.customVideoCompositorClass = CutlineCompositor.compositorClass(project.canvas.colorSpace)

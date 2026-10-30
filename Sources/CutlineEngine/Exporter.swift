@@ -92,17 +92,26 @@ public enum Exporter {
         videoOut.alwaysCopiesSampleData = false
         reader.add(videoOut)
 
+        // Sound is mixed to a file first and read by its own reader: one reader feeding both writer inputs
+        // can stall when the writer holds one stream back to interleave with the other.
         let audioTracks = try await comp.loadTracks(withMediaType: .audio)
-        var audioOut: AVAssetReaderAudioMixOutput?
+        var audioOut: AVAssetReaderTrackOutput?
+        var audioReader: AVAssetReader?
+        let mixFile = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-mix-\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: mixFile) }
         if !audioTracks.isEmpty {
-            let out = AVAssetReaderAudioMixOutput(audioTracks: audioTracks, audioSettings: [
-                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2,
-                AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
-            ])
-            out.audioMix = built.audioMix
-            out.audioTimePitchAlgorithm = .spectral
-            reader.add(out)
-            audioOut = out
+            _ = try await AudioIO.mixdown(built, range: TimeRange(range.start.seconds, range.end.seconds), to: mixFile)
+            let mixAsset = AVURLAsset(url: mixFile)
+            if let track = try await mixAsset.loadTracks(withMediaType: .audio).first {
+                let r = try AVAssetReader(asset: mixAsset)
+                let out = AVAssetReaderTrackOutput(track: track, outputSettings: [
+                    AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2,
+                    AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
+                ])
+                r.add(out)
+                audioReader = r
+                audioOut = out
+            }
         }
 
         try? FileManager.default.removeItem(at: url)
@@ -164,13 +173,14 @@ public enum Exporter {
         }
 
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline") }
+        if let audioReader, !audioReader.startReading() { throw audioReader.error ?? EditError("Cannot read the mixed sound") }
         guard writer.startWriting() else { throw writer.error ?? EditError("Cannot write \(url.lastPathComponent)") }
         writer.startSession(atSourceTime: .zero)
 
         let total = range.duration.seconds
         async let video: Void = pump(videoOut, into: videoIn, offset: offset) { t in progress?(min(1, t / max(total, 0.001))) }
         async let audio: Void = {
-            if let audioOut, let audioIn { try await pump(audioOut, into: audioIn, offset: offset, report: nil) }
+            if let audioOut, let audioIn { try await pump(audioOut, into: audioIn, offset: .zero, report: nil) }
         }()
         for (input, cues) in textInputs {
             try await TextTrack.write(cues, to: input, duration: total)

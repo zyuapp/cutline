@@ -430,7 +430,9 @@ final class CutlineInstruction: NSObject, AVVideoCompositionInstructionProtocol,
     init(timeRange: CMTimeRange, scene: RenderScene) {
         self.timeRange = timeRange
         self.scene = scene
-        requiredSourceTrackIDs = Set(scene.trackIDs.values).sorted().map { NSNumber(value: $0) }
+        // The black base track only keeps the composition running; its frames are never read, and asking
+        // for them makes readers wait on a track stretched over long gaps.
+        requiredSourceTrackIDs = Set(scene.trackIDs.filter { $0.key != "__base" }.values).sorted().map { NSNumber(value: $0) }
     }
 }
 

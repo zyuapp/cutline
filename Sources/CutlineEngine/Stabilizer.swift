@@ -41,7 +41,7 @@ public enum Stabilizer {
 
     static func cacheURL(media url: URL, range: TimeRange) -> URL {
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let stamp = "\(url.path)|\(attrs?[.size] as? Int ?? 0)|\((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)|\(fmt(range.start))|\(fmt(range.end))|v1"
+        let stamp = "\(url.path)|\(attrs?[.size] as? Int ?? 0)|\((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)|\(fmt(range.start))|\(fmt(range.end))|v2"
         let key = SHA256.hash(data: Data(stamp.utf8)).map { String(format: "%02x", $0) }.joined().prefix(24)
         return directory.appendingPathComponent("\(key).json")
     }
@@ -83,20 +83,18 @@ public enum Stabilizer {
     /// Content motion from `a` to `b`: pixels (+x right, +y down) and degrees clockwise.
     static func register(from a: CVPixelBuffer, to b: CVPixelBuffer, width w: Double, height h: Double) -> (Double, Double, Double) {
         let handler = VNImageRequestHandler(cvPixelBuffer: b, options: [:])
+        // Translation registration measures shift accurately on real footage; the homography's translation
+        // under-reads it when the subject moves, so the homography only contributes rotation.
+        var rotation = 0.0
         let homography = VNHomographicImageRegistrationRequest(targetedCVPixelBuffer: a, options: [:])
         if (try? handler.perform([homography])) != nil, let m = (homography.results?.first as? VNImageHomographicAlignmentObservation)?.warpTransform {
-            // Vision maps the targeted frame onto the reference in pixels with a bottom-left origin.
-            let c = SIMD3<Float>(Float(w / 2), Float(h / 2), 1)
-            let p = m * c
-            if abs(p.z) > 1e-6 {
-                let tx = Double(p.x / p.z) - w / 2, ty = Double(p.y / p.z) - h / 2
-                let rot = atan2(Double(m[0][1]), Double(m[0][0])) * 180 / .pi
-                if abs(tx) < w / 4, abs(ty) < h / 4, abs(rot) < 10 { return (tx, -ty, -rot) }
-            }
+            let rot = atan2(Double(m[0][1]), Double(m[0][0])) * 180 / .pi
+            if abs(rot) < 10 { rotation = -rot }
         }
         let translation = VNTranslationalImageRegistrationRequest(targetedCVPixelBuffer: a, options: [:])
-        if (try? handler.perform([translation])) != nil, let t = (translation.results?.first as? VNImageTranslationAlignmentObservation)?.alignmentTransform {
-            return (Double(t.tx), -Double(t.ty), 0)
+        if (try? handler.perform([translation])) != nil, let t = (translation.results?.first as? VNImageTranslationAlignmentObservation)?.alignmentTransform,
+           abs(Double(t.tx)) < w / 4, abs(Double(t.ty)) < h / 4 {
+            return (Double(t.tx), -Double(t.ty), rotation)
         }
         return (0, 0, 0)
     }
