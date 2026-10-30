@@ -11,7 +11,7 @@ extension Toolbox {
         loudness_normalize: {target_lufs: -14, ceiling_db: -1.5, limit: true}. \
         split_edit: {edit: "clip_a|clip_b", offset: seconds (+ J cut, − L cut)}. \
         room_tone: {start, end (timeline), media, source_start, source_end (a quiet stretch of that media's sound, in source time; 2 s or more sounds best), track (default a new audio track "Room tone"), crossfade: 0.25}; fills the range with that room tone, looped from varied start points with short crossfades so the repeat isn't heard. \
-        fill_gaps: {track: the dialogue track, media, source_start, source_end (a quiet stretch, as room_tone), into (default a new audio track "Room tone"), min_gap: 0.04, crossfade: 0.25}; fills every gap between that track's sounds with room tone so the background never drops out. \
+        fill_gaps: {track: the dialogue track, media, source_start, source_end (a quiet stretch, as room_tone), into (default a new audio track "Room tone"), min_gap: 0.04, crossfade: 0.25 (shortened to half of a shorter gap)}; fills every gap between that track's sounds with room tone so the background never drops out. \
         speed_ramp: {clip, at: time (default middle), speed: 0.3, ramp: 0.3, hold: 0.8}. \
         freeze_frame: {at: time, duration: 1.5, track (default top video at that time), zoom: 1 (e.g. 1.08 pushes in)}. \
         punch_in: {clips (default: every other jump cut on track), track: "V1", amount: 1.15, settle: false (start slightly tighter and ease out)}; centers on faces when shots are analyzed. \
@@ -29,7 +29,7 @@ extension Toolbox {
         sync_audio: {clips: [video clip ids] (default every clip of that camera media on V1), audio: media id of the separate recorder, track: audio track (default new "Production sound"), keep_camera: false}; lines up dual-system sound by waveform, links it to the picture and mutes the camera mic. \
         follow: {clip: the graphic, title or overlay to move, target: "track:<id>" (media_track) or "face:<media>[:n]", offset_x: 0, offset_y: -0.1 (fractions of the frame; negative is above), smooth: 0.2}; keeps the clip on its subject wherever the media plays. \
         kinetic_text: {start, end (timeline or word anchors), preset: pop, unit: word, size: 0.09, y: 0.5, color, highlight: color, uppercase: false, max_width: 0.8}; spoken words appear as they are said. \
-        multicam_switch: {angles: [media ids], audio: media with the main sound (default first angle), speakers: {"S1": media, ...} (default S1→first angle, S2→second…), wide: media for long turns and crosstalk, start, end (source seconds of audio), min_shot: 1.5, at: timeline time, track: "V1"}; syncs angles by their sound and cuts to whoever speaks.
+        multicam_switch: {angles: [media ids], audio: media with the main sound (default first angle), signal: auto|mics|speakers (auto: whose own mic is loudest when each angle records its person, else speaker analysis), speakers: {"S1": media, ...} (default S1→first angle, S2→second…), wide: media for long turns, reaction: true or seconds (cut to the listener in turns longer than that, default 5), start, end (source seconds of audio), min_shot: 1.0, at: timeline time, track: "V1"}; syncs angles by their sound and cuts per speaker turn in the pause before each new speaker, never inside a word. Or {cuts: [{at: timeline time, angle: media}], track: "V1"} to switch angles by hand like a multicam editor: splits there and plays that angle in sync from then on.
         """
 
     func moreRecipes(_ name: String, _ a: Args, dry: Bool) async throws -> ToolResult {
@@ -373,7 +373,19 @@ extension Toolbox {
 
 extension Toolbox {
     func multicam(_ a: Args, dry: Bool, bundle b: ProjectBundle, project current: Project) async throws -> ToolResult {
-        guard let angles = a.strings("angles"), angles.count >= 2 else { throw EditError("Pass at least two angles (media ids)") }
+        let trackId = a.optString("track") ?? "V1"
+        if let raw = a.raw["cuts"]?.array {
+            let cuts = try raw.map { item -> (at: Seconds, angle: String) in
+                guard let o = item.object else { throw EditError("Each cut is {at, angle}") }
+                let sub = Args(.object(o))
+                return (try sub.time("at"), try sub.string("angle"))
+            }
+            guard !cuts.isEmpty else { throw EditError("Pass cuts: [{at, angle}]") }
+            return try runEdit("Switch \(cuts.count) angle(s)", dry: dry) { p in
+                "Switched angles on \(trackId):\n" + (try p.switchAngles(cuts, trackId: trackId)).joined(separator: "\n")
+            }
+        }
+        guard let angles = a.strings("angles"), angles.count >= 2 else { throw EditError("Pass at least two angles (media ids), or cuts: [{at, angle}] to switch angles by hand") }
         let audioId = a.optString("audio") ?? angles[0]
         guard let audio = current.mediaAsset(audioId), audio.hasAudio else { throw EditError("\(audioId) has no sound to sync and cut by") }
         var offsets: [String: Seconds] = [audioId: 0]
@@ -386,55 +398,61 @@ extension Toolbox {
             notes.append("\(id) \(r.offset >= 0 ? "+" : "")\(String(format: "%.3f", r.offset))s (confidence \(fmt2(r.confidence)))")
             if r.confidence < 0.5 { notes.append("warning: \(id) synced with low confidence; check it with timeline_frames") }
         }
-        guard let speakers = b.analysis(SpeakerAnalysis.self, audioId, "speakers") else {
-            throw EditError("\(audioId) has no speaker analysis; run media_analyze media_id:\"\(audioId)\" features:[\"speakers\"]")
+        guard let transcript = b.transcript(audioId) else {
+            throw EditError("\(audioId) has no transcript to find speaker turns; run media_analyze media_id:\"\(audioId)\" features:[\"transcript\", \"speakers\"]")
         }
-        var map: [String: String] = [:]
-        for (i, s) in speakers.speakers.enumerated() { map[s] = angles[min(i, angles.count - 1)] }
-        for (k, v) in a.raw["speakers"]?.object ?? [:] { if let m = v.string { map[k] = m } }
-        let wide = a.optString("wide")
         let lo = try a.optSourceTime("start") ?? 0
         var hi = try a.optSourceTime("end") ?? audio.duration
         for (id, off) in offsets { if let m = current.mediaAsset(id) { hi = min(hi, m.duration - off) } }
-        let minShot = a.optDouble("min_shot") ?? 1.5
-        // Turns, merged so no shot is shorter than min_shot.
-        var turns: [(s: Seconds, e: Seconds, angle: String)] = []
-        for seg in speakers.segments where seg.end > lo && seg.start < hi {
-            let angle = map[seg.speaker] ?? angles[0]
-            let s = max(lo, seg.start), e = min(hi, seg.end)
-            if let last = turns.last, last.angle == angle || e - s < minShot {
-                turns[turns.count - 1].e = e
-            } else if let last = turns.last, s - last.e > 0 {
-                turns[turns.count - 1].e = s
-                turns.append((s, e, angle))
+        guard hi > lo else { throw EditError("The angles don't overlap in time between start and end") }
+        let spoken = transcript.words.enumerated().filter { $0.element.end > lo && $0.element.start < hi }
+
+        // Who speaks: whose mic is loudest when each angle records its own person, else the voice analysis.
+        let signal = a.optString("signal") ?? "auto"
+        var labels: [String?]?
+        var how = ""
+        if signal != "speakers" {
+            var levels: [String: [Double?]] = [:]
+            for id in angles {
+                guard let m = current.mediaAsset(id) else { continue }
+                levels[id] = try await MulticamAudio.wordLevels(url: m.url, offset: offsets[id] ?? 0, words: spoken.map { TimeRange($0.element.start, $0.element.end) })
+            }
+            let loud = MulticamPlan.loudestAngles(levels)
+            if signal == "mics" || loud.margin >= 3 {
+                labels = loud.angles
+                how = "the loudest angle's mic (median margin \(fmt1(loud.margin)) dB)"
             } else {
-                turns.append((turns.last?.e ?? lo, e, angle))
+                how = "speaker analysis (the angles' mics differ by only \(fmt1(loud.margin)) dB, so they hear the same sound)"
             }
         }
-        if turns.isEmpty { turns = [(lo, hi, angles[0])] }
-        turns[0].s = lo
-        turns[turns.count - 1].e = hi
-        if let wide {
-            var out: [(s: Seconds, e: Seconds, angle: String)] = []
-            for t in turns {
-                if t.e - t.s > 12 {
-                    let mid = (t.s + t.e) / 2
-                    out += [(t.s, mid - 1.5, t.angle), (mid - 1.5, mid + 1.5, wide), (mid + 1.5, t.e, t.angle)]
-                } else { out.append(t) }
+        if labels == nil {
+            guard let speakers = b.analysis(SpeakerAnalysis.self, audioId, "speakers") else {
+                throw EditError("\(audioId) has no speaker analysis and the angles' mics don't tell speakers apart; run media_analyze media_id:\"\(audioId)\" features:[\"speakers\"]")
             }
-            turns = out
+            var map: [String: String] = [:]
+            for (i, s) in speakers.speakers.enumerated() { map[s] = angles[min(i, angles.count - 1)] }
+            for (k, v) in a.raw["speakers"]?.object ?? [:] { if let m = v.string { map[k] = m } }
+            labels = spoken.map { i, _ in speakers.wordSpeakers.indices.contains(i) ? speakers.wordSpeakers[i].flatMap { map[$0] } : nil }
+            if how.isEmpty { how = "speaker analysis" }
+            how += " (" + map.sorted { $0.key < $1.key }.map { "\($0.key)→\($0.value)" }.joined(separator: ", ") + ")"
         }
+        let words = zip(spoken, labels!).map { MulticamWord(start: $0.element.start, end: $0.element.end, text: $0.element.text, angle: $1) }
+        var options = MulticamOptions()
+        options.minShot = a.optDouble("min_shot") ?? 1.0
+        options.wide = a.optString("wide")
+        if let r = a.raw["reaction"] {
+            if r.bool == true { options.reactionAfter = 5 } else if let n = r.double { options.reactionAfter = n }
+        }
+        let shots = MulticamPlan.shots(words: words, range: TimeRange(lo, hi), first: words.first?.angle ?? angles[0], options: options)
         let at = try a.optTime("at") ?? 0
-        let finalTurns = turns
         let summary = notes
         return try runEdit("Multicam edit from \(angles.count) angles", dry: dry) { p in
-            let trackId = a.optString("track") ?? "V1"
             guard let ti = p.trackIndex(trackId), p.tracks[ti].kind == .video else { throw EditError("No video track \(trackId)") }
             p.deleteRange(TimeRange(at, at + (hi - lo)), trackIds: [trackId], ripple: false)
             // Cut points snap to frames and each shot ends where the next begins, so no slivers of background show.
-            let cutsAt = finalTurns.map { p.canvas.snap(at + $0.s - lo) } + [p.canvas.snap(at + hi - lo)]
-            for (i, t) in finalTurns.enumerated() where cutsAt[i + 1] - cutsAt[i] >= p.canvas.frameDuration {
-                var c = Clip(id: Project.newClipId(), kind: .media, mediaId: t.angle, start: cutsAt[i], duration: cutsAt[i + 1] - cutsAt[i], sourceIn: cutsAt[i] - at + lo + (offsets[t.angle] ?? 0))
+            let cutsAt = shots.map { p.canvas.snap(at + $0.start - lo) } + [p.canvas.snap(at + hi - lo)]
+            for (i, s) in shots.enumerated() where cutsAt[i + 1] - cutsAt[i] >= p.canvas.frameDuration {
+                var c = Clip(id: Project.newClipId(), kind: .media, mediaId: s.angle, start: cutsAt[i], duration: cutsAt[i + 1] - cutsAt[i], sourceIn: cutsAt[i] - at + lo + (offsets[s.angle] ?? 0))
                 c.transform.fit = .fill
                 c.volume = 0
                 try p.addClip(c, trackId: trackId, mode: .overwrite)
@@ -442,8 +460,10 @@ extension Toolbox {
             p.addSyncGroup(offsets)
             let audioTrack = p.addTrack(kind: .audio, name: "Multicam sound")
             try p.addClip(Clip(id: Project.newClipId(), kind: .media, mediaId: audioId, start: at, duration: hi - lo, sourceIn: lo), trackId: audioTrack.id, mode: .place)
-            let counts = Dictionary(grouping: finalTurns, by: \.angle).mapValues(\.count)
-            return "Synced: " + (summary.isEmpty ? "single angle" : summary.joined(separator: ", ")) + ". Cut \(finalTurns.count) shots on \(trackId) (" + counts.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ") + ") with \(audioId)'s sound on \(audioTrack.id)."
+            let counts = Dictionary(grouping: shots, by: \.angle).mapValues(\.count)
+            let extras = shots.filter { $0.kind != "speaker" }
+            return "Synced: " + (summary.isEmpty ? "single angle" : summary.joined(separator: ", ")) + ". Speakers from \(how). Cut \(shots.count) shots on \(trackId) (" + counts.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ") + ", none under \(fmt2(options.minShot))s, cuts in the pauses before each new speaker"
+                + (extras.isEmpty ? "" : ", \(extras.count) reaction/wide cutaway(s)") + ") with \(audioId)'s sound on \(audioTrack.id). Recut by hand with recipe multicam_switch cuts:[{at, angle}]."
         }
     }
 }

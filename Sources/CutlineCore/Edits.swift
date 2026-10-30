@@ -329,12 +329,14 @@ extension Project {
             if keepsLeft {
                 var left = Project.trimmedRight(c, to: r.start)
                 left.audioLag = heard.end - left.end
+                left.limitSound(to: r.start)
                 if keepsRight { left.fadeOut = 0; left.audioFadeOut = 0 }
                 out.append(left)
             }
             if keepsRight {
                 var right = Project.trimmedLeft(c, to: r.end)
                 right.audioLead = right.start - heard.start
+                right.limitSound(from: r.end)
                 if keepsLeft { right.id = Project.newClipId(); right.fadeIn = 0; right.audioFadeIn = 0 }
                 out.append(right)
             }
@@ -440,6 +442,8 @@ extension Clip {
         }
         if s > heard.start { audioLead = start - s }
         if e < heard.end { audioLag = e - end }
+        if abs(audioLead) < 1e-9 { audioLead = 0 }
+        if abs(audioLag) < 1e-9 { audioLag = 0 }
     }
 }
 

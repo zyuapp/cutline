@@ -145,6 +145,17 @@ private func expectNotHeard(_ p: Project, media: String, source r: TimeRange, so
     try p.validate()
 }
 
+@Test func cutsLeaveClipsWithoutSplitEditsStraight() throws {
+    var p = try lCut()
+    p.tracks[0].clips.append(Clip(id: "t", kind: .text, start: 30, duration: 5, text: TextSpec(text: "Title")))
+    p.deleteRange(TimeRange(2.03, 3.07), ripple: false)
+    p.deleteRange(TimeRange(31.01, 32.33), ripple: true)
+    _ = try p.splitClip("c", at: 24.37)
+    let straight = p.tracks[0].clips.filter { !["a", "b"].contains($0.id) && $0.start > 10.5 || $0.end < 9 }
+    #expect(straight.allSatisfy { $0.audioLead == 0 && $0.audioLag == 0 }, "\(straight.map { ($0.id, $0.audioLead, $0.audioLag) })")
+    try p.validate()
+}
+
 @Test func trimsKeepSplitEditsWithoutDoubledSound() throws {
     var p = try lCut()
     try p.trim("a", mode: .roll, edge: .end, delta: -1)

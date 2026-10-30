@@ -8,15 +8,6 @@ public enum Diarizer {
     static let decodeRate = 16_000.0
     static let maxSegmentGap = 0.3
     static let maxSegmentDuration = 2.0
-    static let minEmbeddingDuration = 0.6
-    /// Average-linkage cosine distance above which clusters stay apart.
-    static let mergeThreshold = 1.25
-    /// Mean silhouette a split into several speakers must reach.
-    static let minSilhouette = 0.25
-    /// Silhouette needed to split when the merge threshold proposes one speaker.
-    static let confidentSilhouette = 0.35
-    /// Floored effect size every pair of speakers must reach (see `minSeparation`).
-    static let minClusterSeparation = 2.0
 
     /// Decodes the first audio track to 16 kHz mono and analyzes it.
     public static func analyze(url: URL, transcript: Transcript) async throws -> SpeakerAnalysis {
@@ -35,17 +26,17 @@ public enum Diarizer {
         }
 
         var embedded: [Int] = []
-        var vectors: [[Float]] = []
-        for (i, s) in segments.enumerated() where s.end - s.start >= minEmbeddingDuration {
-            if let v = features.embedding(start: s.start, end: s.end) {
-                embedded.append(i)
-                vectors.append(v)
-            }
+        var seeds: [GaussStats] = []
+        for (i, s) in segments.enumerated() {
+            let frames = segmentFrames(features, s, words)
+            guard frames.count >= minSeedFrames else { continue }
+            embedded.append(i)
+            seeds.append(stats(features, frames: frames))
         }
 
         var clusterOf = [Int](repeating: 0, count: segments.count)
         if embedded.count >= 2 {
-            let labels = clusterSpeakers(vectors, maxSpeakers: max(1, maxSpeakers))
+            let labels = bicClusters(seeds, maxSpeakers: max(1, maxSpeakers))
             var known = [Int?](repeating: nil, count: segments.count)
             for (k, i) in embedded.enumerated() { known[i] = labels[k] }
             for i in segments.indices {
@@ -61,7 +52,11 @@ public enum Diarizer {
         let order = segments.flatMap(\.words)
         var wordCluster = segments.indices.flatMap { i in segments[i].words.map { _ in clusterOf[i] } }
         if Set(wordCluster).count > 1 {
-            wordCluster = resegment(words: words, order: order, labels: wordCluster, features: features)
+            wordCluster = resegmentFrames(words: words, order: order, labels: wordCluster, features: features)
+            let merged = mergeSimilarSpeakers(words: words, order: order, labels: wordCluster, features: features)
+            if merged != wordCluster {
+                wordCluster = Set(merged).count > 1 ? resegmentFrames(words: words, order: order, labels: merged, features: features) : merged
+            }
         }
 
         var names: [Int: String] = [:]
@@ -89,85 +84,6 @@ public enum Diarizer {
         return SpeakerAnalysis(mediaId: transcript.mediaId, speakers: speakers, segments: spans, wordSpeakers: wordSpeakers, emphasis: emphasis)
     }
 
-    // MARK: Resegmentation
-
-    static let emissionWeight = 0.5
-    /// Viterbi cost in nats of a speaker change between words closer than `maxSegmentGap`.
-    static let switchPenalty = 12.0
-    static let pauseSwitchPenalty = 2.0
-
-    /// Refines word labels with per-speaker diagonal Gaussians over word MFCC means and F0,
-    /// decoded by Viterbi so turns can change between segments' words.
-    static func resegment(words: [Word], order: [Int], labels: [Int], features: FrameFeatures) -> [Int] {
-        let k = (labels.max() ?? 0) + 1
-        let feats = order.map { features.wordVector(start: words[$0].start, end: words[$0].end) }
-        guard let dims = feats.lazy.compactMap({ $0 }).first?.count else { return labels }
-        let floors: [Double] = Array(repeating: 0.01, count: dims - 1) + [0.25]
-        var current = labels
-        for _ in 0..<3 {
-            var means = [[Double]](repeating: [Double](repeating: 0, count: dims), count: k)
-            var vars = means
-            var counts = means
-            for (t, f) in feats.enumerated() {
-                guard let f else { continue }
-                for d in 0..<dims where !f[d].isNaN {
-                    means[current[t]][d] += Double(f[d])
-                    counts[current[t]][d] += 1
-                }
-            }
-            for c in 0..<k { for d in 0..<dims { means[c][d] /= max(counts[c][d], 1) } }
-            for (t, f) in feats.enumerated() {
-                guard let f else { continue }
-                for d in 0..<dims where !f[d].isNaN {
-                    let e = Double(f[d]) - means[current[t]][d]
-                    vars[current[t]][d] += e * e
-                }
-            }
-            let active = (0..<k).map { c in counts[c][0] >= 3 }
-            guard active.filter({ $0 }).count >= 2 else { return current }
-            for c in 0..<k { for d in 0..<dims { vars[c][d] = vars[c][d] / max(counts[c][d], 1) + floors[d] } }
-
-            let n = order.count
-            var cost = [Double](repeating: 0, count: k)
-            var back = [[Int]](repeating: [Int](repeating: 0, count: k), count: n)
-            for t in 0..<n {
-                var emit = [Double](repeating: 0, count: k)
-                for c in 0..<k {
-                    guard active[c] else { emit[c] = -.infinity; continue }
-                    guard let f = feats[t] else { continue }
-                    var ll = 0.0
-                    for d in 0..<dims where !f[d].isNaN {
-                        let e = Double(f[d]) - means[c][d]
-                        ll -= 0.5 * (e * e / vars[c][d] + log(vars[c][d]))
-                    }
-                    emit[c] = emissionWeight * ll
-                }
-                if t == 0 {
-                    cost = emit
-                    continue
-                }
-                let gap = words[order[t]].start - words[order[t - 1]].end
-                let penalty = gap > maxSegmentGap ? pauseSwitchPenalty : switchPenalty
-                var next = [Double](repeating: -.infinity, count: k)
-                for c in 0..<k {
-                    var best = -Double.infinity
-                    for p in 0..<k {
-                        let v = cost[p] - (p == c ? 0 : penalty)
-                        if v > best { best = v; back[t][c] = p }
-                    }
-                    next[c] = best + emit[c]
-                }
-                cost = next
-            }
-            var path = [Int](repeating: 0, count: n)
-            path[n - 1] = (0..<k).max { cost[$0] < cost[$1] }!
-            for t in stride(from: n - 1, to: 0, by: -1) { path[t - 1] = back[t][path[t]] }
-            if path == current { break }
-            current = path
-        }
-        return current
-    }
-
     // MARK: Segments
 
     struct Segment {
@@ -176,14 +92,15 @@ public enum Diarizer {
         var words: [Int]
     }
 
-    /// Groups consecutive words, splitting at pauses and at roughly `maxSegmentDuration`.
+    /// Groups consecutive words, splitting at pauses, sentence ends, short breaks and at roughly `maxSegmentDuration`,
+    /// so a segment rarely holds two people's lines.
     static func speechSegments(_ words: [Word]) -> [Segment] {
         let order = words.indices.sorted { words[$0].start < words[$1].start }
         var out: [Segment] = []
         for i in order {
             let w = words[i]
             let end = max(w.start, w.end)
-            if var cur = out.last, w.start - cur.end <= maxSegmentGap, end - cur.start <= maxSegmentDuration {
+            if var cur = out.last, w.start - cur.end <= segmentBreak, !endsSentence(words[cur.words.last!].text), end - cur.start <= maxSegmentDuration {
                 cur.end = max(cur.end, end)
                 cur.words.append(i)
                 out[out.count - 1] = cur
@@ -192,230 +109,6 @@ public enum Diarizer {
             }
         }
         return out
-    }
-
-    // MARK: Clustering
-
-    /// Per-dimension weights for [20 MFCC means, 20 MFCC stds, median F0, F0 spread].
-    static let featureWeights: [Float] = Array(repeating: 1, count: FrameFeatures.mfccCount)
-        + Array(repeating: 0.5, count: FrameFeatures.mfccCount) + [3, 0.5]
-
-    /// Z-scores each dimension across segments, filling missing (NaN) values with the mean.
-    static func standardized(_ vectors: [[Float]]) -> [[Float]] {
-        guard let dims = vectors.first?.count else { return [] }
-        var out = vectors
-        for d in 0..<dims {
-            let present = vectors.map { $0[d] }.filter { !$0.isNaN }
-            let mean = present.isEmpty ? 0 : present.reduce(0, +) / Float(present.count)
-            let variance = present.isEmpty ? 0 : present.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Float(present.count)
-            // Floors keep near-constant features (one steady voice) from being stretched into false differences.
-            let sd = max(variance.squareRoot(), d < featureFloors.count ? featureFloors[d] : 0)
-            let weight = d < featureWeights.count ? featureWeights[d] : 1
-            for i in out.indices {
-                let x = out[i][d].isNaN ? mean : out[i][d]
-                out[i][d] = sd > 1e-6 ? (x - mean) / sd * weight : 0
-            }
-        }
-        return out
-    }
-
-    static func cosineDistances(_ vectors: [[Float]]) -> [Double] {
-        let n = vectors.count
-        let dims = vectors.first?.count ?? 0
-        let norms = vectors.map { v in Double(vDSP.sumOfSquares(v)).squareRoot() }
-        var dist = [Double](repeating: 0, count: n * n)
-        for i in 0..<n {
-            for j in (i + 1)..<max(i + 1, n) {
-                var dot: Float = 0
-                vDSP_dotpr(vectors[i], 1, vectors[j], 1, &dot, vDSP_Length(dims))
-                let denom = norms[i] * norms[j]
-                let d = denom > 1e-12 ? 1 - Double(dot) / denom : 1
-                dist[i * n + j] = d
-                dist[j * n + i] = d
-            }
-        }
-        return dist
-    }
-
-    /// Cluster labels 0..<k for raw embeddings. The merge threshold proposes k; a split is kept
-    /// only if its silhouette and absolute separation are large enough.
-    static func clusterSpeakers(_ raw: [[Float]], maxSpeakers: Int) -> [Int] {
-        let n = raw.count
-        let dist = cosineDistances(standardized(raw))
-        let merges = averageLinkage(dist, n: n)
-        let kMax = min(maxSpeakers, n - 1)
-        guard kMax >= 2 else { return [Int](repeating: 0, count: n) }
-
-        let below = merges.filter { $0.distance <= mergeThreshold }.count
-        let kThreshold = min(max(n - below, 1), kMax)
-        var cuts: [Int: [Int]] = [:]
-        var scores: [Int: Double] = [:]
-        var valid: [Int] = []
-        for k in 2...kMax {
-            let labels = cut(merges, n: n, clusters: k)
-            let score = silhouette(labels, dist: dist, n: n)
-            cuts[k] = labels
-            scores[k] = score
-            if score >= minSilhouette, minSeparation(raw, labels: labels) >= minClusterSeparation { valid.append(k) }
-        }
-        guard let best = valid.max(by: { scores[$0]! < scores[$1]! }) else { return [Int](repeating: 0, count: n) }
-        let k: Int
-        if valid.contains(kThreshold), scores[kThreshold]! >= scores[best]! - 0.05 {
-            k = kThreshold
-        } else if kThreshold == 1, scores[best]! < confidentSilhouette, pitchGap(raw, labels: cuts[best]!) < distinctPitch {
-            k = 1
-        } else {
-            k = best
-        }
-        return k == 1 ? [Int](repeating: 0, count: n) : cuts[k]!
-    }
-
-    /// Semitones between cluster median pitches that mark clearly different voices (e.g. a low and a high voice).
-    static let distinctPitch: Float = 5
-
-    /// Largest gap between any two clusters' median pitch, in semitones; 0 when pitch is unknown.
-    static func pitchGap(_ raw: [[Float]], labels: [Int]) -> Float {
-        let pitchIndex = 2 * FrameFeatures.mfccCount
-        var medians: [Float] = []
-        for l in Set(labels) {
-            let p = raw.indices.filter { labels[$0] == l }.map { raw[$0][pitchIndex] }.filter { !$0.isNaN }.sorted()
-            guard p.count >= 2 else { continue }
-            medians.append(p[p.count / 2])
-        }
-        guard let lo = medians.min(), let hi = medians.max() else { return 0 }
-        return hi - lo
-    }
-
-    struct Merge {
-        var a: Int
-        var b: Int
-        var distance: Double
-    }
-
-    /// Average-linkage dendrogram by nearest-neighbour chain, merges sorted by distance.
-    static func averageLinkage(_ dist: [Double], n: Int) -> [Merge] {
-        var d = dist
-        var size = [Double](repeating: 1, count: n)
-        var active = [Bool](repeating: true, count: n)
-        var remaining = n
-        var chain: [Int] = []
-        var merges: [Merge] = []
-        merges.reserveCapacity(n - 1)
-        while remaining > 1 {
-            if chain.isEmpty { chain.append(active.firstIndex(of: true)!) }
-            let a = chain[chain.count - 1]
-            let prev = chain.count >= 2 ? chain[chain.count - 2] : -1
-            var b = prev
-            var bestD = prev >= 0 ? d[a * n + prev] : Double.infinity
-            for k in 0..<n where active[k] && k != a && d[a * n + k] < bestD {
-                bestD = d[a * n + k]
-                b = k
-            }
-            if b == prev {
-                chain.removeLast(2)
-                merges.append(Merge(a: a, b: b, distance: bestD))
-                let total = size[a] + size[b]
-                for k in 0..<n where active[k] && k != a && k != b {
-                    let v = (size[a] * d[a * n + k] + size[b] * d[b * n + k]) / total
-                    d[a * n + k] = v
-                    d[k * n + a] = v
-                }
-                size[a] = total
-                active[b] = false
-                remaining -= 1
-            } else {
-                chain.append(b)
-            }
-        }
-        return merges.sorted { $0.distance < $1.distance }
-    }
-
-    /// Labels 0..<clusters (by first member) after applying the closest merges.
-    static func cut(_ merges: [Merge], n: Int, clusters: Int) -> [Int] {
-        var parent = Array(0..<n)
-        func find(_ x: Int) -> Int {
-            var x = x
-            while parent[x] != x {
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            }
-            return x
-        }
-        for m in merges.prefix(max(0, n - clusters)) {
-            parent[find(m.b)] = find(m.a)
-        }
-        var ids: [Int: Int] = [:]
-        return (0..<n).map { i in
-            let r = find(i)
-            if let id = ids[r] { return id }
-            ids[r] = ids.count
-            return ids.count - 1
-        }
-    }
-
-    /// Absolute floors on per-dimension spread, in feature units (log mel energy, semitones).
-    static let featureFloors: [Float] = Array(repeating: 1, count: 2 * FrameFeatures.mfccCount) + [3, 1]
-
-    /// Smallest weighted effect size between any two clusters of raw features, with spreads floored by `featureFloors`.
-    static func minSeparation(_ raw: [[Float]], labels: [Int]) -> Double {
-        guard let dims = raw.first?.count else { return 0 }
-        let k = (labels.max() ?? 0) + 1
-        var means = [[Double]](repeating: [Double](repeating: 0, count: dims), count: k)
-        var counts = [Double](repeating: 0, count: k)
-        var columnMeans = [Double](repeating: 0, count: dims)
-        for d in 0..<dims {
-            let present = raw.map { $0[d] }.filter { !$0.isNaN }
-            columnMeans[d] = present.isEmpty ? 0 : Double(present.reduce(0, +)) / Double(present.count)
-        }
-        func value(_ i: Int, _ d: Int) -> Double { raw[i][d].isNaN ? columnMeans[d] : Double(raw[i][d]) }
-        for i in raw.indices {
-            counts[labels[i]] += 1
-            for d in 0..<dims { means[labels[i]][d] += value(i, d) }
-        }
-        for c in 0..<k { for d in 0..<dims { means[c][d] /= max(counts[c], 1) } }
-        var within = [Double](repeating: 0, count: dims)
-        for i in raw.indices {
-            for d in 0..<dims {
-                let e = value(i, d) - means[labels[i]][d]
-                within[d] += e * e
-            }
-        }
-        for d in 0..<dims { within[d] /= Double(max(raw.count - k, 1)) }
-        var best = Double.infinity
-        for a in 0..<k {
-            for b in (a + 1)..<max(a + 1, k) {
-                var s = 0.0
-                for d in 0..<dims {
-                    let w = Double(d < featureWeights.count ? featureWeights[d] : 1)
-                    let floor = Double(d < featureFloors.count ? featureFloors[d] : 0.5)
-                    let delta = means[a][d] - means[b][d]
-                    s += w * w * delta * delta / (within[d] + floor * floor)
-                }
-                best = min(best, s.squareRoot())
-            }
-        }
-        return best
-    }
-
-    static func silhouette(_ labels: [Int], dist: [Double], n: Int) -> Double {
-        let k = (labels.max() ?? 0) + 1
-        guard k >= 2 else { return 0 }
-        var counts = [Double](repeating: 0, count: k)
-        for l in labels { counts[l] += 1 }
-        var total = 0.0
-        var sums = [Double](repeating: 0, count: k)
-        for i in 0..<n {
-            for c in 0..<k { sums[c] = 0 }
-            for j in 0..<n where j != i { sums[labels[j]] += dist[i * n + j] }
-            let own = labels[i]
-            guard counts[own] > 1 else { continue }
-            let a = sums[own] / (counts[own] - 1)
-            var b = Double.infinity
-            for c in 0..<k where c != own && counts[c] > 0 { b = min(b, sums[c] / counts[c]) }
-            let m = max(a, b)
-            if m > 0 { total += (b - a) / m }
-        }
-        return total / Double(n)
     }
 
     // MARK: Emphasis
@@ -589,45 +282,6 @@ struct FrameFeatures {
         let a = min(max(lo, 0), count)
         let b = min(max(hi + 1, a), count)
         return a..<b
-    }
-
-    /// MFCC mean and std over speech frames plus median F0 and its interquartile spread (NaN if unvoiced).
-    func embedding(start: Double, end: Double) -> [Float]? {
-        let r = frames(start: start, end: end)
-        guard !r.isEmpty, let peak = db[r].max() else { return nil }
-        let gate = max(peak - 30, speechFloor)
-        let speech = r.filter { db[$0] > gate }
-        guard speech.count >= 20 else { return nil }
-        let m = Self.mfccCount
-        var mean = [Float](repeating: 0, count: m)
-        var sq = [Float](repeating: 0, count: m)
-        mfcc.withUnsafeBufferPointer { c in
-            for f in speech {
-                let row = UnsafeBufferPointer(rebasing: c[(f * m)..<(f * m + m)])
-                vDSP.add(mean, row, result: &mean)
-                vDSP.add(sq, vDSP.square(row), result: &sq)
-            }
-        }
-        let n = Float(speech.count)
-        mean = vDSP.divide(mean, n)
-        let std = (0..<m).map { max(0, sq[$0] / n - mean[$0] * mean[$0]).squareRoot() }
-        let pitches = speech.compactMap { f0[$0].isNaN ? nil : f0[$0] }.sorted()
-        var pitch: [Float] = [.nan, .nan]
-        if pitches.count >= 5 {
-            pitch = [Diarizer.percentile(pitches, 0.5), Diarizer.percentile(pitches, 0.75) - Diarizer.percentile(pitches, 0.25)]
-        }
-        return mean + std + pitch
-    }
-
-    /// MFCC mean over a word's speech frames plus its median F0 (NaN if unvoiced).
-    func wordVector(start: Double, end: Double) -> [Float]? {
-        let speech = frames(start: start, end: end).filter { db[$0] > speechFloor }
-        guard speech.count >= 5 else { return nil }
-        let m = Self.mfccCount
-        var mean = [Float](repeating: 0, count: m)
-        for f in speech { for k in 0..<m { mean[k] += mfcc[f * m + k] } }
-        let pitches = speech.compactMap { f0[$0].isNaN ? nil : f0[$0] }
-        return mean.map { $0 / Float(speech.count) } + [Diarizer.median(pitches) ?? .nan]
     }
 
     private mutating func computeMFCC(_ samples: [Float]) {
