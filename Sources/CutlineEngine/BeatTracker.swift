@@ -242,9 +242,9 @@ public enum BeatTracker {
         }
         path.reverse()
 
-        // Trim weak leading and trailing beats.
-        let rmsAtBeats = sqrt(path.reduce(Float(0)) { $0 + local[$1] * local[$1] } / Float(path.count))
-        let weak = 0.5 * rmsAtBeats
+        // Trim weak leading and trailing beats, judged against the median so one loud transient can't make every other beat "weak".
+        let sortedAtBeats = path.map { local[$0] }.sorted()
+        let weak = 0.5 * sortedAtBeats[sortedAtBeats.count / 2]
         guard let first = path.firstIndex(where: { local[$0] > weak }),
               let last = path.lastIndex(where: { local[$0] > weak }) else { return ([], []) }
         path = Array(path[first...last])

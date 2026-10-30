@@ -97,8 +97,14 @@ extension Toolbox {
                     guard let m = current.mediaAsset(id) else { throw EditError("No media \(id)") }
                     if let shots = b.analysis(ShotAnalysis.self, id, "shots"), !m.isImage {
                         pool += shots.shots.sorted { ($0.aesthetics ?? 0) > ($1.aesthetics ?? 0) }.map { (id, TimeRange($0.start, $0.end)) }
+                    } else if let cuts = index.shots[id], cuts.count > 1 {
+                        pool += cuts.map { (id, $0) }
+                    } else if m.isImage {
+                        pool.append((id, TimeRange(0, 3600)))
                     } else {
-                        pool.append((id, TimeRange(0, m.isImage ? 3600 : m.duration)))
+                        // Unanalyzed footage: windows spread across the file rather than its opening seconds.
+                        let n = max(1, min(8, Int(m.duration / 4)))
+                        pool += (0..<n).map { k in (id, TimeRange(m.duration * Double(k) / Double(n), m.duration * Double(k + 1) / Double(n))) }
                     }
                 }
             }

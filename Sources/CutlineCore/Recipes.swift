@@ -172,7 +172,11 @@ extension Project {
     /// Lays footage on a track so each cut lands on a beat. `pool` is source spans to draw from, in order.
     public mutating func beatCut(pool: [(mediaId: String, range: TimeRange)], beats: [Seconds], every: Int, trackId: String) throws -> String {
         guard !pool.isEmpty else { throw EditError("No footage to cut") }
-        let marks = stride(from: 0, to: beats.count, by: max(1, every)).map { beats[$0] }
+        var marks: [Seconds] = []
+        for i in stride(from: 0, to: beats.count, by: max(1, every)) {
+            let t = canvas.snap(beats[i])
+            if marks.last.map({ t > $0 + 1e-6 }) ?? true { marks.append(t) }
+        }
         guard marks.count >= 2 else { throw EditError("Need at least two beats in the range") }
         var placed: [String] = []
         var next = 0
@@ -184,10 +188,13 @@ extension Project {
                 let item = pool[next % pool.count]
                 next += 1
                 tries += 1
-                let from = max(item.range.start, used[item.mediaId + "\(item.range.start)"] ?? item.range.start)
-                guard item.range.end - from >= need - 1e-6 || item.range.duration >= need else { continue }
-                let start = item.range.end - from >= need ? from : item.range.start
-                used[item.mediaId + "\(item.range.start)"] = start + need
+                let key = item.mediaId + "\(item.range.start)"
+                guard item.range.duration >= need - 1e-6 else { continue }
+                // First use takes the middle of the span, away from its edges; later uses continue after it.
+                let fresh = item.range.start + (item.range.duration - need) / 2
+                let from = used[key] ?? fresh
+                let start = item.range.end - from >= need - 1e-6 ? from : item.range.start
+                used[key] = start + need
                 var c = Clip(id: Project.newClipId(), kind: .media, mediaId: item.mediaId, start: a, duration: need, sourceIn: start)
                 c.transform.fit = .fill
                 c.volume = 0

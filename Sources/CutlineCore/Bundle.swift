@@ -204,8 +204,8 @@ public final class ProjectBundle: @unchecked Sendable {
             if let shots = analysis(ShotAnalysis.self, m.id, "shots") {
                 index.shots[m.id] = shots.shots.map { TimeRange($0.start, $0.end) }
             } else if let v = visualAnalysis(m.id), !m.isImage {
-                let bounds = [0] + v.sceneCuts + [m.duration]
-                index.shots[m.id] = zip(bounds, bounds.dropFirst()).filter { $0.1 > $0.0 }.map { TimeRange($0.0, $0.1) }
+                // Same spans shot analysis will describe, so shot anchors keep their numbers once it runs.
+                index.shots[m.id] = Shot.spans(cuts: v.sceneCuts, duration: m.duration)
             }
         }
         return index

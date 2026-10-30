@@ -89,3 +89,16 @@ private func scene() -> (Project, [String: Transcript]) {
     #expect(r == 7..<9 && t.words.count == 9)
     #expect(throws: EditError.self) { try t.replaceWords(8...12, with: "x") }
 }
+
+@Test func beatCutLeavesNoGapsOnOffGridBeats() throws {
+    var p = Project(name: "Beats")
+    p.canvas.fps = 25
+    p.media = [MediaAsset(id: "m1", path: "/tmp/a.mov", name: "a", duration: 30, width: 1920, height: 1080, fps: 25, hasVideo: true, hasAudio: false)]
+    let beats = (0..<12).map { 0.013 + Double($0) * 0.4873 }
+    _ = try p.beatCut(pool: [("m1", TimeRange(0, 10)), ("m1", TimeRange(10, 20))], beats: beats, every: 1, trackId: "V1")
+    let clips = p.tracks[0].clips
+    #expect(clips.count == 11)
+    for (a, b) in zip(clips, clips.dropFirst()) { #expect(abs(a.end - b.start) < 1e-6) }
+    // Spans are entered at their middle, not their first frames.
+    #expect(clips[0].sourceIn > 4)
+}
