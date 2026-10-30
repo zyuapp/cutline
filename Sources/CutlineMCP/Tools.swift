@@ -232,9 +232,13 @@ enum Describe {
             } else if let v = bundle.visualAnalysis(m.id), !v.sceneCuts.isEmpty {
                 a.append("\(Shot.spans(cuts: v.sceneCuts, duration: m.duration).count) shots from \(v.sceneCuts.count) scene cuts")
             }
-            if let log = m.log { a.append("log \(log.rawValue)") }
+            if let raw = m.raw {
+                a.append("camera RAW \(raw.summary)" + (m.isTranscoding ? ", developing from \(m.conformPath)" : m.isImage ? "" : ", developed copy of \(m.conformPath)"))
+            } else {
+                if let log = m.log { a.append("log \(log.rawValue)") }
+                if let t = m.transcoded { a.append(m.isTranscoding ? "transcoding from \(m.conformPath)" : "ProRes mezzanine of \(m.conformPath) (\(t))") }
+            }
             if m.isInterlaced { a.append(Toolbox.interlaceNote(m)) }
-            if let t = m.transcoded { a.append(m.isTranscoding ? "transcoding from \(m.conformPath)" : "ProRes mezzanine of \(m.conformPath) (\(t))") }
             if let tc = Toolbox.sourceTimecodeNote(m) { a.append(tc) }
             if let ch = m.channelSummary { a.append(ch) }
             if let tags = m.tags, !tags.isEmpty { a.append("tags " + tags.map { tag in tag.rating.map { "\(tag.label) (\($0))" } ?? tag.label }.joined(separator: ", ")) }

@@ -25,12 +25,23 @@ public enum MediaIngest {
         case ready(MediaAsset)
         /// Needs a long transcode; the placeholder points at the original until `finish` links the mezzanine.
         case deferred(MediaAsset, ProbeInfo)
+        /// Camera RAW video whose developed copy is still to be made by `CameraRawIngest.finish`; the placeholder
+        /// points at the original.
+        case developing(MediaAsset)
     }
 
     /// Probes a file and checks it decodes. Undecodable files are transcoded with ffmpeg when `tools`
     /// is given: synchronously up to `syncLimit` seconds of media, otherwise `.deferred` for a background `finish`.
-    public static func prepare(_ url: URL, id: String, cache: URL, tools: FFmpeg.Tools?, syncLimit: Seconds = 120, progress: (@Sendable (Double) -> Void)? = nil) async throws -> Prepared {
+    /// Camera RAW (a file, or a folder of DNG frames played at `sequenceFPS` when they record no rate) goes
+    /// through `CameraRawIngest`.
+    public static func prepare(_ url: URL, id: String, cache: URL, tools: FFmpeg.Tools?, syncLimit: Seconds = 120, sequenceFPS: Double? = nil, progress: (@Sendable (Double) -> Void)? = nil) async throws -> Prepared {
         guard FileManager.default.fileExists(atPath: url.path) else { throw Failure(file: url.path, reason: "file not found") }
+        if let source = CameraRawIngest.classify(url) {
+            return try await CameraRawIngest.prepare(source, id: id, cache: cache, fps: sequenceFPS, progress: progress)
+        }
+        if await CameraRawIngest.isProResRaw(url) {
+            return try await CameraRawIngest.prepare(.proresRaw(url), id: id, cache: cache, fps: nil, progress: progress)
+        }
         if MediaProbe.isImage(url) { return .ready(try await MediaProbe.probe(url, id: id)) }
         var probed: MediaAsset?
         var reason: String?

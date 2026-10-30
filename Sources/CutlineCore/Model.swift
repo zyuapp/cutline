@@ -198,6 +198,9 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     /// The source channel(s) transcription, speakers, beats, sounds and sync listen to; nil picks the first track,
     /// or for multichannel files every channel with sound.
     public var analysisChannel: ChannelRouting?
+    /// Camera RAW source: format, as-shot metadata and the media's own development settings. For video `path` is then
+    /// the developed picture (encoded in `CameraRaw.workingLog`); for stills it is the raw file.
+    public var raw: RawMedia?
 
     public init(id: String, path: String, name: String, duration: Seconds, width: Int, height: Int, fps: Double, hasVideo: Bool, hasAudio: Bool, isImage: Bool = false) {
         self.id = id
@@ -391,6 +394,8 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public var channels: ChannelRouting?
     /// Audio role (subrole) overriding the track's for stems, e.g. room tone on the dialogue track as "ambience".
     public var role: String?
+    /// Camera RAW development on top of the media's own settings (raw.* parameters).
+    public var raw: RawSettings?
 
     public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), blend: BlendMode = .normal, effects: [Effect] = [], anim: [String: Curve] = [:], text: TextSpec? = nil, color: RGBA? = nil) {
         self.id = id
@@ -418,7 +423,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, mediaId, start, duration, sourceIn, speed, volume, audioFadeIn, audioFadeOut, audioLead, audioLag
-        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure, surround, channels, role
+        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure, surround, channels, role, raw
     }
 
     public init(from decoder: Decoder) throws {
@@ -443,6 +448,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         surround = try c.decodeIfPresent(SurroundPan.self, forKey: .surround)
         channels = try c.decodeIfPresent(ChannelRouting.self, forKey: .channels)
         role = try c.decodeIfPresent(String.self, forKey: .role)
+        raw = try c.decodeIfPresent(RawSettings.self, forKey: .raw)
         audioLag = try c.decodeIfPresent(Double.self, forKey: .audioLag) ?? 0
         fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
         fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
@@ -497,6 +503,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(surround, forKey: .surround)
         try c.encodeIfPresent(channels, forKey: .channels)
         try c.encodeIfPresent(role, forKey: .role)
+        try c.encodeIfPresent(raw, forKey: .raw)
     }
 
     public var end: Seconds { start + duration }

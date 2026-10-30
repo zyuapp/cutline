@@ -150,14 +150,19 @@ public final class RenderScene: @unchecked Sendable {
         case .media:
             guard let mid = clip.mediaId else { return nil }
             var img: CIImage?
-            if let still = images[mid] {
+            if let still = images[clip.id] ?? images[mid] {
                 img = still
+                if let media = project.mediaAsset(mid), let raw = media.raw, let s = media.rawSettings(for: clip) {
+                    img = CameraRawRender.applyInput(still, media: raw, settings: s, target: project.canvas.colorSpace, tone: clip.inputTone ?? .aces, exposure: Float(clip.inputExposure ?? 0))
+                }
             } else if let pb = source(clip.id) {
                 let orientation = orientations[clip.id] ?? orientations[mid] ?? .up
                 let media = project.mediaAsset(mid)
                 // Proxies are scaled, so their fields are already mixed.
                 let fields = media.flatMap { $0.deinterlaces && CVPixelBufferGetHeight(pb) == $0.height ? $0.fieldOrder : nil }
-                if let media, let log = media.log {
+                if let media, let raw = media.raw, let s = media.rawSettings(for: clip) {
+                    img = CameraRawRender.applyInput(ColorManagement.rawImage(pb), media: raw, settings: s, target: project.canvas.colorSpace, tone: clip.inputTone ?? .aces, exposure: Float(clip.inputExposure ?? 0)).oriented(orientation)
+                } else if let media, let log = media.log {
                     img = ColorManagement.applyInput(Deinterlace.apply(ColorManagement.rawImage(pb), order: fields), log: log, target: project.canvas.colorSpace, tone: clip.inputTone ?? .aces, exposure: Float(clip.inputExposure ?? 0), recordedIn: media.signalRange ?? .video).oriented(orientation)
                 } else {
                     img = ColorManagement.sourceImage(pb, canvas: project.canvas.colorSpace) { Deinterlace.apply($0, order: fields) }.oriented(orientation)

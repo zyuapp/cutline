@@ -23,7 +23,7 @@ extension Session {
             let id = jobs.enqueue(r.media.id, named: [Session.pictureJob], bundle: b.url, pictureWork([r]))
             lines.append("\(r.summary) on \(r.clipId) renders in the background (\(id), \(fmt1(r.range.duration))s of source); the preview plays the unprocessed picture until it is done, and timeline_frames and export wait for it.")
         }
-        return lines
+        return lines + queueRawDevelops(p)
     }
 
     func pictureWork(_ requests: [ProcessedPicture.Request]) -> JobBoard.Work {

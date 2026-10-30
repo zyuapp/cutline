@@ -103,6 +103,7 @@ final class Session {
         if let built, built.project == p, built.transcripts == transcripts, built.timeline.missingStems.isEmpty, built.timeline.missingPictures.isEmpty { return built.timeline }
         try await analyzeMotion(p)
         try await ProcessedPicture.renderMissing(p)
+        try await CameraRawDevelop.renderMissing(p)
         let stems = try stems()
         try await stems.renderMissing(p, transcripts: transcripts, library: library)
         let t = try await TimelineBuilder.build(p, transcripts: transcripts, library: library, stems: stems)

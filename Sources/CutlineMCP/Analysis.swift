@@ -148,6 +148,10 @@ extension Session {
                 out.append("\(job.id) \(job.mediaId) transcode")
                 continue
             }
+            if job.features == [Session.developJob] || job.features == [Session.rawJob] {
+                if resumeRaw(job, p) { out.append("\(job.id) \(job.mediaId) \(job.features[0])") } else { jobs.update(job.id) { $0.status = "done"; $0.progress = 1 } }
+                continue
+            }
             if job.features == [Session.pictureJob] {
                 if resumePictures(job, p) { out.append("\(job.id) \(job.mediaId) picture") } else { jobs.update(job.id) { $0.status = "done"; $0.progress = 1 } }
                 continue

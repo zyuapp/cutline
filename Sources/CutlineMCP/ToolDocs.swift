@@ -44,8 +44,9 @@ extension Toolbox {
             "time": "Timeline time or anchor", "end": "Play until here", "play": "", "open": "Open the preview app",
         ]),
         "preview_state": ToolBrief(text: "The preview playhead and play state (\"here\", \"this part\")."),
-        "media_import": ToolBrief(text: "Import (or relink) files and folders; analyzes transcripts, pauses and scene cuts. MXF/DNx/MPEG-2 get a ProRes mezzanine; interlaced media is deinterlaced. Returns the media ids.", args: [
+        "media_import": ToolBrief(text: "Import (or relink) files and folders; analyzes transcripts, pauses and scene cuts. MXF/DNx/MPEG-2 get a ProRes mezzanine; camera RAW is developed; interlaced media is deinterlaced. Returns the media ids.", args: [
             "paths": "Files or folders", "relink": "Find missing media inside paths instead", "analyze": "Default true", "language": "Default en-US",
+            "fps": "",
         ]),
         "media_analyze": ToolBrief(text: "Run analysis: transcript, scenes, beats, speakers, shots (faces, saliency, shot size), sounds. Read it with analysis_read.", args: [
             "media_id": "Id, ids or \"all\"",
@@ -153,7 +154,7 @@ extension Toolbox {
             "mix": "0…1", "enabled": "", "remove": "Remove this id (or every effect of type)",
         ]),
         "catalog": ToolBrief(text: "Reference: no arguments lists effects, transitions, blends, eases, paths and anchors. type: one effect; search; paths; recipe: a recipe's arguments; tool: a tool's full manual; plugins: Audio Units.", args: [
-            "type": "Effect or transition id", "search": "", "paths": "", "recipe": "Name or \"all\"", "plugins": "", "tool": "Tool name",
+            "type": "Effect, transition or raw", "search": "", "paths": "", "recipe": "Name or \"all\"", "plugins": "", "tool": "Tool name",
         ]),
         "transition_set": ToolBrief(text: "Add, change or remove transitions on cuts (borrowing handles), or in/out over what lies beneath. Types in catalog; part sound/both crossfades audio.", args: [
             "cut": "\"clip_a|clip_b\" or a list", "track": "Every cut on this track (skips misfits)", "from": "Alone: transition out", "to": "Alone: transition in",
@@ -219,10 +220,10 @@ extension Toolbox {
             "media_id": "", "from": "\"wN\"", "to": "Default from", "text": "Replacement", "insert": "{start, end, text}",
             "insert.end": "", "insert.start": "", "insert.text": "", "speaker": "", "rename": "{\"S1\": \"Anna\"}",
         ]),
-        "media_organize": ToolBrief(text: "Bins, metadata columns, names, camera log encoding and scan of media.", args: [
+        "media_organize": ToolBrief(text: "Bins, metadata columns, names, camera log or RAW and scan of media.", args: [
             "media_ids": "", "bin": "\"A/B\"; \"\" removes", "metadata": "{column: value}; \"\" removes", "name": "One media only",
             "log": "Camera log encoding, or none", "signal_range": "Log code values: video (default) or full",
-            "deinterlace": "", "field_order": "",
+            "deinterlace": "", "field_order": "", "raw": "RAW defaults (catalog type=raw)",
         ]),
         "media_list": ToolBrief(text: "List media with bins, metadata, tags, format, channels and use; filter and sort.", args: [
             "bin": "", "search": "Names, metadata, tags, transcripts", "keyword": "", "rating": "", "kind": "", "unused": "", "sort": "Any column",

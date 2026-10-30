@@ -298,6 +298,7 @@ extension Project {
                 }
             }
             if track.kind == .audio && !media.hasAudio { throw EditError("\(media.id) has no audio for audio track \(track.id)") }
+            if clip.raw != nil && media.raw == nil { throw EditError("raw.* parameters develop camera RAW media; \(media.id) isn't RAW (use input.exposure or color effects)") }
             if let why = clip.channels?.problem(count: media.sourceChannelCount) { throw EditError("\(clip.id) audio.channels \(clip.channels!.rawValue): \(why)") }
             if (clip.audioLead != 0 || clip.audioLag != 0) && !media.isImage {
                 let heard = clip.audioSourceRange
