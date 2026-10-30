@@ -44,6 +44,8 @@ final class Toolbox {
     private(set) var tools: [String: Tool] = [:]
     private(set) var order: [String] = []
     private(set) var edits: [String: EditTool] = [:]
+    /// Argument names the last recipe call read.
+    var lastRecipeReads: ArgReads?
 
     init() {
         registerProjectTools()
@@ -163,8 +165,11 @@ extension Toolbox {
                     .map { "\($0) (for \(name))" }
             }
         }
-        guard !problems.isEmpty else { return }
-        throw EditError("\(tool) doesn't take " + problems.joined(separator: "; ") + ".")
+        if !problems.isEmpty { throw EditError("\(tool) doesn't take " + problems.joined(separator: "; ") + ".") }
+        if tool == "recipe", let name = args?["name"]?.string {
+            let issues = Toolbox.recipeArgumentProblems(name, args?["args"])
+            if !issues.isEmpty { throw EditError("recipe \(name): " + issues.joined(separator: "; ") + (Toolbox.recipe(name) == nil ? "." : ". catalog recipe=\(name) lists its arguments.")) }
+        }
     }
 
     /// "name (did you mean x?)" for every key of `value` its schema doesn't declare.

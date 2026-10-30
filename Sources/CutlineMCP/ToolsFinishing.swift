@@ -82,7 +82,7 @@ extension Toolbox {
             trackId = id
             note = "Using \(id) (\(samples.count) samples)."
         } else {
-            let o = a.raw["box"]?.object ?? [:]
+            let o = a.value("box")?.object ?? [:]
             guard let x = o["x"]?.double, let y = o["y"]?.double, let w = o["width"]?.double, let h = o["height"]?.double, w > 0, h > 0 else {
                 throw EditError("Pass track: \"track:<id>\" from media_track, or box: {x, y, width, height} (source frame fractions) with at")
             }

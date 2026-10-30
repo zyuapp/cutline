@@ -4,36 +4,6 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let recipeNames = ["duck", "loudness_normalize", "split_edit", "room_tone", "fill_gaps", "speed_ramp", "freeze_frame", "punch_in", "pip", "split_screen", "reframe", "beat_cut", "music_fit", "look", "glitch", "whip_pan", "template", "multicam_switch", "kinetic_text", "follow", "sync_audio", "match_color", "grade_group", "qualify", "remove_object"]
-
-    static let recipeDocs = """
-        duck: {music: clip or track ids (default: audio tracks without speech), under: track ids with speech, amount_db: 12, attack: 0.3, release: 0.8}. \
-        loudness_normalize: {target_lufs: -14, ceiling_db: -1.5 (true-peak ceiling), limit: true, persist: true, off: false}; sets master gain and a limiter for preview and, with persist, keeps the target on the master so every export measures the mix and conforms it (gain plus true-peak limiter) even after later mix changes; off:true clears the target. \
-        split_edit: {edit: "clip_a|clip_b", offset: seconds (+ J cut, − L cut)}. \
-        room_tone: {start, end (timeline), media, source_start, source_end (a quiet stretch of that media's sound, in source time; 2 s or more sounds best), track (default a new audio track "Room tone"), crossfade: 0.25}; fills the range with that room tone, looped from varied start points with short crossfades so the repeat isn't heard. \
-        fill_gaps: {track: the dialogue track, media, source_start, source_end (a quiet stretch, as room_tone), into (default a new audio track "Room tone"), min_gap: 0.04, crossfade: 0.25 (shortened to half of a shorter gap)}; fills every gap between that track's sounds with room tone so the background never drops out. \
-        speed_ramp: {clip, at: time (default middle), speed: 0.3, ramp: 0.3, hold: 0.8}. \
-        freeze_frame: {at: time, duration: 1.5, track (default top video at that time), zoom: 1 (e.g. 1.08 pushes in)}. \
-        punch_in: {clips (default: every other jump cut on track), track: "V1", amount: 1.15, settle: false (start slightly tighter and ease out)}; centers on faces when shots are analyzed. \
-        pip: {clip, corner: top_left|top_right|bottom_left|bottom_right|center, size: 0.3, margin: 0.04, roundness: 0.12, border: color or none}. \
-        split_screen: {clips: [ids], layout: lr|tb|grid, gap: 0.01}. \
-        reframe: {aspect: "9:16"|"1:1"|"4:5"|"16:9", height: 1920}; follows faces or the salient subject when shots are analyzed. \
-        beat_cut: {media: [ids] (uses analyzed shots, best first) or sources: [{media, start, end}], start, end (timeline), every: 1|2|4 beats, track: "new", align: fill (default: the first shot also covers the time before the first beat, so nothing is black) | zero (same) | first_beat (trims the music's head so its first beat lands at start)}. \
-        music_fit: {clip (music clip), length (seconds) or end (timeline time or anchor to end on), fade_out: 1.5}; cuts out or repeats whole bars at downbeats so the song keeps its own ending. \
-        look: {look: teal_orange|warm_film|cool_night|bleach_bypass|vintage_fade|high_contrast_bw|golden_hour|matrix_green|pastel|noir, amount: 0.8, grain: 0.2, vignette: 0.4, start, end}; adds an adjustment layer. \
-        glitch: {at: [times or anchors], duration: 0.3, amount: 0.8}; adds glitch hits on an adjustment track. \
-        whip_pan: {cut: "clip_a|clip_b", direction: left, duration: 0.35}. \
-        template: {template: name (omit to list templates), at: time, values: {field: text}}. \
-        match_color: {clips: [ids] and/or track (default every media clip on V1), reference: clip id whose look the others match, reference_at: timeline time of the exact reference frame (picks the clip there when reference is omitted), strength: 0.8 (0…1), allow_large: false}; shot matching like Resolve's: measures each shot's tones and color (inside its crop, ignoring letterbox bars; robust to a few extreme pixels) and adds a match LUT (effect "match") in front of its other color effects; lightness moves at most ±20 L unless allow_large, colorfulness at most ±25%, black and white stay put; warns when a shot isn't comparable with the reference (big lightness or colorfulness gap, different tones or content). \
-        qualify: {clip, x, y (frame fractions of a color to key, with radius: 0.02) or face: true (n: 0, largest first), at: timeline time (default the clip's middle), effect: existing effect id to key (default a new one), type: "color.wheels" for a new effect, window: true with face (an ellipse window on the face)}; the eyedropper: samples the picture as that effect receives it and sets its hue/saturation/luma qualifier ranges and matte cleanup to cover the sampled colors. \
-        grade_group: {clips: [ids] (or track: "V1" for every media clip on it), id: "group1", effect: {type: "color.wheels", params: {...}}}; adds one shared effect with that id to every clip (adding clips to an existing group copies its current settings). Change the whole group at once with param_set target "group:group1" and fx.group1.<param>; effect_add target "group:group1" works too. \
-        sync_audio: {clips: [video clip ids] (default every clip of that camera media on V1), audio: media id of the separate recorder, track: audio track (default new "Production sound"), keep_camera: false, channel: recorder channel to sync by ("ch3", "mix:1,2"; default its analysis channel or every channel with sound), camera_channel: the same for the camera, play: routing the placed sound plays, e.g. "ch2" (default as recorded)}; lines up dual-system sound by waveform, links it to the picture and mutes the camera mic. \
-        remove_object: {clip, track: "track:<id>" from media_track, or box: {x, y, width, height} in source frame fractions at: timeline time (default the clip's start) to track it now, fixed: true keeps that box still (logos, bugs), padding: 0.02 (of frame height), window: 1.5 (seconds searched each side), feather: 0.004}; paints the object out with the background from other frames where it shows (aligned to the camera's motion, temporal median) and diffusion where no frame shows it, rendered in the background as a processed copy. \
-        follow: {clip: the graphic, title or overlay to move, target: "track:<id>" (media_track) or "face:<media>[:n]", offset_x: 0, offset_y: -0.1 (fractions of the frame; negative is above), smooth: 0.2}; keeps the clip on its subject wherever the media plays. \
-        kinetic_text: {start, end (timeline or word anchors), preset: pop, unit: word, size: 0.09, y: 0.5, color, highlight: color, uppercase: false, max_width: 0.8}; spoken words appear as they are said. \
-        multicam_switch: {angles: [media ids], audio: media with the main sound (default first angle), signal: auto|mics|speakers (auto: whose own mic is loudest when each angle records its person, else speaker analysis), speakers: {"S1": media, ...} (default S1→first angle, S2→second…), wide: media for long turns, reaction: true or seconds (cut to the listener in turns longer than that, default 5), start, end (source seconds of audio), min_shot: 1.0, max_shot: 8 (longer turns get cutaways to the wide or the other angle; 0 for no limit), at: timeline time, track: "V1", channel: source channel(s) of each angle to sync and compare mics by, e.g. "ch3" (default its analysis channel or every channel with sound), audio_channel: the main sound's channel to sync to}; syncs angles by their sound and cuts per speaker turn in the pause before each new speaker, never inside a word; with shot analysis of the angles, each speaker goes to the angle where their face is seen talking. Or {cuts: [{at: timeline time, angle: media}], track: "V1"} to switch angles by hand like a multicam editor: splits there and plays that angle in sync from then on.
-        """
-
     func moreRecipes(_ name: String, _ a: Args, dry: Bool) async throws -> ToolResult {
         let b = try session.requireBundle()
         let current = try session.project()
@@ -121,7 +91,7 @@ extension Toolbox {
             let beats = current.timelineBeats(index).filter { $0 >= lo - 1e-3 && $0 <= hi + 1e-3 }
             guard beats.count >= 2 else { throw EditError("No analyzed music beats between \(fmt2(lo)) and \(fmt2(hi)); put music on the timeline and run media_analyze features:[\"beats\"]") }
             var pool: [(mediaId: String, range: TimeRange)] = []
-            if let sources = a.raw["sources"]?.array {
+            if let sources = a.value("sources")?.array {
                 for s in sources {
                     let sa = Args(s)
                     pool.append((try sa.string("media"), TimeRange(try sa.optSourceTime("start") ?? 0, try sa.optSourceTime("end") ?? current.mediaAsset(try sa.string("media"))?.duration ?? 0)))
@@ -182,7 +152,7 @@ extension Toolbox {
                 return "Added a \(look) adjustment layer \(c.id) on \(t.id) over \(fmt2(lo))–\(fmt2(hi))s (look1\(grain > 0 ? ", grain1" : "")\(vignette > 0 ? ", vignette1" : "")). Tune with param_set fx.look1.amount or remove the track."
             }
         case "glitch":
-            let times = try (a.raw["at"]?.array ?? (a.raw["at"].map { [$0] } ?? [])).map { try Args.parseTime($0, name: "at") }
+            let times = try (a.value("at")?.array ?? (a.value("at").map { [$0] } ?? [])).map { try Args.parseTime($0, name: "at") }
             guard !times.isEmpty else { throw EditError("Pass at: [times]") }
             let d = a.optDouble("duration") ?? 0.3, amount = a.optDouble("amount") ?? 0.8
             return try runEdit("Add \(times.count) glitch hit(s)", dry: dry) { p in
@@ -243,7 +213,7 @@ extension Toolbox {
             }
             guard !ids.isEmpty else { throw EditError("Pass clips (ids) or track") }
             for id in ids where current.clip(id) == nil { throw EditError("No clip \(id)") }
-            let spec = Args(a.raw["effect"])
+            let spec = Args(a.value("effect"))
             let existing = current.tracks.flatMap(\.clips).compactMap { $0.effects.first { $0.id == group } }.first
             guard let type = spec.optString("type") ?? existing?.type ?? (a.has("effect") ? nil : "color.wheels") else { throw EditError("effect needs a type, e.g. {\"type\": \"color.wheels\", \"params\": {\"saturation\": 0.1}}") }
             guard let et = EffectCatalog.type(type), !EffectCatalog.isAudio(type), et.category != "generator" else { throw EditError("\(type) is not a picture effect") }
@@ -374,7 +344,7 @@ extension Toolbox {
 extension Toolbox {
     func multicam(_ a: Args, dry: Bool, bundle b: ProjectBundle, project current: Project) async throws -> ToolResult {
         let trackId = a.optString("track") ?? "V1"
-        if let raw = a.raw["cuts"]?.array {
+        if let raw = a.value("cuts")?.array {
             let cuts = try raw.map { item -> (at: Seconds, angle: String) in
                 guard let o = item.object else { throw EditError("Each cut is {at, angle}") }
                 let sub = Args(.object(o))
@@ -440,7 +410,7 @@ extension Toolbox {
             }
             let byFace = MulticamPlan.anglesBySpeaker(turns: speakers.segments, talking: talking)
             map.merge(byFace) { _, face in face }
-            for (k, v) in a.raw["speakers"]?.object ?? [:] { if let m = v.string { map[k] = m } }
+            for (k, v) in a.value("speakers")?.object ?? [:] { if let m = v.string { map[k] = m } }
             if !byFace.isEmpty { how += (how.isEmpty ? "speaker analysis" : "") + ", angles matched to talking faces" }
             labels = spoken.map { i, _ in speakers.wordSpeakers.indices.contains(i) ? speakers.wordSpeakers[i].flatMap { map[$0] } : nil }
             if how.isEmpty { how = "speaker analysis" }
@@ -452,7 +422,7 @@ extension Toolbox {
         options.wide = a.optString("wide")
         options.angles = angles
         if let m = a.optDouble("max_shot") { options.maxShot = m > 0 ? m : nil }
-        if let r = a.raw["reaction"] {
+        if let r = a.value("reaction") {
             if r.bool == true { options.reactionAfter = 5 } else if let n = r.double { options.reactionAfter = n }
         }
         let shots = MulticamPlan.shots(words: words, range: TimeRange(lo, hi), first: words.first?.angle ?? angles[0], options: options)

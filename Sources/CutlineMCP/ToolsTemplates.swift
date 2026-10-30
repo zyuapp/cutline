@@ -88,7 +88,7 @@ extension Toolbox {
             throw EditError("No template \(name). Templates: \(EditTemplate.all().map(\.name).joined(separator: ", ").ifEmptyText("none"))")
         }
         let at = try a.optTime("at") ?? 0
-        let values = (a.raw["values"]?.object ?? [:]).compactMapValues(\.string)
+        let values = (a.value("values")?.object ?? [:]).compactMapValues(\.string)
         return try runEdit("Insert template \(tpl.name)", dry: dry) { p in
             var idMap: [String: String] = [:]
             var made: [String] = []

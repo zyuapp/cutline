@@ -43,12 +43,12 @@ extension Toolbox {
             return r
         })
 
-        add(Tool(name: "recipe", description: "Common multi-step edits, each one undoable step that reports exactly what it changed (dry_run:true previews). Sound: duck, loudness_normalize, split_edit, room_tone, fill_gaps. Time: speed_ramp, freeze_frame. Framing: punch_in, pip, split_screen, reframe. Rhythm: beat_cut, music_fit. Style: look, glitch, whip_pan, kinetic_text. Color: match_color, grade_group, qualify. Finishing: remove_object. Reuse: template, multicam_switch. catalog recipe=<name> gives each recipe's arguments.", schema: Schema.object([
+        add(Tool(name: "recipe", description: Toolbox.recipeDescription, schema: Schema.object([
             "name": Schema.string("Recipe", values: Toolbox.recipeNames),
             "args": ["type": "object", "description": "The recipe's arguments; catalog recipe=<name> lists them"],
             "dry_run": Schema.bool("Report what would change without applying it"),
         ], required: ["name"])) { [unowned self] args in
-            let a = Args(args.raw["args"])
+            let a = recipeArgs(args)
             let dry = args.bool("dry_run", default: false)
             switch try args.string("name") {
             case "duck": return try runEdit("Duck music under speech", dry: dry) { p in try self.duck(&p, a) }

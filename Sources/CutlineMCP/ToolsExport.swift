@@ -293,6 +293,7 @@ extension Toolbox {
             let name = o["name"]?.string ?? "variant\(i + 1)"
             for (j, op) in (o["ops"]?.array ?? []).enumerated() {
                 guard let tool = op["tool"]?.string, let t = tools[tool], tool != "export" else { throw EditError("variants[\(i)].ops[\(j)]: unknown tool") }
+                try checkArguments(tool, op["args"], schema: t.schema)
                 installResolvers(try? session.project())
                 let r = try await t.run(Args(op["args"] ?? [:]))
                 if r.isError { throw EditError("\(name), op \(j + 1) (\(tool)): \(r.plainText)") }

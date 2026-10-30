@@ -74,16 +74,31 @@ extension JSON: ExpressibleByStringLiteral, ExpressibleByBooleanLiteral, Express
 /// Typed access to tool arguments with errors an agent can act on.
 public struct Args {
     public let raw: [String: JSON]
+    /// Collects the names read through the accessors below (not through `raw`).
+    let reads: ArgReads?
 
     public init(_ json: JSON?) {
         raw = json?.object ?? [:]
+        reads = nil
     }
 
     public init(raw: [String: JSON]) {
         self.raw = raw
+        reads = nil
     }
 
-    public func has(_ k: String) -> Bool { raw[k].map { !$0.isNull } ?? false }
+    init(_ json: JSON?, reads: ArgReads) {
+        raw = json?.object ?? [:]
+        self.reads = reads
+    }
+
+    /// The raw value of one argument.
+    public func value(_ k: String) -> JSON? {
+        reads?.names.insert(k)
+        return raw[k]
+    }
+
+    public func has(_ k: String) -> Bool { value(k).map { !$0.isNull } ?? false }
 
     public func string(_ k: String) throws -> String {
         guard let s = optString(k) else { throw EditError("Missing string argument '\(k)'") }
@@ -91,7 +106,7 @@ public struct Args {
     }
 
     public func optString(_ k: String) -> String? {
-        guard let v = raw[k] else { return nil }
+        guard let v = value(k) else { return nil }
         if let s = v.string { return s }
         if let d = v.double { return d.rounded() == d ? String(Int(d)) : String(d) }
         return nil
@@ -104,7 +119,7 @@ public struct Args {
     }
 
     public func optTime(_ k: String) throws -> Seconds? {
-        guard let v = raw[k], !v.isNull else { return nil }
+        guard let v = value(k), !v.isNull else { return nil }
         return try Args.parseTime(v, name: k)
     }
 
@@ -136,7 +151,7 @@ public struct Args {
 
     /// A position in a media file: seconds, a word anchor like "talk.w12.end", or a source timecode like "talk@01:00:12:10".
     public func optSourceTime(_ k: String) throws -> Seconds? {
-        guard let v = raw[k], !v.isNull else { return nil }
+        guard let v = value(k), !v.isNull else { return nil }
         return try Args.parseSourceTime(v, name: k)
     }
 
@@ -150,10 +165,10 @@ public struct Args {
         return d
     }
 
-    public func optDouble(_ k: String) -> Double? { raw[k]?.double }
+    public func optDouble(_ k: String) -> Double? { value(k)?.double }
     public func optInt(_ k: String) -> Int? { optDouble(k).map { Int($0) } }
     public func optBool(_ k: String) -> Bool? {
-        guard let v = raw[k] else { return nil }
+        guard let v = value(k) else { return nil }
         if let b = v.bool { return b }
         if let s = v.string { return ["true", "yes", "1"].contains(s.lowercased()) }
         return nil
@@ -161,7 +176,7 @@ public struct Args {
     public func bool(_ k: String, default d: Bool) -> Bool { optBool(k) ?? d }
 
     public func strings(_ k: String) -> [String]? {
-        guard let v = raw[k] else { return nil }
+        guard let v = value(k) else { return nil }
         if let a = v.array { return a.compactMap { $0.string } }
         if let s = v.string { return [s] }
         return nil
@@ -175,7 +190,7 @@ public struct Args {
     }
 
     public func clearsColor(_ k: String) -> Bool {
-        guard let s = raw[k]?.string?.lowercased() else { return raw[k]?.isNull ?? false }
+        guard let s = value(k)?.string?.lowercased() else { return raw[k]?.isNull ?? false }
         return s == "none" || s.isEmpty
     }
 
@@ -191,6 +206,11 @@ public struct Args {
         "blue": RGBA(hex: "#0A84FF")!, "orange": RGBA(hex: "#FF9F0A")!, "pink": RGBA(hex: "#FF375F")!,
         "purple": RGBA(hex: "#BF5AF2")!, "gray": RGBA(hex: "#8E8E93")!, "transparent": RGBA(r: 0, g: 0, b: 0, a: 0),
     ]
+}
+
+/// Argument names a tool read, to check them against what it declares.
+final class ArgReads {
+    var names = Set<String>()
 }
 
 /// Builds JSON Schema fragments for tool definitions.
