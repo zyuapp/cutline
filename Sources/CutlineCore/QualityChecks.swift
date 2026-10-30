@@ -66,13 +66,13 @@ extension Project {
 }
 
 extension Project {
-    /// Each track's audio role: its own, else dialogue when it carries transcribed speech, music for
-    /// audio tracks without speech, and effects for the rest.
+    /// Each track's audio role: its own, else dialogue when it carries transcribed speech, else what its name
+    /// says ("SFX", "Score", "VO"), music for other audio tracks and effects for the rest.
     public func roles(transcripts: [String: Transcript]) -> [String: String] {
         let speech = Set(timelineWords(transcripts: transcripts).compactMap { w in locateClip(w.clipId).map { tracks[$0.track].id } })
         var out: [String: String] = [:]
         for t in tracks where t.clips.contains(where: { c in c.kind == .sequence || (c.kind == .media && (c.mediaId.flatMap { mediaAsset($0) }?.hasAudio ?? false)) }) {
-            out[t.id] = t.role ?? (speech.contains(t.id) ? "dialogue" : t.kind == .audio ? "music" : "effects")
+            out[t.id] = t.role ?? (speech.contains(t.id) ? "dialogue" : Project.roleFromName(t.name) ?? (t.kind == .audio ? "music" : "effects"))
         }
         return out
     }

@@ -78,6 +78,10 @@ public enum TimelineBuilder {
             } else {
                 missingStems.append("layout")
             }
+        } else if masterStage, dryTrack == nil, project.usesBuses {
+            // Until the bus mix is rendered, tracks play straight to the master.
+            masterStem = stems?.cachedBusMix(for: project)
+            if masterStem == nil { missingStems.append("buses") }
         } else if masterStage, dryTrack == nil, AudioStems.hasMasterChain(project) {
             masterStem = stems?.cachedMaster(for: project)
             if masterStem == nil { missingStems.append("master") }

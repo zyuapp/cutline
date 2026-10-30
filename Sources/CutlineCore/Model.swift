@@ -26,6 +26,8 @@ public struct Project: Codable, Equatable, Sendable {
     /// Name of the timeline in `tracks`; the project's other timelines wait in `timelines`.
     public var timelineName: String?
     public var timelines: [StoredTimeline]
+    /// Submix buses tracks route to with their `output` and `sends`.
+    public var buses: [AudioBus] = []
 
     public init(name: String, canvas: Canvas = Canvas()) {
         formatVersion = Project.currentFormat
@@ -45,7 +47,7 @@ public struct Project: Codable, Equatable, Sendable {
         timelines = []
     }
 
-    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions, sequences, syncGroups, timelineName, timelines }
+    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions, sequences, syncGroups, timelineName, timelines, buses }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -62,6 +64,7 @@ public struct Project: Codable, Equatable, Sendable {
         syncGroups = try c.decodeIfPresent([[String: Seconds]].self, forKey: .syncGroups) ?? []
         timelineName = try c.decodeIfPresent(String.self, forKey: .timelineName)
         timelines = try c.decodeIfPresent([StoredTimeline].self, forKey: .timelines) ?? []
+        buses = try c.decodeIfPresent([AudioBus].self, forKey: .buses) ?? []
     }
 
     public var duration: Seconds {
@@ -268,6 +271,10 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var role: String?
     /// Fader automation: track volume over timeline time, replacing `volume` where set.
     public var volumeCurve: Curve?
+    /// Bus the track's sound feeds after its fader; nil is the master.
+    public var output: String?
+    /// Copies of the track's sound into other buses.
+    public var sends: [AudioSend] = []
 
     public init(id: String, kind: TrackKind, name: String, muted: Bool = false, hidden: Bool = false, volume: Double = 1, effects: [Effect] = [], clips: [Clip] = []) {
         self.id = id
@@ -280,7 +287,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.clips = clips
     }
 
-    enum CodingKeys: String, CodingKey { case id, kind, name, muted, hidden, volume, effects, clips, role, volumeCurve }
+    enum CodingKeys: String, CodingKey { case id, kind, name, muted, hidden, volume, effects, clips, role, volumeCurve, output, sends }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -294,6 +301,24 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         clips = try c.decodeIfPresent([Clip].self, forKey: .clips) ?? []
         role = try c.decodeIfPresent(String.self, forKey: .role)
         volumeCurve = try c.decodeIfPresent(Curve.self, forKey: .volumeCurve)
+        output = try c.decodeIfPresent(String.self, forKey: .output)
+        sends = try c.decodeIfPresent([AudioSend].self, forKey: .sends) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(name, forKey: .name)
+        try c.encode(muted, forKey: .muted)
+        try c.encode(hidden, forKey: .hidden)
+        try c.encode(volume, forKey: .volume)
+        try c.encode(effects, forKey: .effects)
+        try c.encode(clips, forKey: .clips)
+        try c.encodeIfPresent(role, forKey: .role)
+        try c.encodeIfPresent(volumeCurve, forKey: .volumeCurve)
+        try c.encodeIfPresent(output, forKey: .output)
+        if !sends.isEmpty { try c.encode(sends, forKey: .sends) }
     }
 
     public var end: Seconds { clips.last?.end ?? 0 }
@@ -364,6 +389,8 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public var surround: SurroundPan?
     /// Which source channels play; nil is stereo as recorded.
     public var channels: ChannelRouting?
+    /// Audio role (subrole) overriding the track's for stems, e.g. room tone on the dialogue track as "ambience".
+    public var role: String?
 
     public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), blend: BlendMode = .normal, effects: [Effect] = [], anim: [String: Curve] = [:], text: TextSpec? = nil, color: RGBA? = nil) {
         self.id = id
@@ -391,7 +418,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, mediaId, start, duration, sourceIn, speed, volume, audioFadeIn, audioFadeOut, audioLead, audioLag
-        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure, surround, channels
+        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure, surround, channels, role
     }
 
     public init(from decoder: Decoder) throws {
@@ -415,6 +442,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         inputExposure = try c.decodeIfPresent(Double.self, forKey: .inputExposure)
         surround = try c.decodeIfPresent(SurroundPan.self, forKey: .surround)
         channels = try c.decodeIfPresent(ChannelRouting.self, forKey: .channels)
+        role = try c.decodeIfPresent(String.self, forKey: .role)
         audioLag = try c.decodeIfPresent(Double.self, forKey: .audioLag) ?? 0
         fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
         fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
@@ -468,6 +496,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(inputExposure, forKey: .inputExposure)
         try c.encodeIfPresent(surround, forKey: .surround)
         try c.encodeIfPresent(channels, forKey: .channels)
+        try c.encodeIfPresent(role, forKey: .role)
     }
 
     public var end: Seconds { start + duration }

@@ -108,10 +108,13 @@ extension Toolbox {
                 }
             case "remove_object":
                 return try await removeObject(a, dry: dry)
+            case "dme_buses":
+                return try dmeBuses(a, dry: dry)
             default:
                 return try await moreRecipes(try args.string("name"), a, dry: dry)
             }
         })
+        registerBusTools()
     }
 
     func measureSound(_ p: Project, range: TimeRange?, tracks: Bool) async throws -> [String] {

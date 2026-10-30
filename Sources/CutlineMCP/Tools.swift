@@ -258,6 +258,7 @@ enum Describe {
             let drift = mix.flatMap { p.master.drift(integrated: $0.integrated, truePeak: $0.truePeakDb) } ?? "not measured since the last mix change (timeline_measure what:[\"sound\"] shows the drift)"
             lines.append("Loudness target: \(target), conformed at export; \(drift)")
         }
+        lines += routing(p)
         lines.append("Captions: " + (cs.enabled ? "on, \(cs.style.animation.rawValue), size \(fmt2(cs.style.size)), y \(fmt2(cs.style.y)), \(cs.style.maxWordsPerLine) words/line" : "off"))
         if !p.transitions.isEmpty { lines.append("Transitions: " + p.transitions.map { "\($0.id) \($0.type) \(fmt2($0.duration))s \($0.from ?? "∅")→\($0.to ?? "∅")" }.joined(separator: ", ")) }
         if !p.markers.isEmpty { lines.append("Markers: " + p.markers.map { "\(fmt2($0.time)) \($0.label)" + ($0.kind.map { " [\($0)]" } ?? "") }.joined(separator: ", ")) }
@@ -388,7 +389,7 @@ extension Toolbox {
         var ids = Set<String>()
         if let t = args.raw["type"]?.string, ProAudioCatalog.isPlugin(t) { ids.insert(t) }
         if let p = try? session.project() {
-            for e in p.tracks.flatMap({ $0.effects + $0.clips.flatMap(\.effects) }) + p.master.effects where ProAudioCatalog.isPlugin(e.type) { ids.insert(e.type) }
+            for e in p.tracks.flatMap({ $0.effects + $0.clips.flatMap(\.effects) }) + p.master.effects + p.buses.flatMap(\.effects) where ProAudioCatalog.isPlugin(e.type) { ids.insert(e.type) }
         }
         for id in ids where PluginRegistry.type(id) == nil {
             try await Toolbox.registerPlugin(id)
