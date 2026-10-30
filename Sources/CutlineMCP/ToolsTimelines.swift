@@ -23,11 +23,12 @@ extension Toolbox {
             } else {
                 (imported, notes) = try await importTimeline(file, name: name, edlFps: args.optDouble("edl_fps") ?? current.canvas.fps)
             }
-            var counts: (matched: Int, added: Int, warnings: [String]) = (0, 0, [])
-            let p = try session.edit("Import timeline \(name)") { p in counts = try p.adoptTimeline(imported, name: name) }
+            var counts: (matched: Int, added: Int, warnings: [String], name: String) = (0, 0, [], name)
+            let p = try session.edit("Import timeline \(current.freeTimelineName(name))") { p in counts = try p.adoptTimeline(imported, name: name) }
             try? session.sendPreview(["action": "rebuild"])
             if !counts.warnings.isEmpty { notes.append("Conform notes: " + counts.warnings.prefix(12).joined(separator: "; ") + (counts.warnings.count > 12 ? "; …\(counts.warnings.count - 12) more" : "")) }
-            return .text("Imported \(file.lastPathComponent) as timeline \(name): \(p.tracks.flatMap(\.clips).count) clips, \(fmt2(p.duration))s; \(counts.matched) media matched to the project's, \(counts.added) added.\n" + notes.joined(separator: "\n") + "\n" + footer(p))
+            let renamed = counts.name == name.trimmingCharacters(in: .whitespaces) ? "" : " (\(name) was taken)"
+            return .text("Imported \(file.lastPathComponent) as timeline \(counts.name)\(renamed): \(p.tracks.flatMap(\.clips).count) clips, \(fmt2(p.duration))s; \(counts.matched) media matched to the project's, \(counts.added) added.\n" + notes.joined(separator: "\n") + "\n" + footer(p))
         })
 
         addEdit(EditTool(name: "timelines", description: "Several timelines in one project, like sequences in Premiere or timelines in Resolve: a 9:16 cutdown, a trailer, alternate versions, all sharing the media and analysis. Every other tool edits the current timeline. action: list (default), new (empty, or duplicate:true to copy the current one), switch, rename, delete. The preview shows the current timeline.", schema: Schema.object([

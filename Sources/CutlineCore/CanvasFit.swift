@@ -50,4 +50,62 @@ extension Project {
         guard !canvas.playsSmoothly(m.fps) else { return nil }
         return "\(m.id) is \(label(rate))fps but the canvas is \(label(canvas.fps))fps, so its motion will judder (frames repeat or drop unevenly). If it is the main footage, canvas_set fps:\(label(rate)) conforms the timeline to it."
     }
+
+    /// After the canvas changes shape, keeps media pictures framed for it. A fill clip that was framed (offset or
+    /// animated) takes `framing`'s offsets for the new shape when it gives some; otherwise its offsets keep the same
+    /// subject point in the middle (they scale with the picture's new size) and stay within the overflow, so the
+    /// picture still covers the frame. A fit clip that sat inside the frame stays inside it. Returns the clips changed.
+    @discardableResult
+    public mutating func refitPictures(fromAspect old: Double, framing: (Clip, Project) -> (x: Double, y: Double)? = { _, _ in nil }) -> [String] {
+        let new = Double(canvas.width) / Double(max(1, canvas.height))
+        guard old > 0, new > 0, abs(old - new) > 1e-6 else { return [] }
+        var changed: [String] = []
+        let snapshot = self
+        for ti in tracks.indices where tracks[ti].kind == .video {
+            for ci in tracks[ti].clips.indices where tracks[ti].clips[ci].kind == .media {
+                var c = tracks[ti].clips[ci]
+                guard let m = c.mediaId.flatMap({ mediaAsset($0) }), m.hasVideo, m.width > 0, m.height > 0 else { continue }
+                guard c.transform.x != 0 || c.transform.y != 0 || c.anim["transform.x"] != nil || c.anim["transform.y"] != nil else { continue }
+                let source = Double(m.width) / Double(m.height)
+                let fit = c.transform.fit, scale = c.transform.scale
+                func size(_ aspect: Double) -> (w: Double, h: Double) {
+                    switch fit {
+                    case .fill: (max(1, source / aspect) * scale, max(1, aspect / source) * scale)
+                    case .fit: (min(1, source / aspect) * scale, min(1, aspect / source) * scale)
+                    case .stretch: (scale, scale)
+                    }
+                }
+                let was = size(old), now = size(new)
+                let before = c
+                if fit == .fill, let f = framing(c, snapshot) {
+                    c.transform.x = f.x
+                    c.transform.y = f.y
+                    c.anim["transform.x"] = nil
+                    c.anim["transform.y"] = nil
+                } else {
+                    func moved(_ v: Double, _ a: Double, _ b: Double) -> Double {
+                        // Covering pictures keep their overflow; smaller ones stay inside the frame if they were.
+                        if fit == .fill || b >= 1 {
+                            let room = max(0, (b - 1) / 2)
+                            return min(room, max(-room, fit == .fill && a > 0 ? v * b / a : v))
+                        }
+                        let room = (1 - b) / 2
+                        return abs(v) <= (1 - a) / 2 + 1e-6 ? min(room, max(-room, v)) : v
+                    }
+                    c.transform.x = moved(c.transform.x, was.w, now.w)
+                    c.transform.y = moved(c.transform.y, was.h, now.h)
+                    for (path, a, b) in [("transform.x", was.w, now.w), ("transform.y", was.h, now.h)] {
+                        guard var curve = c.anim[path] else { continue }
+                        for k in curve.keys.indices { if let v = curve.keys[k].v.number { curve.keys[k].v = .number(moved(v, a, b)) } }
+                        c.anim[path] = curve
+                    }
+                }
+                if c != before {
+                    tracks[ti].clips[ci] = c
+                    changed.append(c.id)
+                }
+            }
+        }
+        return changed
+    }
 }

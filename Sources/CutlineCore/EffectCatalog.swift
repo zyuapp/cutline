@@ -351,8 +351,8 @@ public enum EffectCatalog {
             db("threshold", -45, -120, 0, "Level below which sound is reduced"),
             num("ratio", 4, 1, 50, "", "How strongly quiet parts are reduced"),
         ]),
-        EffectType(id: "audio.limiter", category: "audio", summary: "Stops peaks from going over a ceiling; use last in a chain", params: [
-            db("ceiling", -1, -20, 0, "Maximum peak level"),
+        EffectType(id: "audio.limiter", category: "audio", summary: "Stops true peaks (4× oversampled) going over a ceiling; use last in a chain", params: [
+            db("ceiling", -1, -20, 0, "Maximum true peak, dBTP"),
             db("input_gain", 0, -20, 20, "Gain before limiting; more makes it louder and denser"),
             num("release_ms", 10, 1, 40, "ms", "How fast gain recovers"),
         ]),

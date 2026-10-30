@@ -5,15 +5,15 @@ import Foundation
 /// Collects a project's media into one folder, whole or trimmed to the ranges the edit uses.
 public enum Consolidate {
     /// Copies media into `dir` following `ConsolidatePlan`. Trimmed copies are passthrough exports
-    /// (no re-encode) of each used range plus `handles`. Returns the project pointing at the copies
-    /// and the bytes written. Analysis keyed by the old media ids can be moved with `ConsolidatePlan.locate`.
-    public static func collect(_ project: Project, to dir: URL, trim: Bool, handles: Seconds = 1, progress: (@Sendable (Double) -> Void)? = nil) async throws -> (project: Project, bytes: Int64) {
+    /// (no re-encode) of each used range plus `handles`. Returns the project pointing at the copies,
+    /// the bytes written and the plan, whose items re-time analysis to the copies.
+    public static func collect(_ project: Project, to dir: URL, trim: Bool, handles: Seconds = 1, transcripts: [String: Transcript] = [:], progress: (@Sendable (Double) -> Void)? = nil) async throws -> (project: Project, bytes: Int64, plan: ConsolidatePlan) {
         let plan = ConsolidatePlan(project, trim: trim, handles: handles)
         let fm = FileManager.default
         let missing = Set(plan.items.map(\.sourcePath).filter { !fm.fileExists(atPath: $0) })
         guard missing.isEmpty else { throw EditError("Missing media: \(missing.sorted().joined(separator: ", ")); relink it first") }
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        var out = plan.apply(to: project, directory: dir)
+        var out = plan.apply(to: project, directory: dir, transcripts: transcripts)
         var bytes: Int64 = 0
         for (n, item) in plan.items.enumerated() {
             let dest = dir.appendingPathComponent(item.fileName)
@@ -34,7 +34,7 @@ public enum Consolidate {
             bytes += (try? fm.attributesOfItem(atPath: dest.path)[.size] as? Int64) ?? 0
             progress?(Double(n + 1) / Double(max(plan.items.count, 1)))
         }
-        return (out, bytes)
+        return (out, bytes, plan)
     }
 
     /// A passthrough copy of a source range; the copy's time 0 is `range.start`.

@@ -287,12 +287,12 @@ public enum AudioDSP {
     // MARK: - Effects and files
 
     /// Whether `apply` renders this effect type.
-    static func handles(_ type: String) -> Bool { ProAudioCatalog.type(type) != nil || type == AudioStems.channelMapType }
+    static func handles(_ type: String) -> Bool { ProAudioCatalog.type(type) != nil || type == AudioStems.channelMapType || type == "audio.limiter" }
 
     /// Renders one `ProAudioCatalog` effect (or a clip stem's channel routing), blended with the input by `effect.mix`;
     /// nil for other types.
     public static func apply(_ e: Effect, to x: [[Float]], sampleRate: Double) -> [[Float]]? {
-        func p(_ name: String) -> Double { e.params[name]?.number ?? ProAudioCatalog.type(e.type)?.spec(name)?.defaultValue.number ?? 0 }
+        func p(_ name: String) -> Double { e.params[name]?.number ?? (ProAudioCatalog.type(e.type) ?? EffectCatalog.type(e.type))?.spec(name)?.defaultValue.number ?? 0 }
         if e.type == AudioStems.channelMapType {
             return route(x, ChannelRouting(rawValue: e.params["channels"]?.string ?? "") ?? .stereo)
         }
@@ -304,11 +304,23 @@ public enum AudioDSP {
         case "audio.declick": wet = deClick(x, sampleRate: sampleRate, sensitivity: p("sensitivity"))
         case "audio.pan": wet = pan(x, pan: p("pan"))
         case "audio.width": wet = stereoWidth(x, width: p("width"))
+        case "audio.limiter": wet = limit(x, sampleRate: sampleRate, ceilingDb: p("ceiling"), inputGainDb: p("input_gain"), releaseMs: p("release_ms"))
         default: return nil
         }
         let mix = Float(min(max(e.mix, 0), 1))
         guard mix < 1, wet.count == x.count else { return wet }
         return zip(x, wet).map { dry, w in vDSP.add(dry, vDSP.multiply(mix, vDSP.subtract(w, dry))) }
+    }
+
+    /// True-peak limiting: `inputGainDb` of gain, then sample and 4× interpolated peaks held under `ceilingDb` dBTP
+    /// with look-ahead, so the output lines up with the input.
+    static func limit(_ x: [[Float]], sampleRate: Double, ceilingDb: Double, inputGainDb: Double, releaseMs: Double) -> [[Float]] {
+        let g = Float(pow(10, inputGainDb / 20))
+        let gained = g == 1 ? x : x.map { vDSP.multiply(g, $0) }
+        var limiter = TruePeakLimiter(channels: max(1, x.count), ceiling: Float(pow(10, ceilingDb / 20)), release: max(0.001, releaseMs / 1000), sampleRate: sampleRate)
+        let head = limiter.process(gained), tail = limiter.flush()
+        let n = x.first?.count ?? 0
+        return zip(head, tail).map { Array(($0 + $1).prefix(n)) }
     }
 
     /// Reads a whole audio file as deinterleaved float at its own sample rate.

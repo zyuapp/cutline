@@ -324,6 +324,37 @@ private func render(_ type: String, _ params: [String: ParamValue] = [:], canvas
     }
 }
 
+@Test func spanColorsSurviveEveryAnimatorPresetMidAnimation() throws {
+    var spec = TextSpec(text: "Welcome to the show in Barlow", size: 0.12, color: .white, shadow: false)
+    spec.spans = [TextSpan(match: "in Barlow", color: RGBA(hex: "#FFCC00")!)]
+    let range = (spec.text as NSString).range(of: "in Barlow")
+    for preset in TextAnimator.Preset.allCases {
+        for unit in [TextAnimator.Unit.word, .char] {
+            let a = TextAnimator(unit: unit, preset: preset, stagger: 0.05, duration: 0.6)
+            let layout = try #require(AnimatedText.layout(spec, canvasHeight: 360, canvasWidth: 1280, unit: unit))
+            let inside = layout.units.indices.filter { NSIntersectionRange(layout.units[$0].range, range).length > 0 }
+            // Part way into the span's own entrance: some of it typed, some of it still animating.
+            let local = a.start(ofUnit: inside[inside.count / 2]) + 0.15
+            let states = layout.units.indices.map { TextAnimator.state(a, unitIndex: $0, unitStart: a.start(ofUnit: $0), local: local, clipDuration: 10) }
+            let img = Pixels(try #require(AnimatedText.render(layout, states: states, spec: spec)))
+            var yellow = 0, white = 0
+            for i in inside {
+                let r = layout.units[i].rect.insetBy(dx: 2, dy: 2)
+                for y in max(0, Int(r.minY))..<min(img.height, Int(r.maxY)) {
+                    for x in max(0, Int(r.minX))..<min(img.width, Int(r.maxX)) {
+                        let p = img.at(x, y)
+                        guard p[3] > 96 else { continue }
+                        // Unpremultiplied blue: ~0 for #FFCC00, high for white.
+                        if p[2] * 255 / p[3] > 128 { white += 1 } else if p[0] * 255 / p[3] > 200 { yellow += 1 }
+                    }
+                }
+            }
+            #expect(yellow > 20, "\(preset) \(unit): no span color")
+            #expect(white == 0, "\(preset) \(unit): \(white) white pixels in the span")
+        }
+    }
+}
+
 @Test func textChecksIncludeLowerThirds() async throws {
     var p = Project(name: "Titles")
     var lower = Clip(id: "lt", kind: .generator, start: 0, duration: 4)

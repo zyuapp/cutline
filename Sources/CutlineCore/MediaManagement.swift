@@ -180,8 +180,8 @@ extension Project {
 }
 
 /// How to collect a project's media into one folder, optionally keeping only the used source ranges.
-/// Whole copies keep their media id. Trimmed copies get one file per merged range, with id
-/// "<id>_t<n>"; clips move to the copy that holds them and their `sourceIn` drops by its `offset`.
+/// Whole copies keep their media id. Trimmed copies get one file per merged range: the first keeps the media id,
+/// later ones are "<id>_t<n>"; clips move to the copy that holds them and their `sourceIn` drops by its `offset`.
 public struct ConsolidatePlan: Equatable, Sendable {
     public struct Item: Equatable, Sendable {
         /// Media the copy comes from.
@@ -239,7 +239,7 @@ public struct ConsolidatePlan: Equatable, Sendable {
             guard let ranges = raw[m.id] else { continue }
             let stem = m.url.deletingPathExtension().lastPathComponent
             for (n, r) in TimeRange.merged(ranges.map { project.padded($0, handles, m) }).enumerated() {
-                items.append(Item(mediaId: m.id, newId: "\(m.id)_t\(n + 1)", sourcePath: m.path, range: r, fileName: unique("\(stem)_t\(n + 1).mov")))
+                items.append(Item(mediaId: m.id, newId: n == 0 ? m.id : "\(m.id)_t\(n + 1)", sourcePath: m.path, range: r, fileName: unique("\(stem)_t\(n + 1).mov")))
             }
         }
         self.items = items
@@ -273,8 +273,9 @@ public struct ConsolidatePlan: Equatable, Sendable {
         item(for: mediaId, containing: TimeRange(time, time)).map { ($0.newId, time - $0.offset) }
     }
 
-    /// The project pointing at the copies in `directory`. Trimmed copies take their range as duration.
-    public func apply(to project: Project, directory: URL) -> Project {
+    /// The project pointing at the copies in `directory`. Trimmed copies take their range as duration. Caption edits
+    /// and translations on words of `transcripts` follow the words into the copies' re-timed transcripts.
+    public func apply(to project: Project, directory: URL, transcripts: [String: Transcript] = [:]) -> Project {
         var p = project
         p.media = items.compactMap { i in
             guard var m = project.mediaAsset(i.mediaId) else { return nil }
@@ -312,6 +313,140 @@ public struct ConsolidatePlan: Equatable, Sendable {
                 for c in p.sequences[s].tracks[t].clips.indices { remap(&p.sequences[s].tracks[t].clips[c], key: "\(sid):\(p.sequences[s].tracks[t].clips[c].id)") }
             }
         }
+        remapWords(&p.captions, transcripts: transcripts)
+        for i in p.timelines.indices { remapWords(&p.timelines[i].captions, transcripts: transcripts) }
         return p
+    }
+
+    /// Where word `index` of `mediaId`'s transcript lands: the copy and its index in the copy's transcript.
+    public func locateWord(_ mediaId: String, _ index: Int, in transcript: Transcript) -> (mediaId: String, index: Int)? {
+        for i in items where i.mediaId == mediaId {
+            if let n = i.retimed(transcript).words[index] { return (i.newId, n) }
+        }
+        return nil
+    }
+
+    private func remapWords(_ captions: inout Captions, transcripts: [String: Transcript]) {
+        guard trim else { return }
+        func moved(_ m: String, _ w: Int) -> (mediaId: String, index: Int)? { transcripts[m].flatMap { locateWord(m, w, in: $0) } }
+        captions.edits = captions.edits.compactMap { e in
+            guard transcripts[e.mediaId] != nil else { return e }
+            guard let a = moved(e.mediaId, e.fromWord) else { return nil }
+            let z = (e.fromWord...max(e.fromWord, e.toWord)).reversed().lazy.compactMap { moved(e.mediaId, $0) }.first { $0.mediaId == a.mediaId } ?? a
+            var e = e
+            e.mediaId = a.mediaId
+            e.fromWord = a.index
+            e.toWord = z.index
+            return e
+        }
+        func anchor(_ s: String) -> String? {
+            guard let (m, w) = Project.parseWordAnchor(s), transcripts[m] != nil else { return s }
+            return moved(m, w).map { "\($0.mediaId).w\($0.index)" }
+        }
+        for (tag, list) in captions.translations {
+            let kept = list.compactMap { t -> CaptionTranslation? in
+                guard let a = anchor(t.from), let z = anchor(t.to) else { return nil }
+                var t = t
+                t.from = a
+                t.to = z
+                return t
+            }
+            captions.translations[tag] = kept.isEmpty ? nil : kept
+        }
+    }
+}
+
+/// Analysis of an item's source re-timed to the copy: times drop by its offset and what lies outside its range is
+/// left out. Whole copies keep the analysis as it is.
+extension ConsolidatePlan.Item {
+    func keeps(_ t: Seconds) -> Bool { range.map { t >= $0.start && t < $0.end } ?? true }
+
+    func clipped(_ r: TimeRange) -> TimeRange? {
+        guard let range else { return r }
+        return r.intersection(range).map { TimeRange($0.start - offset, $0.end - offset) }
+    }
+
+    /// The copy's transcript, and for each kept word its index in the copy (keyed by its index in the original).
+    public func retimed(_ t: Transcript) -> (transcript: Transcript, words: [Int: Int]) {
+        var out = t
+        out.mediaId = newId
+        out.words = []
+        var map: [Int: Int] = [:]
+        var speakers: [String?] = []
+        for (i, w) in t.words.enumerated() where keeps((w.start + w.end) / 2) {
+            map[i] = out.words.count
+            var w = w
+            w.start -= offset
+            w.end -= offset
+            out.words.append(w)
+            if let s = t.speakers, i < s.count { speakers.append(s[i]) }
+        }
+        out.speakers = t.speakers == nil ? nil : speakers
+        return (out, map)
+    }
+
+    /// `words` is `retimed(transcript).words` for the same media.
+    public func retimed(_ s: SpeakerAnalysis, words: [Int: Int]) -> SpeakerAnalysis {
+        let order = words.sorted { $0.value < $1.value }.map(\.key)
+        return SpeakerAnalysis(
+            mediaId: newId, speakers: s.speakers,
+            segments: s.segments.compactMap { g in clipped(TimeRange(g.start, g.end)).map { SpeakerSegment(start: $0.start, end: $0.end, speaker: g.speaker, confidence: g.confidence) } },
+            wordSpeakers: order.map { $0 < s.wordSpeakers.count ? s.wordSpeakers[$0] : nil },
+            emphasis: order.map { $0 < s.emphasis.count ? s.emphasis[$0] : 0 })
+    }
+
+    public func retimed(_ a: AudioAnalysis) -> AudioAnalysis {
+        guard let range else { return a }
+        var out = a
+        out.mediaId = newId
+        let lo = min(a.levels.count, max(0, Int((range.start * a.levelRate).rounded(.down))))
+        let hi = min(a.levels.count, max(lo, Int((range.end * a.levelRate).rounded(.up))))
+        out.levels = Array(a.levels[lo..<hi])
+        out.silences = a.silences.compactMap(clipped)
+        return out
+    }
+
+    public func retimed(_ v: VisualAnalysis) -> VisualAnalysis {
+        VisualAnalysis(mediaId: newId, sceneCuts: v.sceneCuts.filter { keeps($0) && $0 > offset }.map { $0 - offset })
+    }
+
+    public func retimed(_ s: ShotAnalysis) -> ShotAnalysis {
+        let shots = s.shots.compactMap { shot -> Shot? in
+            guard let r = clipped(TimeRange(shot.start, shot.end)) else { return nil }
+            var shot = shot
+            shot.start = r.start
+            shot.end = r.end
+            return shot
+        }.enumerated().map { i, shot in
+            var shot = shot
+            shot.index = i
+            return shot
+        }
+        let faces = s.faces.compactMap { f -> FaceTrack? in
+            let samples = f.samples.filter { keeps($0.t) }.map { FaceSample(t: $0.t - offset, box: $0.box) }
+            return samples.isEmpty ? nil : FaceTrack(id: f.id, samples: samples)
+        }
+        return ShotAnalysis(mediaId: newId, shots: shots, faces: faces, samplesPerSecond: s.samplesPerSecond)
+    }
+
+    public func retimed(_ b: BeatAnalysis) -> BeatAnalysis {
+        let kept = b.beats.indices.filter { keeps(b.beats[$0]) }
+        return BeatAnalysis(mediaId: newId, tempo: b.tempo, beats: kept.map { b.beats[$0] - offset }, downbeats: b.downbeats.filter(keeps).map { $0 - offset },
+                            onsets: b.onsets.filter(keeps).map { $0 - offset }, energy: kept.map { $0 < b.energy.count ? b.energy[$0] : 0 })
+    }
+
+    public func retimed(_ e: SoundEvents) -> SoundEvents {
+        SoundEvents(mediaId: newId, events: e.events.compactMap { ev in clipped(TimeRange(ev.start, ev.end)).map { SoundEvent(label: ev.label, start: $0.start, end: $0.end, confidence: ev.confidence) } })
+    }
+
+    public func retimed(_ tracks: [ObjectTrack]) -> [ObjectTrack] {
+        tracks.compactMap { t in
+            let samples = t.samples.filter { keeps($0.t) }.map { s -> TrackSample in
+                var s = s
+                s.t -= offset
+                return s
+            }
+            return samples.isEmpty ? nil : ObjectTrack(id: t.id, mediaId: newId, label: t.label, samples: samples)
+        }
     }
 }

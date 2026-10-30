@@ -120,7 +120,8 @@ extension Project {
     /// sequences whose id is taken get a new one. Clips that still don't fit are trimmed to their source, moved off
     /// overlaps to a new track, or left out, each with a warning, so one bad clip never stops the import.
     @discardableResult
-    public mutating func adoptTimeline(_ other: Project, name: String) throws -> (matched: Int, added: Int, warnings: [String]) {
+    public mutating func adoptTimeline(_ other: Project, name requested: String) throws -> (matched: Int, added: Int, warnings: [String], name: String) {
+        let name = freeTimelineName(requested)
         var rename: [String: String] = [:]
         var shift: [String: Seconds] = [:]
         var matched = 0, added = 0
@@ -232,7 +233,7 @@ extension Project {
             sequences[i].transitions = inner.transitions
         }
         warnings += repairAdopted(label: "")
-        return (matched, added, Importer.condense(warnings))
+        return (matched, added, Importer.condense(warnings), name)
     }
 
     func uniqueMediaId(_ base: String) -> String {
@@ -305,5 +306,15 @@ extension Project {
             t += 1
         }
         return warnings
+
+    }
+
+    /// `name`, or "name 2", "name 3"… when a timeline already has it.
+    public func freeTimelineName(_ name: String) -> String {
+        let base = name.trimmingCharacters(in: .whitespaces)
+        guard timelineNames.contains(base) else { return base }
+        var n = 2
+        while timelineNames.contains("\(base) \(n)") { n += 1 }
+        return "\(base) \(n)"
     }
 }

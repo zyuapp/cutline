@@ -40,6 +40,57 @@ private func openProject(fps: Double = 25, _ body: (inout Project) -> Void = { _
     #expect(skip.plainText.contains("Files written (1)"), "\(skip.plainText)")
 }
 
+@Test func aspectChangesRefitOffsetPicturesAndVariantsReportIssues() async throws {
+    let (box, _, dir) = try await openProject { p in
+        p.canvas = Canvas(width: 180, height: 320, fps: 25)
+        p.tracks[0].clips[0].transform.fit = .fill
+        p.tracks[0].clips[0].transform.x = 0.6
+    }
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let landscape = await box.call("canvas_set", ["preset": "landscape"])
+    #expect(!landscape.isError && landscape.plainText.contains("Re-framed 1"), "\(landscape.plainText)")
+    let p = try box.session.project()
+    #expect(p.frameCoverage(try #require(p.clip("pic")), at: 1) > 0.999)
+    #expect(!landscape.plainText.contains("outside the frame"), "\(landscape.plainText)")
+    _ = await box.call("history", ["action": "undo"])
+
+    let out = dir.appendingPathComponent("out/v.mp4")
+    let ops: JSON = [["tool": "param_set", "args": ["target": "pic", "set": ["transform.x": 5]]]]
+    let strict = await box.call("export", ["path": .string(dir.appendingPathComponent("out/base.mp4").path), "strict": true, "variants": [["name": "off", "path": .string(out.path), "ops": ops]]])
+    #expect(strict.isError && strict.plainText.contains("Not exported: variant off") && strict.plainText.contains("outside the frame"), "\(strict.plainText)")
+    #expect(!FileManager.default.fileExists(atPath: out.path))
+    let loose = await box.call("export", ["base": false, "variants": [["name": "off", "path": .string(out.path), "ops": ops]]])
+    #expect(!loose.isError && loose.plainText.contains("Issues after its ops") && loose.plainText.contains("outside the frame"), "\(loose.plainText)")
+}
+
+@Test func everyExportWarnsAboutTruePeakOvers() async throws {
+    let (box, _, dir) = try await openProject { p in p.master.gainDb = 18 }
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let hot = await box.call("export", ["path": .string(dir.appendingPathComponent("hot.mp4").path)])
+    #expect(!hot.isError && hot.plainText.contains("Warning: true peak"), "\(hot.plainText)")
+    _ = await box.call("effect_add", ["target": "master", "type": "audio.limiter"])
+    let safe = await box.call("export", ["path": .string(dir.appendingPathComponent("safe.mp4").path)])
+    #expect(!safe.isError && !safe.plainText.contains("true peak"), "\(safe.plainText)")
+}
+
+@Test func trimmedArchivesKeepMediaIdsAndTheirAnalysis() async throws {
+    let (box, _, dir) = try await openProject()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    _ = await box.call("trim", ["clip_id": "talk1", "edge": "start", "to": 1.2])
+    let source = try box.session.project()
+    let r = await box.call("export", ["deliver": "archive", "trim": true, "path": .string(dir.appendingPathComponent("archive").path)])
+    #expect(!r.isError && r.plainText.contains("keep their ids"), "\(r.plainText)")
+    let archived = ProjectBundle(url: dir.appendingPathComponent("archive/Cuts.cutline"))
+    let p = try archived.loadProject()
+    #expect(Set(p.media.map(\.id)) == ["img", "tone"])
+    let t = try #require(archived.transcript("tone"))
+    #expect(t.mediaId == "tone" && t.words.count == 4 && abs((p.clip("talk1")?.sourceIn ?? 9) - 1) < 1e-6 && abs(t.words[0].start) < 1e-6, "\(t.words)")
+    // The archived edit reads the same words at the same times.
+    let before = source.timelineWords(transcripts: try box.session.requireBundle().transcripts(for: source))
+    let after = p.timelineWords(transcripts: ["tone": t])
+    #expect(after.map(\.text) == before.map(\.text) && zip(after, before).allSatisfy { abs($0.start - $1.start) < 1e-6 }, "\(after) \(before)")
+}
+
 @Test func interlacedExportRefusesOtherRates() async throws {
     let (box, _, dir) = try await openProject(fps: 24)
     defer { try? FileManager.default.removeItem(at: dir) }

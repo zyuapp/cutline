@@ -8,7 +8,7 @@ import Foundation
 /// play the same stem file, so what the human hears is what gets exported.
 public final class AudioStems: @unchecked Sendable {
     public let directory: URL
-    static let version = "stem-v1"
+    static let version = "stem-v2"
     static let sampleRate = 48_000.0
 
     public init(directory: URL) {
@@ -406,15 +406,6 @@ enum AudioChain {
             set(u, 2, number(e, "ratio"))
             set(u, 3, number(e, "threshold"))
             return [u]
-        case "audio.limiter":
-            let u = apple(kAudioUnitSubType_PeakLimiter)
-            set(u, 0, 0.005)
-            set(u, 1, max(0.001, min(0.04, number(e, "release_ms") / 1000)))
-            set(u, 2, number(e, "input_gain"))
-            // The limiter holds peaks at full scale; a gain stage after it sets the ceiling.
-            let ceiling = AVAudioUnitEQ(numberOfBands: 0)
-            ceiling.globalGain = number(e, "ceiling")
-            return [u, ceiling]
         case "audio.voice_isolation":
             let u = apple(kAudioUnitSubType_AUSoundIsolation)
             set(u, 0, number(e, "amount") * mix * 100)

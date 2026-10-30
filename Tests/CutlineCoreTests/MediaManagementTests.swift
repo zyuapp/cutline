@@ -82,17 +82,17 @@ private func usageProject() -> Project {
 @Test func consolidatePlanTrimsAndRemapsClips() throws {
     let p = usageProject()
     let plan = ConsolidatePlan(p, trim: true, handles: 0.5)
-    #expect(plan.items.map(\.newId) == ["a_t1", "a_t2", "b_t1", "b_t2", "img"])
+    #expect(plan.items.map(\.newId) == ["a", "a_t2", "b", "b_t2", "img"])
     #expect(plan.items.first { $0.newId == "img" }?.range == nil)
     // The whole nested clip (source 10–14) is kept so the sequence stays valid.
     #expect(plan.items.first { $0.newId == "b_t2" }?.range == TimeRange(9.5, 14.5))
     #expect(Set(plan.items.map(\.fileName)).count == plan.items.count)
 
     let out = plan.apply(to: p, directory: URL(fileURLWithPath: "/out"))
-    #expect(out.mediaAsset("unused") == nil && out.mediaAsset("a") == nil)
-    #expect(out.mediaAsset("a_t1")?.path == "/out/a_t1.mov" && out.mediaAsset("a_t1")?.duration == 5.5)
+    #expect(out.mediaAsset("unused") == nil && out.media.filter { $0.id == "a" }.count == 1)
+    #expect(out.mediaAsset("a")?.path == "/out/a_t1.mov" && out.mediaAsset("a")?.duration == 5.5)
     let c2 = try #require(out.clip("c2")), c3 = try #require(out.clip("c3"))
-    #expect(c2.mediaId == "a_t1" && abs(c2.sourceIn - 3.0) < 1e-9)
+    #expect(c2.mediaId == "a" && abs(c2.sourceIn - 3.0) < 1e-9)
     #expect(c3.mediaId == "a_t2" && abs(c3.sourceIn - 0.5) < 1e-9)
     #expect(out.sequences[0].tracks[0].clips[0].mediaId == "b_t2" && abs(out.sequences[0].tracks[0].clips[0].sourceIn - 0.5) < 1e-9)
     #expect(out.clip("logo")?.mediaId == "img")
@@ -102,4 +102,29 @@ private func usageProject() -> Project {
     let whole = ConsolidatePlan(p, trim: false, handles: 0)
     #expect(whole.items.count == 4 && whole.items.allSatisfy { $0.range == nil && $0.newId == $0.mediaId })
     #expect(whole.apply(to: p, directory: URL(fileURLWithPath: "/out")).clip("c2")?.sourceIn == 3.5)
+}
+
+@Test func trimmedArchivesKeepIdsAndRetimeAnalysis() throws {
+    var p = usageProject()
+    let plan = ConsolidatePlan(p, trim: true, handles: 0.5)
+    let first = try #require(plan.items.first { $0.mediaId == "a" }), second = try #require(plan.items.first { $0.newId == "a_t2" })
+    let words = (0..<20).map { Word(text: "w\($0)", start: Double($0) * 0.5, end: Double($0) * 0.5 + 0.4) }
+    let t = Transcript(mediaId: "a", locale: "en", words: words)
+    let (copy, map) = first.retimed(t)
+    #expect(copy.mediaId == "a" && copy.words.first.map { abs($0.start - (words[map.first { $0.value == 0 }!.key].start - first.offset)) < 1e-9 } == true)
+    #expect(copy.words.allSatisfy { $0.start > -0.5 && $0.end <= first.range!.duration + 0.5 })
+    #expect(second.retimed(t).transcript.mediaId == "a_t2")
+    let a = AudioAnalysis(mediaId: "a", levelRate: 10, levels: (0..<200).map { Float($0) }, silences: [TimeRange(0, 20)], silenceThresholdDb: -40, loudnessDb: -20)
+    let ra = first.retimed(a)
+    #expect(ra.levels.first == Float((first.range!.start * 10).rounded(.down)) && ra.silences == [TimeRange(0, first.range!.duration)])
+    let shots = ShotAnalysis(mediaId: "a", shots: [Shot(index: 0, start: 0, end: 4), Shot(index: 1, start: 4, end: 20)], faces: [], samplesPerSecond: 2)
+    let rs = second.retimed(shots)
+    #expect(rs.shots.map(\.index) == Array(rs.shots.indices) && rs.shots.allSatisfy { $0.start >= 0 && $0.end <= second.range!.duration + 1e-9 })
+
+    let firstWord = try #require(map.min { $0.value < $1.value }?.key)
+    p.captions.edits = [CaptionEdit(mediaId: "a", fromWord: firstWord, toWord: firstWord + 1, text: "Hi there")]
+    p.captions.translations["fr"] = [CaptionTranslation(from: "a.w\(firstWord)", to: "a.w\(firstWord + 1)", text: "Salut")]
+    let out = plan.apply(to: p, directory: URL(fileURLWithPath: "/out"), transcripts: ["a": t])
+    #expect(out.captions.edits.first.map { $0.mediaId == "a" && $0.fromWord == 0 && $0.toWord == 1 } == true)
+    #expect(out.captions.translations["fr"]?.first.map { $0.from == "a.w0" && $0.to == "a.w1" } == true)
 }

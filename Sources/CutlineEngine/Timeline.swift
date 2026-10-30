@@ -52,6 +52,7 @@ public enum TimelineBuilder {
     /// With `masterStage`, a rendered master stem (the mix through the master effects) replaces the tracks' sound,
     /// or for a mono or surround layout, the fold-down of the rendered layout mix. `soundOnly` skips the picture.
     static func build(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary, renderScale: Double, stems: AudioStems?, dryTrack: String?, masterStage: Bool, soundOnly: Bool = false) async throws -> BuiltTimeline {
+        let captions = project.captions.enabled && dryTrack == nil && !soundOnly ? project.captionSegments(transcripts: transcripts) : []
         let project = project.resolvingAudioTransitions()
         var heads: [String: Seconds] = [:], tails: [String: Seconds] = [:]
         for w in project.transitionWindows where w.transition.hasVideo {
@@ -292,7 +293,7 @@ public enum TimelineBuilder {
         for t in comp.tracks where t.mediaType == .video && !t.segments.isEmpty && t.timeRange.end < time(duration) {
             t.insertEmptyTimeRange(CMTimeRange(start: t.timeRange.end, end: time(duration)))
         }
-        let scene = RenderScene(project: project, captions: project.captions.enabled && dryTrack == nil ? project.captionSegments(transcripts: transcripts) : [], trackIDs: trackIDs, orientations: orientations, images: images)
+        let scene = RenderScene(project: project, captions: captions, trackIDs: trackIDs, orientations: orientations, images: images)
         let vc = AVMutableVideoComposition()
         vc.customVideoCompositorClass = CutlineCompositor.compositorClass(project.canvas.colorSpace)
         vc.frameDuration = CMTime(value: 1000, timescale: CMTimeScale(project.canvas.fps * 1000))
