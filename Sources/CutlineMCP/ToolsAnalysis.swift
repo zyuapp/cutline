@@ -24,6 +24,15 @@ extension Session {
             let labels = Dictionary(grouping: events.events, by: \.label).map { ($0.key, $0.value.map(\.duration).reduce(0, +)) }.sorted { $0.1 > $1.1 }.prefix(5)
             notes.append("sounds: " + (labels.isEmpty ? "nothing distinct" : labels.map { "\($0.0) \(fmt1($0.1))s" }.joined(separator: ", ")))
         }
+        if (want.contains(.shots) || want.contains(.speakers)), media.hasVideo, !media.isImage,
+           let speakers = b.analysis(SpeakerAnalysis.self, media.id, "speakers"), let shots = b.analysis(ShotAnalysis.self, media.id, "shots"), !shots.faces.isEmpty,
+           let transcript = b.transcript(media.id) {
+            let active = try await ActiveSpeakerDetector.analyze(url: media.url, transcript: transcript, speakers: speakers, shots: shots)
+            try b.saveAnalysis(active, media.id, "activespeakers")
+            if !active.speakerFaces.isEmpty {
+                notes.append("on-screen speakers: " + active.speakerFaces.sorted { $0.key < $1.key }.map { "\($0.key)=face\($0.value)" }.joined(separator: ", "))
+            }
+        }
         progress?(1)
         return notes
     }
@@ -85,7 +94,8 @@ extension Toolbox {
                 if let s = b.analysis(SpeakerAnalysis.self, id, "speakers") {
                     var talk: [String: Seconds] = [:]
                     for seg in s.segments { talk[seg.speaker, default: 0] += seg.end - seg.start }
-                    lines.append("Speakers: " + s.speakers.map { "\($0) \(fmt1(talk[$0] ?? 0))s" }.joined(separator: ", "))
+                    let active = b.analysis(ActiveSpeakers.self, id, "activespeakers")
+                    lines.append("Speakers: " + s.speakers.map { "\($0) \(fmt1(talk[$0] ?? 0))s" + (active?.speakerFaces[$0].map { " (on screen as face\($0))" } ?? "") }.joined(separator: ", "))
                     if what == "speakers" {
                         let t = b.transcript(id)
                         for seg in s.segments where seg.end > lo && seg.start < hi {

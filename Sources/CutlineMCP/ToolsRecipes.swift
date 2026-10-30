@@ -211,7 +211,18 @@ extension Toolbox {
 
     static func shotIndex(_ b: ProjectBundle, _ p: Project) -> [String: ShotAnalysis] {
         var out: [String: ShotAnalysis] = [:]
-        for m in p.media { if let s = b.analysis(ShotAnalysis.self, m.id, "shots") { out[m.id] = s } }
+        for m in p.media {
+            guard var s = b.analysis(ShotAnalysis.self, m.id, "shots") else { continue }
+            // With active-speaker analysis, keep only the talking face at each moment so framing follows dialogue.
+            if let active = b.analysis(ActiveSpeakers.self, m.id, "activespeakers"), !active.spans.isEmpty {
+                s.faces = s.faces.map { track in
+                    var t = track
+                    t.samples = track.samples.filter { sample in active.face(at: sample.t).map { $0 == track.id } ?? true }
+                    return t
+                }
+            }
+            out[m.id] = s
+        }
         return out
     }
 
