@@ -103,6 +103,22 @@ private func dialogue() -> Project {
     #expect(throws: EditError.self) { try p.fillRoomTone(TimeRange(0, 1), mediaId: "still", source: source, trackId: track.id) }
 }
 
+@Test func shortGapsGetFadesThatFit() throws {
+    var p = dialogue()
+    p.canvas.fps = 25
+    p.tracks[0].clips[1].start = 4.08
+    let gaps = try p.soundGaps(trackId: "V1", minGap: 0.04)
+    #expect(gaps.count == 1 && abs(gaps[0].duration - 0.08) < 1e-9)
+    let track = p.addTrack(kind: .audio, name: "Room tone")
+    let ids = try p.fillRoomTone(gaps[0], mediaId: "m", source: TimeRange(20, 23), trackId: track.id, crossfade: 0.25)
+    #expect(ids.count == 1)
+    let c = try #require(p.clip(ids[0]))
+    #expect(c.audioFadeIn <= c.duration + 1e-9 && c.audioFadeOut <= c.duration + 1e-9)
+    #expect(c.audioFadeIn + c.audioFadeOut <= c.audioRange.duration + 1e-9)
+    #expect(abs(Project.roomToneCrossfade(0.25, range: gaps[0]) - 0.04) < 1e-9)
+    try p.validate()
+}
+
 @Test func soundGapsAreFoundBetweenDialogue() throws {
     var p = dialogue()
     p.tracks[0].clips[1].start = 5
@@ -133,6 +149,19 @@ private func dialogue() -> Project {
     #expect(throws: EditError.self) { try Clip.checkAudioStretch(speed: 0.04, media: p.mediaAsset("tone")!, allow: false) }
     try Clip.checkAudioStretch(speed: 0.04, media: p.mediaAsset("tone")!, allow: true)
     try Clip.checkAudioStretch(speed: 0.04, media: p.mediaAsset("m")!, allow: false)
+}
+
+@Test func speedRampOverSpeechWarns() throws {
+    var p = dialogue()
+    // Source words every 0.5 s across a's source 2–6.
+    let words = stride(from: 2.0, to: 6, by: 0.5).map { Word(text: "word", start: $0, end: $0 + 0.4) }
+    let tr = ["m": Transcript(mediaId: "m", locale: "en", words: words)]
+    #expect(p.retimedSpeechWarning("a", transcripts: tr) == nil)
+    _ = try p.speedRamp("a", at: 2, speed: 0.3, ramp: 0.3, hold: 0.8)
+    let warning = try #require(p.retimedSpeechWarning("a", transcripts: tr))
+    #expect(warning.contains("slowed to 0.30×"))
+    p.tracks[0].clips[0].volume = 0
+    #expect(p.retimedSpeechWarning("a", transcripts: tr) == nil)
 }
 
 @Test func channelRoutingIsAClipParameter() throws {

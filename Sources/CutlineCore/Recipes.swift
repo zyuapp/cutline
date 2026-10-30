@@ -25,6 +25,21 @@ extension Project {
         return "\(id) ramps \(fmt2(base))× → \(fmt2(target))× at \(fmt2(c.start + b))–\(fmt2(c.start + d)), back by \(fmt2(c.start + e)). It now uses source \(fmt2(c.sourceIn))–\(fmt2(c.sourceOut))."
     }
 
+    /// A warning when a clip's heard, transcribed speech plays slowed or sped past ±10%, or nil.
+    public func retimedSpeechWarning(_ id: String, transcripts: [String: Transcript]) -> String? {
+        guard let c = clip(id), hasSound(c) else { return nil }
+        let words = timelineWords(transcripts: transcripts).filter { $0.clipId == id }
+        let off = words.compactMap { w -> (TimelineWord, Double)? in
+            let v = c.speed(atLocal: (w.start + w.end) / 2 - c.start)
+            return v < 0.9 || v > 1.1 ? (w, v) : nil
+        }
+        guard let first = off.first, let last = off.last else { return nil }
+        let slowest = off.map(\.1).min()!, fastest = off.map(\.1).max()!
+        let rate = slowest < 0.9 ? "slowed to \(fmt2(slowest))×" : "sped up to \(fmt2(fastest))×"
+        let quote = off.prefix(6).map(\.0.text).joined(separator: " ") + (off.count > 6 ? "…" : "")
+        return "Warning: \(off.count) spoken word(s) on \(id) play \(rate) at \(fmt2(first.0.start))–\(fmt2(last.0.end))s (\"\(quote)\"), which sounds unnatural. Mute this clip's sound (param_set audio.volume 0) and keep the dialogue from a linked or separate clip, or ramp where nobody speaks."
+    }
+
     /// Holds the frame at `time` for `duration`, pushing everything after it later on every track.
     /// Clips on `pauseTracks` (such as dialogue) split so they pause with the picture; others play on.
     public mutating func freezeFrame(at time: Seconds, trackId: String?, duration: Seconds, zoom: Double, pauseTracks: Set<String> = []) throws -> String {

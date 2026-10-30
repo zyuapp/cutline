@@ -8,6 +8,13 @@ public struct CaptionWord: Equatable, Hashable, Sendable {
     public var anchor: String? = nil
     /// A cue must start at this word.
     public var breakBefore = false
+    /// The last transcript word this covers, when rewritten text or a multi-word replacement spans several.
+    public var lastAnchor: String? = nil
+    /// The next word stays in this word's cue (caption_edit merge).
+    public var joinNext = false
+
+    /// The last transcript word this covers.
+    public var endAnchor: String? { lastAnchor ?? anchor }
 }
 
 /// A block of caption text on the timeline.
@@ -93,10 +100,11 @@ extension Project {
         return TimeRange.merged(spans, tolerance: 0.5)
     }
 
-    public func captionSegments(transcripts: [String: Transcript]) -> [CaptionSegment] {
-        let style = captions.style
+    /// Words the captions show, in timeline order, with replacements, hidden words and cue edits applied. Spoken casing.
+    public func captionWords(transcripts: [String: Transcript]) -> [CaptionWord] {
         let hidden = Set(captions.hiddenWords.map { $0.lowercased() })
         let replacements = Dictionary(captions.replacements.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { a, _ in a })
+        let joins = Set(captions.edits.filter { $0.mergeNext == true }.map { "\($0.mediaId).w\($0.toWord)" })
         var words: [CaptionWord] = []
         var run: (edit: CaptionEdit, words: [TimelineWord])?
         func flush() {
@@ -106,28 +114,30 @@ extension Project {
             let start = r.words[0].start + (r.edit.startOffset ?? 0)
             let end = max(start + 0.05, r.words.last!.end + (r.edit.endOffset ?? 0))
             let anchor = "\(r.edit.mediaId).w\(r.words[0].wordIndex)"
+            let last = "\(r.edit.mediaId).w\(r.words.last!.wordIndex)"
             var made: [CaptionWord]
             if let text = r.edit.text {
-                let tokens = text.split(whereSeparator: \.isWhitespace).map { style.uppercase ? $0.uppercased() : String($0) }
+                let tokens = text.split(whereSeparator: \.isWhitespace).map(String.init)
                 let total = Double(max(1, tokens.reduce(0) { $0 + $1.count + 1 }))
                 var t = start
                 made = tokens.map { tok in
                     let d = (end - start) * Double(tok.count + 1) / total
                     defer { t += d }
-                    return CaptionWord(text: tok, start: t, end: t + d, anchor: anchor)
+                    return CaptionWord(text: tok, start: t, end: t + d, anchor: anchor, lastAnchor: last)
                 }
             } else {
-                made = r.words.map { CaptionWord(text: style.uppercase ? $0.text.uppercased() : $0.text, start: $0.start, end: $0.end, anchor: "\($0.mediaId).w\($0.wordIndex)") }
+                made = r.words.map { CaptionWord(text: $0.text, start: $0.start, end: $0.end, anchor: "\($0.mediaId).w\($0.wordIndex)") }
                 if !made.isEmpty {
                     made[0].start = start
                     made[made.count - 1].end = end
                 }
             }
             if r.edit.breakBefore == true, !made.isEmpty { made[0].breakBefore = true }
+            for i in made.indices { made[i].joinNext = made[i].endAnchor.map(joins.contains) ?? false }
             words += made
         }
         for w in captionTimelineWords(transcripts: transcripts) {
-            if let edit = captions.edits.last(where: { $0.covers(w.mediaId, w.wordIndex) }) {
+            if let edit = captions.edits.last(where: { !$0.isMergeOnly && $0.covers(w.mediaId, w.wordIndex) }) {
                 if let r = run, r.edit == edit, r.words.last?.clipId == w.clipId {
                     run!.words.append(w)
                 } else {
@@ -144,41 +154,46 @@ extension Project {
                 let trailing = String(text.reversed().prefix { $0.isPunctuation }.reversed())
                 text = rep + trailing
             }
-            if style.uppercase { text = text.uppercased() }
             guard !text.isEmpty else { continue }
-            words.append(CaptionWord(text: text, start: w.start, end: w.end, anchor: "\(w.mediaId).w\(w.wordIndex)"))
+            let anchor = "\(w.mediaId).w\(w.wordIndex)"
+            words.append(CaptionWord(text: text, start: w.start, end: w.end, anchor: anchor, joinNext: joins.contains(anchor)))
         }
         flush()
         mergeMultiWordReplacements(&words, replacements: replacements)
+        return words
+    }
 
+    /// Burned-in captions: the shared cues (`captionCues`) laid out with the caption style's lines. A cue with more
+    /// words than the style's `maxWordsPerLine × maxLines` shows as consecutive pages within the cue's time; subtitles
+    /// and closed captions keep it as one cue.
+    public func captionSegments(transcripts: [String: Transcript]) -> [CaptionSegment] {
+        let style = captions.style
         let perLine = max(1, style.maxWordsPerLine)
-        let perSegment = perLine * max(1, style.maxLines)
-        var groups: [[CaptionWord]] = []
-        var current: [CaptionWord] = []
-        for w in words {
-            if let last = current.last {
-                let gap = w.start - last.end
-                let endsSentence = last.text.last.map { ".?!".contains($0) } ?? false
-                let tooLong = w.end - current[0].start > 3.2
-                if gap > 0.6 || current.count >= perSegment || tooLong || endsSentence || w.breakBefore {
-                    groups.append(current)
-                    current = []
-                }
-            }
-            current.append(w)
-        }
-        if !current.isEmpty { groups.append(current) }
-
+        let perPage = perLine * max(1, style.maxLines)
+        let cues = captionCues(transcripts: transcripts)
         var segments: [CaptionSegment] = []
-        for (i, g) in groups.enumerated() {
-            let lineCount = Int((Double(g.count) / Double(perLine)).rounded(.up))
-            let size = Int((Double(g.count) / Double(lineCount)).rounded(.up))
-            let lines = stride(from: 0, to: g.count, by: size).map { Array(g[$0..<min($0 + size, g.count)]) }
-            let nextStart = i + 1 < groups.count ? groups[i + 1][0].start : .infinity
-            let end = min(g.last!.end + 0.35, nextStart, duration)
-            segments.append(CaptionSegment(id: i, start: g[0].start, end: max(end, g.last!.end), lines: lines))
+        for (ci, cue) in cues.enumerated() {
+            var words = cue.words
+            if style.uppercase { for i in words.indices { words[i].text = words[i].text.uppercased() } }
+            let pages = Self.evenChunks(words, max: perPage)
+            var end = cue.end
+            // Back-to-back cues stay up until the next one rather than blinking off for the subtitle gap.
+            if ci + 1 < cues.count, cues[ci + 1].start - cue.end < 0.15 { end = cues[ci + 1].start }
+            for (pi, page) in pages.enumerated() {
+                let s = pi == 0 ? cue.start : max(page[0].start, segments.last?.start ?? cue.start)
+                let e = pi + 1 < pages.count ? max(pages[pi + 1][0].start, s) : end
+                segments.append(CaptionSegment(id: segments.count, start: s, end: max(e, s), lines: Self.evenChunks(page, max: perLine)))
+            }
         }
         return segments
+    }
+
+    /// `items` cut into the fewest consecutive chunks of at most `limit`, as even in size as possible.
+    static func evenChunks<T>(_ items: [T], max limit: Int) -> [[T]] {
+        guard !items.isEmpty else { return [] }
+        let n = Int((Double(items.count) / Double(Swift.max(1, limit))).rounded(.up))
+        let size = Int((Double(items.count) / Double(n)).rounded(.up))
+        return stride(from: 0, to: items.count, by: size).map { Array(items[$0..<min($0 + size, items.count)]) }
     }
 
     private func mergeMultiWordReplacements(_ words: inout [CaptionWord], replacements: [String: String]) {
@@ -192,8 +207,9 @@ extension Project {
                     $0.text.trimmingCharacters(in: .punctuationCharacters).lowercased()
                 }
                 if window == parts {
-                    let trailing = String(words[i + parts.count - 1].text.reversed().prefix { $0.isPunctuation }.reversed())
-                    let merged = CaptionWord(text: (captions.style.uppercase ? value.uppercased() : value) + trailing, start: words[i].start, end: words[i + parts.count - 1].end, anchor: words[i].anchor, breakBefore: words[i].breakBefore)
+                    let lastWord = words[i + parts.count - 1]
+                    let trailing = String(lastWord.text.reversed().prefix { $0.isPunctuation }.reversed())
+                    let merged = CaptionWord(text: value + trailing, start: words[i].start, end: lastWord.end, anchor: words[i].anchor, breakBefore: words[i].breakBefore, lastAnchor: lastWord.endAnchor, joinNext: lastWord.joinNext)
                     words.replaceSubrange(i..<(i + parts.count), with: [merged])
                 }
                 i += 1
