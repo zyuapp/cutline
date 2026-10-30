@@ -293,6 +293,8 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     /// How log footage is brought into the working space: tone map ("aces" default) and exposure in stops.
     public var inputTone: ToneMap?
     public var inputExposure: Double?
+    /// Position in a surround mix; nil is the default (front center, full center share, no LFE).
+    public var surround: SurroundPan?
 
     public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), blend: BlendMode = .normal, effects: [Effect] = [], anim: [String: Curve] = [:], text: TextSpec? = nil, color: RGBA? = nil) {
         self.id = id
@@ -320,7 +322,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, mediaId, start, duration, sourceIn, speed, volume, audioFadeIn, audioFadeOut, audioLead, audioLag
-        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure
+        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure, surround
     }
 
     public init(from decoder: Decoder) throws {
@@ -342,6 +344,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         link = try c.decodeIfPresent(String.self, forKey: .link)
         inputTone = try c.decodeIfPresent(ToneMap.self, forKey: .inputTone)
         inputExposure = try c.decodeIfPresent(Double.self, forKey: .inputExposure)
+        surround = try c.decodeIfPresent(SurroundPan.self, forKey: .surround)
         audioLag = try c.decodeIfPresent(Double.self, forKey: .audioLag) ?? 0
         fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
         fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
@@ -393,6 +396,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(link, forKey: .link)
         try c.encodeIfPresent(inputTone, forKey: .inputTone)
         try c.encodeIfPresent(inputExposure, forKey: .inputExposure)
+        try c.encodeIfPresent(surround, forKey: .surround)
     }
 
     public var end: Seconds { start + duration }
@@ -454,18 +458,29 @@ public struct MasterAudio: Codable, Equatable, Sendable {
     public var gainDb: Double
     /// Audio effects on the whole mix, e.g. a limiter after loudness normalization.
     public var effects: [Effect]
+    /// Channel layout the timeline is mixed and delivered in.
+    public var layout: AudioLayout
 
-    public init(gainDb: Double = 0, effects: [Effect] = []) {
+    public init(gainDb: Double = 0, effects: [Effect] = [], layout: AudioLayout = .stereo) {
         self.gainDb = gainDb
         self.effects = effects
+        self.layout = layout
     }
 
-    enum CodingKeys: String, CodingKey { case gainDb, effects }
+    enum CodingKeys: String, CodingKey { case gainDb, effects, layout }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         gainDb = try c.decodeIfPresent(Double.self, forKey: .gainDb) ?? 0
         effects = try c.decodeIfPresent([Effect].self, forKey: .effects) ?? []
+        layout = try c.decodeIfPresent(AudioLayout.self, forKey: .layout) ?? .stereo
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(gainDb, forKey: .gainDb)
+        try c.encode(effects, forKey: .effects)
+        if layout != .stereo { try c.encode(layout, forKey: .layout) }
     }
 
     public var gain: Double { pow(10, gainDb / 20) }

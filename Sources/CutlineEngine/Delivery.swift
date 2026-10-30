@@ -24,7 +24,7 @@ public enum Delivery {
         }
     }
 
-    /// 48 kHz stereo. There is no MP3 encoder on macOS.
+    /// 48 kHz, in the timeline's layout unless another is asked for. There is no MP3 encoder on macOS.
     public enum AudioFormat: String, CaseIterable, Sendable {
         case wav24, wav32f, aiff24, aac256, alac
 
@@ -45,8 +45,19 @@ public enum Delivery {
             }
         }
 
-        var settings: [String: Any] {
-            let base: [String: Any] = [AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2]
+        var settings: [String: Any] { settings(.stereo, tag: kAudioChannelLayoutTag_Stereo) }
+
+        /// The file's channel layout: SMPTE order for PCM, the codec's order for AAC and ALAC, which can't carry 7.1 rears.
+        func channelLayoutTag(_ layout: AudioLayout) throws -> AudioChannelLayoutTag {
+            guard self == .aac256 || self == .alac else { return layout.channelLayoutTag }
+            guard let tag = layout.codecChannelLayoutTag else { throw EditError("\(rawValue) can't carry 7.1 with rear surrounds; use wav24, wav32f or aiff24") }
+            return tag
+        }
+
+        /// AAC is 256 kb/s for stereo and 64 kb/s per channel for surround.
+        func settings(_ layout: AudioLayout, tag: AudioChannelLayoutTag) -> [String: Any] {
+            var base: [String: Any] = [AVSampleRateKey: 48_000, AVNumberOfChannelsKey: layout.channelCount]
+            if layout != .stereo { base[AVChannelLayoutKey] = AudioLayout.layoutData(tag) }
             func pcm(_ bits: Int, float: Bool, bigEndian: Bool) -> [String: Any] {
                 base.merging([AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: bits, AVLinearPCMIsFloatKey: float, AVLinearPCMIsBigEndianKey: bigEndian, AVLinearPCMIsNonInterleaved: false]) { $1 }
             }
@@ -54,7 +65,7 @@ public enum Delivery {
             case .wav24: return pcm(24, float: false, bigEndian: false)
             case .wav32f: return pcm(32, float: true, bigEndian: false)
             case .aiff24: return pcm(24, float: false, bigEndian: true)
-            case .aac256: return base.merging([AVFormatIDKey: kAudioFormatMPEG4AAC, AVEncoderBitRateKey: 256_000]) { $1 }
+            case .aac256: return base.merging([AVFormatIDKey: kAudioFormatMPEG4AAC, AVEncoderBitRateKey: max(256_000, 64_000 * layout.channelCount)]) { $1 }
             case .alac: return base.merging([AVFormatIDKey: kAudioFormatAppleLossless, AVEncoderBitDepthHintKey: 24]) { $1 }
             }
         }
@@ -119,8 +130,13 @@ public enum Delivery {
 
     // MARK: Audio
 
-    /// The timeline's mix over `range` (default the whole timeline) at 48 kHz stereo, padded with silence to the full length.
-    public static func audio(_ built: BuiltTimeline, range: TimeRange? = nil, to url: URL, format: AudioFormat) async throws {
+    /// The timeline's mix over `range` (default the whole timeline) at 48 kHz, padded with silence to the full length.
+    /// It is in the timeline's master layout, or folded down (ITU-R BS.775) to `layout` when given.
+    public static func audio(_ built: BuiltTimeline, range: TimeRange? = nil, to url: URL, format: AudioFormat, layout: AudioLayout? = nil) async throws {
+        let target = layout ?? built.layout
+        if built.layout != .stereo || target != .stereo {
+            return try await audio(built, range: range, to: url, format: format, target: target)
+        }
         let span = timeRange(built, range)
         let comp = built.composition
         let tracks = try await comp.loadTracks(withMediaType: .audio)
@@ -185,6 +201,46 @@ public enum Delivery {
             try silence(until: totalFrames)
             file.close()
         }
+    }
+
+    static func audio(_ built: BuiltTimeline, range: TimeRange?, to url: URL, format: AudioFormat, target: AudioLayout) async throws {
+        guard format.extensions.contains(url.pathExtension.lowercased()) else {
+            throw EditError("\(format.rawValue) is written as .\(format.fileExtension); \(url.lastPathComponent) has another extension")
+        }
+        let span = timeRange(built, range)
+        let count = Int64((span.duration.seconds * 48_000).rounded())
+        if built.layout != .stereo {
+            guard let source = built.surround else { throw EditError("The \(built.layout.title) mix isn't rendered yet; render the project's stems first") }
+            let from = Int64((span.start.seconds * 48_000).rounded())
+            try write(source, from: built.layout, frames: from..<(from + count), to: url, layout: target, format: format)
+            return
+        }
+        let mix = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-mix-\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: mix) }
+        _ = try await AudioIO.mixdown(built, range: TimeRange(span.start.seconds, span.end.seconds), to: mix)
+        try write(mix, from: .stereo, frames: 0..<count, to: url, layout: target, format: format)
+    }
+
+    /// Folds a 48 kHz mono, stereo, 5.1 or 7.1 file (channels in SMPTE order) down to `layout` per ITU-R BS.775:
+    /// centre and surrounds at −3 dB into L/R, LFE dropped; mono is the average of that stereo fold.
+    public static func downmix(_ source: URL, to url: URL, layout: AudioLayout = .stereo, format: AudioFormat) throws {
+        let file = try AVAudioFile(forReading: source)
+        guard let from = AudioLayout(channelCount: Int(file.processingFormat.channelCount)) else { throw EditError("\(source.lastPathComponent) has \(file.processingFormat.channelCount) channels; downmix reads mono, stereo, 5.1 and 7.1") }
+        guard format.extensions.contains(url.pathExtension.lowercased()) else {
+            throw EditError("\(format.rawValue) is written as .\(format.fileExtension); \(url.lastPathComponent) has another extension")
+        }
+        try write(source, from: from, frames: 0..<file.length, to: url, layout: layout, format: format)
+    }
+
+    static func write(_ source: URL, from: AudioLayout, frames: Range<Int64>, to url: URL, layout: AudioLayout, format: AudioFormat) throws {
+        try? FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let tag = try format.channelLayoutTag(layout)
+        let input = try AVAudioFile(forReading: source)
+        let output = try AVAudioFile(forWriting: url, settings: format.settings(layout, tag: tag), commonFormat: .pcmFormatFloat32, interleaved: false)
+        let matrix = from.downmixMatrix(to: layout)
+        try AudioIO.remix(input, matrix: layout.channelOrder(in: tag).map { matrix[$0] }, frames: frames) { try AudioIO.write($0, to: output) }
+        output.close()
     }
 
     // MARK: GIF

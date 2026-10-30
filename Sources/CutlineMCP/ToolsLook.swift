@@ -4,9 +4,9 @@ import Foundation
 
 extension Toolbox {
     func registerLookTools() {
-        let targetSchema: JSON = ["type": ["string", "array"], "items": ["type": "string"], "description": "Clip id, track id, \"V1/*\" for every clip on a track, \"master\" (param_set gain_db), or a list of these"]
+        let targetSchema: JSON = ["type": ["string", "array"], "items": ["type": "string"], "description": "Clip id, track id, \"V1/*\" for every clip on a track, \"master\" (param_set gain_db and layout), or a list of these"]
 
-        addEdit(EditTool(name: "param_set", description: "Set or animate any parameter of clips or tracks by path: transform.scale/x/y/rotation/opacity/fit/crop.*, blend, fade.in/out, audio.volume, text.*, color, and fx.<effect id>.<param> for effects. Animate with keys [time, value, ease?]; times are timeline seconds or anchors (\"talk.w12\", \"clip_x.end-0.5\"), or seconds from the clip start with relative:true. Eases: linear, easeIn, easeOut, easeInOut (default), hold, back, elastic, bounce, or \"bezier(x1, y1, x2, y2)\" for a custom curve. Numbers and colors interpolate. project_status with target lists a clip's paths and values; catalog explains every effect parameter.", schema: Schema.object([
+        addEdit(EditTool(name: "param_set", description: "Set or animate any parameter of clips or tracks by path: transform.scale/x/y/rotation/opacity/fit/crop.*, blend, fade.in/out, audio.volume, surround panning (audio.pan_x/pan_y/center/lfe, heard when the master layout is 5.1 or 7.1), text.*, color, and fx.<effect id>.<param> for effects. Animate with keys [time, value, ease?]; times are timeline seconds or anchors (\"talk.w12\", \"clip_x.end-0.5\"), or seconds from the clip start with relative:true. Eases: linear, easeIn, easeOut, easeInOut (default), hold, back, elastic, bounce, or \"bezier(x1, y1, x2, y2)\" for a custom curve. Numbers and colors interpolate. project_status with target lists a clip's paths and values; catalog explains every effect parameter.", schema: Schema.object([
             "target": targetSchema,
             "set": ["type": "object", "description": "{path: value}, e.g. {\"transform.scale\": 1.2, \"blend\": \"screen\", \"fx.glow1.amount\": 0.8}"],
             "animate": ["type": "object", "description": "{path: [[time, value, ease?], ...]}, e.g. {\"transform.scale\": [[\"clip_x.start\", 1], [\"clip_x.end\", 1.15, \"easeOut\"]]}. Replaces that path's existing animation."],
@@ -49,8 +49,14 @@ extension Toolbox {
                     p.tracks[i] = t
                     lines.append("\(t.id): " + changed.joined(separator: ", "))
                 case .master:
-                    for (path, v) in (args.raw["set"]?.object ?? [:]) {
-                        guard path == "gain_db", let n = v.double else { throw EditError("The master has one parameter, gain_db (number, -40…24)") }
+                    for (path, v) in (args.raw["set"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
+                        if path == "layout" {
+                            guard let name = v.string, let layout = AudioLayout(name: name) else { throw EditError("layout is one of \(AudioLayout.allCases.map(\.rawValue).joined(separator: ", ")) (or 5.1, 7.1)") }
+                            lines.append("master layout \(p.master.layout.title)→\(layout.title)")
+                            p.master.layout = layout
+                            continue
+                        }
+                        guard path == "gain_db", let n = v.double else { throw EditError("The master has gain_db (number, -40…24) and layout (stereo, mono, surround51, surround71)") }
                         guard n >= -40, n <= 24 else { throw EditError("gain_db must be between -40 and 24") }
                         let before = p.master.gainDb
                         p.master.gainDb = n

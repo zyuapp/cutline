@@ -12,6 +12,10 @@ public struct BuiltTimeline: @unchecked Sendable {
     public let duration: Seconds
     /// Tracks with audio effects whose processed stem isn't rendered yet; they play dry.
     public let missingStems: [String]
+    /// The master layout. When it isn't stereo the composition plays a stereo fold-down of `surround`.
+    public let layout: AudioLayout
+    /// The rendered mix in `layout` (48 kHz float CAF), which export and delivery write instead of the composition's sound.
+    public let surround: URL?
 
     public func playerItem() -> AVPlayerItem {
         let item = AVPlayerItem(asset: composition)
@@ -35,8 +39,9 @@ public enum TimelineBuilder {
     }
 
     /// `dryTrack` builds only that track's sound, before track gain and effects, for stem rendering.
-    /// With `masterStage`, a rendered master stem (the mix through the master effects) replaces the tracks' sound.
-    static func build(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary, renderScale: Double, stems: AudioStems?, dryTrack: String?, masterStage: Bool) async throws -> BuiltTimeline {
+    /// With `masterStage`, a rendered master stem (the mix through the master effects) replaces the tracks' sound,
+    /// or for a mono or surround layout, the fold-down of the rendered layout mix. `soundOnly` skips the picture.
+    static func build(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary, renderScale: Double, stems: AudioStems?, dryTrack: String?, masterStage: Bool, soundOnly: Bool = false) async throws -> BuiltTimeline {
         let project = project.resolvingAudioTransitions()
         var heads: [String: Seconds] = [:], tails: [String: Seconds] = [:]
         for w in project.transitionWindows where w.transition.hasVideo {
@@ -59,15 +64,23 @@ public enum TimelineBuilder {
         var missingStems: [String] = []
         let master = dryTrack == nil ? project.master.gain : 1
         var masterStem: URL?
+        var surround: URL?
         // Tracks only weakly reference their asset, so proxies stay alive until the build is done.
         var proxies: [AVURLAsset] = []
         defer { _ = proxies }
-        if masterStage, dryTrack == nil, AudioStems.hasMasterChain(project) {
+        if masterStage, dryTrack == nil, project.master.layout != .stereo {
+            if let cached = stems?.cachedLayoutMix(for: project) {
+                surround = cached.mix
+                masterStem = cached.foldDown
+            } else {
+                missingStems.append("layout")
+            }
+        } else if masterStage, dryTrack == nil, AudioStems.hasMasterChain(project) {
             masterStem = stems?.cachedMaster(for: project)
             if masterStem == nil { missingStems.append("master") }
         }
 
-        if dryTrack == nil {
+        if dryTrack == nil, !soundOnly {
             let base = try await BaseVideo.asset()
             if let baseTrack = try await base.loadTracks(withMediaType: .video).first,
                let ct = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
@@ -101,7 +114,7 @@ public enum TimelineBuilder {
             for (pictureKind, clip) in clips {
                 guard let mid = clip.mediaId, let media = project.mediaAsset(mid) else { continue }
                 if media.isImage {
-                    if images[mid] == nil, dryTrack == nil { images[mid] = library.image(for: media) }
+                    if images[mid] == nil, dryTrack == nil, !soundOnly { images[mid] = library.image(for: media) }
                     continue
                 }
                 let entry = try await library.entry(for: media)
@@ -121,7 +134,7 @@ public enum TimelineBuilder {
                     base = 0
                 }
 
-                if dryTrack == nil, pictureKind == .video, let v = video, let vr = videoRange {
+                if dryTrack == nil, !soundOnly, pictureKind == .video, let v = video, let vr = videoRange {
                     let head = heads[clip.id] ?? 0, tail = tails[clip.id] ?? 0
                     let start = clip.start - head
                     var lane = videoLanes.firstIndex { $0.end <= start + 1e-6 }
@@ -230,7 +243,7 @@ public enum TimelineBuilder {
 
         let mix = AVMutableAudioMix()
         mix.inputParameters = audioParams
-        return BuiltTimeline(composition: comp, videoComposition: vc, audioMix: mix, scene: scene, duration: duration, missingStems: missingStems)
+        return BuiltTimeline(composition: comp, videoComposition: vc, audioMix: mix, scene: scene, duration: duration, missingStems: missingStems, layout: project.master.layout, surround: surround)
     }
 
     /// Gain over the clip's sound: animated or fixed volume, times fades, with a few ms of ramp at

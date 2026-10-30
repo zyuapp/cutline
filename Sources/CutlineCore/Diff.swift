@@ -46,6 +46,7 @@ extension Project {
             out.append("- \(id) from \(t) \(fmt2(c.start))–\(fmt2(c.end))")
         }
         if master.gainDb != old.master.gainDb { out.append("~ master gain \(fmt2(old.master.gainDb))→\(fmt2(master.gainDb)) dB") }
+        if master.layout != old.master.layout { out.append("~ master layout \(old.master.layout.title)→\(master.layout.title)") }
         if master.effects != old.master.effects { out.append("~ master effects: " + master.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ").ifEmpty("none")) }
         let oldTr = Dictionary(uniqueKeysWithValues: old.transitions.map { ($0.id, $0) })
         let newTr = Set(transitions.map(\.id))

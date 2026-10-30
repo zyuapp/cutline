@@ -97,12 +97,31 @@ public enum Exporter {
 
         // Sound is mixed to a file first and read by its own reader: one reader feeding both writer inputs
         // can stall when the writer holds one stream back to interleave with the other.
+        // Mono and surround timelines write their rendered layout mix instead.
         let audioTracks = try await comp.loadTracks(withMediaType: .audio)
         var audioOut: AVAssetReaderTrackOutput?
         var audioReader: AVAssetReader?
+        var audioOffset = CMTime.zero
+        let layout = built.layout
         let mixFile = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-mix-\(UUID().uuidString).caf")
         defer { try? FileManager.default.removeItem(at: mixFile) }
-        if !audioTracks.isEmpty {
+        if layout != .stereo {
+            guard let source = built.surround else { throw EditError("The \(layout.title) mix isn't rendered yet; render the project's stems (AudioStems.renderMissing) before exporting") }
+            let asset = AVURLAsset(url: source)
+            if let track = try await asset.loadTracks(withMediaType: .audio).first {
+                let r = try AVAssetReader(asset: asset)
+                r.timeRange = CMTimeRange(start: CMTime(seconds: range.start.seconds, preferredTimescale: 48_000), end: CMTime(seconds: range.end.seconds, preferredTimescale: 48_000))
+                let out = AVAssetReaderTrackOutput(track: track, outputSettings: [
+                    AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: layout.channelCount,
+                    AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
+                    AVChannelLayoutKey: layout.channelLayoutData,
+                ])
+                r.add(out)
+                audioReader = r
+                audioOut = out
+                audioOffset = r.timeRange.start
+            }
+        } else if !audioTracks.isEmpty {
             _ = try await AudioIO.mixdown(built, range: TimeRange(range.start.seconds, range.end.seconds), to: mixFile)
             let mixAsset = AVURLAsset(url: mixFile)
             if let track = try await mixAsset.loadTracks(withMediaType: .audio).first {
@@ -143,9 +162,8 @@ public enum Exporter {
 
         var audioIn: AVAssetWriterInput?
         if audioOut != nil {
-            let settings: [String: Any] = options.preset.isProRes
-                ? [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2, AVLinearPCMBitDepthKey: 24, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
-                : [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2, AVEncoderBitRateKey: options.audioKbps * 1000]
+            let settings = audioSettings(layout, preset: options.preset, kbps: options.audioKbps)
+            guard writer.canApply(outputSettings: settings, forMediaType: .audio) else { throw EditError("\(options.preset.rawValue) can't carry \(layout.title) audio") }
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
             input.expectsMediaDataInRealTime = false
             writer.add(input)
@@ -194,9 +212,10 @@ public enum Exporter {
         writer.startSession(atSourceTime: .zero)
 
         let total = range.duration.seconds
+        let audioStart = audioOffset
         async let video: Void = pump(videoOut, into: videoIn, offset: offset) { t in progress?(min(1, t / max(total, 0.001))) }
         async let audio: Void = {
-            if let audioOut, let audioIn { try await pump(audioOut, into: audioIn, offset: .zero, report: nil) }
+            if let audioOut, let audioIn { try await pump(audioOut, into: audioIn, offset: audioStart, report: nil) }
         }()
         // Fed together so the writer can interleave every track while the video is being rendered.
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -216,6 +235,17 @@ public enum Exporter {
         }
         await writer.finishWriting()
         if writer.status != .completed { throw writer.error ?? EditError("Writing \(url.lastPathComponent) failed") }
+    }
+
+    /// 24-bit PCM for ProRes, AAC otherwise (at least 384 kb/s for 5.1). 7.1 is 24-bit PCM in either container:
+    /// the AAC encoder only carries 7.1 with front-wide speakers, not rear surrounds.
+    static func audioSettings(_ layout: AudioLayout, preset: ExportPreset, kbps: Int) -> [String: Any] {
+        let aacTag = preset.isProRes ? nil : layout.codecChannelLayoutTag
+        var settings: [String: Any] = aacTag == nil
+            ? [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: layout.channelCount, AVLinearPCMBitDepthKey: 24, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
+            : [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: layout.channelCount, AVEncoderBitRateKey: max(kbps, layout == .surround51 ? 384 : 0) * 1000]
+        if layout != .stereo { settings[AVChannelLayoutKey] = AudioLayout.layoutData(aacTag ?? layout.channelLayoutTag) }
+        return settings
     }
 
     /// Copies samples from a reader output to a writer input, shifting them to start at zero.

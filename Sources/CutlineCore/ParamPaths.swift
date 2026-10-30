@@ -41,6 +41,14 @@ extension Clip {
         ParamSpec("audio.fade_out", .number, .number(0), min: 0, unit: "seconds", animatable: false, "Audio fade-out"),
         ParamSpec("audio.lead", .number, .number(0), min: -30, max: 30, unit: "seconds", animatable: false, "J cut: sound starts this long before the picture (negative: later)"),
         ParamSpec("audio.lag", .number, .number(0), min: -30, max: 30, unit: "seconds", animatable: false, "L cut: sound continues this long after the picture (negative: ends earlier)"),
+    ] + Clip.surroundSpecs
+
+    /// Used when the master layout is 5.1 or 7.1.
+    public static let surroundSpecs: [ParamSpec] = [
+        ParamSpec("audio.pan_x", .number, .number(0), min: -1, max: 1, "Surround position: -1 left … 1 right; stereo sources keep their width (left channel at pan_x−1, right at pan_x+1)"),
+        ParamSpec("audio.pan_y", .number, .number(1), min: -1, max: 1, "Surround position: 1 front … -1 back; 0 is the side, the middle (0, 0) spreads to every speaker"),
+        ParamSpec("audio.center", .number, .number(1), min: 0, max: 1, "Share of a front-center image on the C speaker; 0 makes a phantom center from L and R"),
+        ParamSpec("audio.lfe", .number, .number(0), min: 0, max: 1, "Send to the LFE channel, low-passed at 120 Hz"),
     ]
 
     static let textSpecs: [ParamSpec] = [
@@ -74,7 +82,7 @@ extension Clip {
         case .solid: return Clip.transformSpecs + Clip.solidSpecs
         case .adjustment: return Clip.transformSpecs.filter { $0.name == "transform.opacity" || $0.name.hasPrefix("fade.") || $0.name == "name" }
         case .generator: return Clip.transformSpecs.filter { $0.name != "transform.fit" && !$0.name.hasPrefix("transform.crop") }
-        case .sequence: return Clip.transformSpecs.filter { $0.name != "transform.fit" && !$0.name.hasPrefix("transform.crop") } + Clip.audioSpecs.filter { $0.name == "audio.volume" }
+        case .sequence: return Clip.transformSpecs.filter { $0.name != "transform.fit" && !$0.name.hasPrefix("transform.crop") } + Clip.audioSpecs.filter { $0.name == "audio.volume" } + Clip.surroundSpecs
         }
     }
 
@@ -155,6 +163,10 @@ extension Clip {
         case "time.interpolate": return .string(interpolate ?? "none")
         case "audio.lead": return .number(audioLead)
         case "audio.lag": return .number(audioLag)
+        case "audio.pan_x": return .number((surround ?? .standard).x)
+        case "audio.pan_y": return .number((surround ?? .standard).y)
+        case "audio.center": return .number((surround ?? .standard).center)
+        case "audio.lfe": return .number((surround ?? .standard).lfe)
         case "color": return .string((color ?? .black).hex)
         default: break
         }
@@ -242,6 +254,15 @@ extension Clip {
         case "time.interpolate": interpolate = v.string == "none" ? nil : v.string
         case "audio.lead": audioLead = n
         case "audio.lag": audioLag = n
+        case "audio.pan_x", "audio.pan_y", "audio.center", "audio.lfe":
+            var s = surround ?? .standard
+            switch path {
+            case "audio.pan_x": s.x = n
+            case "audio.pan_y": s.y = n
+            case "audio.center": s.center = n
+            default: s.lfe = n
+            }
+            surround = s == .standard ? nil : s
         case "color": color = v.color
         default:
             guard path.hasPrefix("text."), var s = text else { throw EditError("Cannot set \(path) on \(id)") }

@@ -105,7 +105,8 @@ public final class AudioStems: @unchecked Sendable {
         return (p, track)
     }
 
-    /// Renders every stem whose inputs changed: clip stems, track stems, then the master. Returns what it rendered.
+    /// Renders every stem whose inputs changed: clip stems, track stems, then the master, or for a mono or
+    /// surround layout the mix in that layout. Returns what it rendered.
     @discardableResult
     public func renderMissing(_ project: Project, transcripts: [String: Transcript], library: MediaLibrary) async throws -> [String] {
         var done: [String] = []
@@ -123,7 +124,12 @@ public final class AudioStems: @unchecked Sendable {
             try await render(track, in: project, transcripts: transcripts, library: library)
             done.append(track.id)
         }
-        if Self.hasMasterChain(project), cachedMaster(for: project) == nil {
+        if project.master.layout != .stereo {
+            if cachedLayoutMix(for: project) == nil {
+                try await renderLayoutMix(project, transcripts: transcripts, library: library)
+                done.append(project.master.layout.title)
+            }
+        } else if Self.hasMasterChain(project), cachedMaster(for: project) == nil {
             try await renderMaster(project, transcripts: transcripts, library: library)
             done.append("master")
         }
@@ -427,24 +433,54 @@ public enum LoudnessMeter {
         ]
     }
 
+    /// Measures the timeline's mix; a mono or surround timeline is measured in its layout with BS.1770 channel weights.
     public static func measure(_ built: BuiltTimeline, range: TimeRange? = nil) async throws -> LoudnessReport {
+        if let url = built.surround, built.layout != .stereo { return try measure(file: url, layout: built.layout, range: range) }
         var acc = Accumulator()
         try await AudioIO.read(built, range: range) { samples, n in acc.feed(samples, n) }
         return acc.report()
     }
 
-    /// Consumes interleaved stereo float at 48 kHz.
+    /// Measures a 48 kHz file whose channels are in `layout`'s order.
+    public static func measure(file url: URL, layout: AudioLayout, range: TimeRange? = nil) throws -> LoudnessReport {
+        let file = try AVAudioFile(forReading: url)
+        guard Int(file.processingFormat.channelCount) == layout.channelCount else { throw EditError("\(url.lastPathComponent) has \(file.processingFormat.channelCount) channels, not \(layout.title)") }
+        let rate = AudioStems.sampleRate
+        let from = Int64(((range?.start ?? 0) * rate).rounded())
+        let to = range.map { min(file.length, Int64(($0.end * rate).rounded())) } ?? file.length
+        var acc = Accumulator(layout: layout)
+        let n = layout.channelCount
+        let identity = (0..<n).map { o in (0..<n).map { $0 == o ? 1.0 : 0 } }
+        try AudioIO.remix(file, matrix: identity, frames: from..<max(from, to)) { x in
+            let frames = x.first?.count ?? 0
+            var interleaved = [Float](repeating: 0, count: frames * n)
+            for c in 0..<n { for i in 0..<frames { interleaved[i * n + c] = x[c][i] } }
+            interleaved.withUnsafeBufferPointer { acc.feed($0.baseAddress!, frames) }
+        }
+        return acc.report()
+    }
+
+    /// Consumes interleaved float at 48 kHz, stereo unless made for another layout.
     struct Accumulator {
         let hop = Int(AudioStems.sampleRate * 0.1)
-        var filters = [LoudnessMeter.kWeighting(), LoudnessMeter.kWeighting()]
+        let channels: Int
+        let weights: [Double]
+        var filters: [[Biquad]]
         var hopEnergy: [Double] = []
         var acc = 0.0
         var count = 0
         var peak: Float = 0
         var truePeak = 0.0
-        var history = [[Double]](repeating: [Double](repeating: 0, count: 12), count: 2)
+        var history: [[Double]]
         var head = 0
         var frames = 0
+
+        init(layout: AudioLayout = .stereo) {
+            channels = layout.channelCount
+            weights = layout.loudnessWeights
+            filters = (0..<channels).map { _ in LoudnessMeter.kWeighting() }
+            history = [[Double]](repeating: [Double](repeating: 0, count: 12), count: channels)
+        }
 
         /// Polyphase interpolation filter for 4× oversampling, 12 taps per phase.
         static let phases: [[Double]] = [
@@ -456,13 +492,12 @@ public enum LoudnessMeter {
 
         mutating func feed(_ samples: UnsafePointer<Float>, _ n: Int) {
             var p: Float = 0
-            vDSP_maxmgv(samples, 1, &p, vDSP_Length(n * 2))
+            vDSP_maxmgv(samples, 1, &p, vDSP_Length(n * channels))
             peak = max(peak, p)
             for i in 0..<n {
                 head = (head + 1) % 12
-                history[0][head] = Double(samples[2 * i])
-                history[1][head] = Double(samples[2 * i + 1])
-                for ch in 0..<2 {
+                for ch in 0..<channels { history[ch][head] = Double(samples[channels * i + ch]) }
+                for ch in 0..<channels {
                     for phase in Accumulator.phases {
                         var y = 0.0
                         var k = head
@@ -473,9 +508,12 @@ public enum LoudnessMeter {
                         truePeak = max(truePeak, abs(y))
                     }
                 }
-                let l = filters[0][1].run(filters[0][0].run(Double(samples[2 * i])))
-                let r = filters[1][1].run(filters[1][0].run(Double(samples[2 * i + 1])))
-                acc += l * l + r * r
+                var energy = 0.0
+                for ch in 0..<channels where weights[ch] > 0 {
+                    let y = filters[ch][1].run(filters[ch][0].run(Double(samples[channels * i + ch])))
+                    energy += weights[ch] * y * y
+                }
+                acc += energy
                 count += 1
                 if count == hop {
                     hopEnergy.append(acc / Double(hop))

@@ -179,8 +179,8 @@ enum Describe {
         }
         lines.append("")
         let cs = p.captions
-        if p.master.gainDb != 0 || !p.master.effects.isEmpty {
-            lines.append("Master: gain \(fmt1(p.master.gainDb)) dB" + (p.master.effects.isEmpty ? "" : ", fx " + p.master.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ")))
+        if p.master.gainDb != 0 || !p.master.effects.isEmpty || p.master.layout != .stereo {
+            lines.append("Master: \(p.master.layout.title), gain \(fmt1(p.master.gainDb)) dB" + (p.master.effects.isEmpty ? "" : ", fx " + p.master.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ")))
         }
         lines.append("Captions: " + (cs.enabled ? "on, \(cs.style.animation.rawValue), size \(fmt2(cs.style.size)), y \(fmt2(cs.style.y)), \(cs.style.maxWordsPerLine) words/line" : "off"))
         if !p.transitions.isEmpty { lines.append("Transitions: " + p.transitions.map { "\($0.id) \($0.type) \(fmt2($0.duration))s \($0.from ?? "∅")→\($0.to ?? "∅")" }.joined(separator: ", ")) }

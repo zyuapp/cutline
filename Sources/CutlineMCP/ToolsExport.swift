@@ -18,8 +18,9 @@ extension Toolbox {
             "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
             "reveal": Schema.bool("Show the file in Finder when done, default false"),
-            "deliver": Schema.string("What to make: video (default); audio (mix only, see audio_format); stems (one audio file per role: dialogue, music, effects); stills (frames at `times`); image_sequence; gif; archive (copy the project and its media, trimmed with trim:true, to path)", values: ["video", "audio", "stems", "stills", "image_sequence", "gif", "archive"]),
+            "deliver": Schema.string("What to make: video (default); audio (mix only, see audio_format); stems (one audio file per role: dialogue, music, effects, in the master layout); stills (frames at `times`); image_sequence; gif; archive (copy the project and its media, trimmed with trim:true, to path)", values: ["video", "audio", "stems", "stills", "image_sequence", "gif", "archive"]),
             "audio_format": Schema.string("For audio and stems, default wav24", values: Delivery.AudioFormat.allCases.map(\.rawValue)),
+            "downmix": Schema.string("For audio and stems: fold the master layout (5.1/7.1) down to stereo or mono (ITU-R BS.775); default keeps the layout", values: AudioLayout.allCases.map(\.rawValue)),
             "image_format": Schema.string("For stills and image sequences, default png", values: Delivery.StillFormat.allCases.map(\.rawValue)),
             "times": Schema.numbers("For stills: timeline times"),
             "trim": Schema.bool("For archive: copy only the used parts of each file plus 1 s handles"),
@@ -128,7 +129,7 @@ extension Toolbox {
             }
             let seconds = check.duration
             let mbps = seconds > 0 ? Double(size) * 8 / seconds / 1_000_000 : 0
-            report.insert("Exported \(url.path)\n\(check.width)×\(check.height), \(fmt2(seconds))s, \(String(format: "%.1f", Double(size) / 1_048_576)) MB (\(fmt1(mbps)) Mb/s), \(preset.rawValue), took \(fmt1(Date().timeIntervalSince(started)))s", at: 0)
+            report.insert("Exported \(url.path)\n\(check.width)×\(check.height), \(fmt2(seconds))s, \(String(format: "%.1f", Double(size) / 1_048_576)) MB (\(fmt1(mbps)) Mb/s), \(preset.rawValue), \(p.master.layout.title) audio, took \(fmt1(Date().timeIntervalSince(started)))s", at: 0)
             return .text(report.joined(separator: "\n"))
         })
     }
@@ -181,8 +182,9 @@ extension Toolbox {
             let format = try args.enumValue("audio_format", Delivery.AudioFormat.self) ?? .wav24
             let url = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem).appendingPathExtension(format.fileExtension)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try await Delivery.audio(try await session.timeline(for: p), range: range, to: url, format: format)
-            return .text("Wrote \(url.path) (\(format.rawValue)), took \(fmt1(Date().timeIntervalSince(started)))s")
+            let layout = try args.enumValue("downmix", AudioLayout.self)
+            try await Delivery.audio(try await session.timeline(for: p), range: range, to: url, format: format, layout: layout)
+            return .text("Wrote \(url.path) (\(format.rawValue), \((layout ?? p.master.layout).title)), took \(fmt1(Date().timeIntervalSince(started)))s")
         case "stems":
             let format = try args.enumValue("audio_format", Delivery.AudioFormat.self) ?? .wav24
             let dir = args.optString("path").map { session.resolve($0) } ?? b.exportsURL.appendingPathComponent(stem + " stems", isDirectory: true)
@@ -195,7 +197,7 @@ extension Toolbox {
                 // Stems are pre-master so they sum back to the mix; the master bus effects stay off.
                 solo.master.effects = []
                 let url = dir.appendingPathComponent("\(stem) - \(role)").appendingPathExtension(format.fileExtension)
-                try await Delivery.audio(try await session.timeline(for: solo), range: range, to: url, format: format)
+                try await Delivery.audio(try await session.timeline(for: solo), range: range, to: url, format: format, layout: try args.enumValue("downmix", AudioLayout.self))
                 let tracks = roles.filter { $0.value == role }.keys.sorted()
                 lines.append("\(role): \(url.lastPathComponent) (\(tracks.joined(separator: ", ")))")
             }
