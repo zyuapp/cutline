@@ -21,7 +21,7 @@ private func recipeCases(_ file: String, from start: String, to end: String) thr
 }
 
 @Test func everyDispatchedRecipeHasASchemaAndBack() throws {
-    let handled = try recipeCases("ToolsAudio.swift", from: #"add(Tool(name: "recipe""#, to: "func measureSound")
+    let handled = try recipeCases("ToolsAudio.swift", from: "let runRecipe:", to: "func measureSound")
         .union(try recipeCases("ToolsRecipes.swift", from: "func moreRecipes(", to: "static func shotIndex"))
     #expect(handled == Set(Toolbox.recipeNames), "dispatched but undeclared: \(handled.subtracting(Toolbox.recipeNames).sorted()); declared but not dispatched: \(Set(Toolbox.recipeNames).subtracting(handled).sorted())")
     #expect(Toolbox.recipeNames.count == Set(Toolbox.recipeNames).count)
