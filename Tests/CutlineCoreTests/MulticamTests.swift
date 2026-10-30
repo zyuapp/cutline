@@ -78,14 +78,18 @@ private func expectCutsBetweenWords(_ shots: [MulticamShot], _ words: [MulticamW
 @Test func loudestMicPicksTheSpeaker() {
     // A's mic is 6 dB hotter overall; each person is ~10 dB louder on their own mic.
     let truth = ["A", "A", "B", "B", "A", "B", "B", "A"]
-    let a: [Double?] = truth.map { $0 == "A" ? -14 : -24 }
-    let b: [Double?] = truth.map { $0 == "B" ? -20 : -30 }
+    let a: [[Double]] = truth.map { $0 == "A" ? [-14, -15] : [-24, -25] }
+    let b: [[Double]] = truth.map { $0 == "B" ? [-20, -21] : [-30, -31] }
     let (angles, margin) = MulticamPlan.loudestAngles(["A": a, "B": b])
     #expect(angles == truth)
     #expect(margin >= 9)
     // Every camera hearing the same room sound: no margin.
-    let same: [Double?] = truth.map { $0 == "A" ? -20 : -21 }
+    let same: [[Double]] = truth.map { $0 == "A" ? [-20] : [-21] }
     #expect(MulticamPlan.loudestAngles(["A": same, "B": same]).margin < 1)
+    // A loosely timed word: the previous speaker's quiet tail and a pause, then the new speaker loud on B.
+    let tailA: [[Double]] = [[-14, -14], [-30, -60, -60, -45, -45, -45]]
+    let tailB: [[Double]] = [[-30, -30], [-45, -60, -60, -16, -16, -16]]
+    #expect(MulticamPlan.loudestAngles(["A": tailA + a, "B": tailB + b]).angles.prefix(2) == ["A", "B"])
 }
 
 @Test func manualAngleCutsSwitchMediaInSync() throws {

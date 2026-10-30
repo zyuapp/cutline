@@ -5,7 +5,7 @@ public struct MulticamWord: Equatable, Sendable {
     public var start: Seconds
     public var end: Seconds
     public var text: String
-    /// nil keeps whoever was on screen.
+    /// nil when unknown: the word goes with the next word whose angle is known.
     public var angle: String?
 
     public init(start: Seconds, end: Seconds, text: String, angle: String?) {
@@ -56,10 +56,16 @@ public struct MulticamOptions: Sendable {
 public enum MulticamPlan {
     public static func shots(words raw: [MulticamWord], range: TimeRange, first: String, options o: MulticamOptions = MulticamOptions()) -> [MulticamShot] {
         let words = raw.filter { $0.end > range.start && $0.start < range.end }.sorted { $0.start < $1.start }
+        // Words without a known angle go with the next known word, so a new turn starts at the earliest doubtful word.
+        var resolved = words.map(\.angle)
+        var following: String?
+        for i in resolved.indices.reversed() {
+            if let a = resolved[i] { following = a } else { resolved[i] = following }
+        }
         // Speaker turns as runs of words.
         var turns: [(angle: String, a: Int, b: Int)] = []
-        for (i, w) in words.enumerated() {
-            let angle = w.angle ?? turns.last?.angle ?? first
+        for i in words.indices {
+            let angle = resolved[i] ?? turns.last?.angle ?? first
             if let last = turns.last, last.angle == angle { turns[turns.count - 1].b = i } else { turns.append((angle, i, i)) }
         }
         guard !turns.isEmpty else { return [MulticamShot(start: range.start, end: range.end, angle: first)] }
@@ -127,29 +133,37 @@ public enum MulticamPlan {
         return [MulticamShot(start: start.at, end: end.at, angle: angle, kind: kind)]
     }
 
-    /// Who is speaking by whose microphone is loudest: each angle's word levels (dB, nil when unmeasured) are taken
-    /// relative to that angle's 90th percentile, so mics with different gain compare fairly. Returns an angle per word
-    /// (nil when no level) and the median margin in dB between the loudest and the next angle; a margin of a few dB
-    /// means each person has their own mic, close to zero means every camera hears the same sound.
-    public static func loudestAngles(_ levels: [String: [Double?]]) -> (angles: [String?], margin: Double) {
+    /// Who is speaking by whose microphone is loudest. `levels` holds, per angle and word, the dB levels of short
+    /// frames across the word (empty when unmeasured; every angle's frames line up). Levels are taken relative to each
+    /// angle's 90th percentile so mics with different gain compare fairly, and each word averages its frames weighted by
+    /// how loud they are, so the speech inside a loosely timed word outweighs the pauses around it. Returns an angle
+    /// per word (nil when unmeasured or within `uncertain` dB of the next angle) and the median margin in dB between the loudest and the next angle; a margin of
+    /// a few dB means each person has their own mic, close to zero means every camera hears the same sound.
+    public static func loudestAngles(_ levels: [String: [[Double]]], uncertain: Double = 4) -> (angles: [String?], margin: Double) {
         let names = levels.keys.sorted()
         let n = levels.values.map(\.count).max() ?? 0
         guard names.count >= 2, n > 0 else { return ([String?](repeating: names.first, count: n), 0) }
         var reference: [String: Double] = [:]
         for name in names {
-            let v = levels[name]!.compactMap { $0 }.sorted()
+            let v = levels[name]!.flatMap { $0 }.sorted()
             reference[name] = v.isEmpty ? 0 : v[min(v.count - 1, Int(Double(v.count - 1) * 0.9))]
         }
         var out: [String?] = []
         var margins: [Double] = []
         for i in 0..<n {
-            let rel = names.compactMap { name -> (String, Double)? in
-                guard i < levels[name]!.count, let l = levels[name]![i] else { return nil }
-                return (name, l - reference[name]!)
-            }.sorted { $0.1 > $1.1 }
-            guard let best = rel.first else { out.append(nil); continue }
-            out.append(best.0)
-            if rel.count > 1 { margins.append(best.1 - rel[1].1) }
+            let present = names.filter { i < levels[$0]!.count && !levels[$0]![i].isEmpty }
+            let frames = present.map { levels[$0]![i].count }.min() ?? 0
+            guard present.count >= 1, frames > 0 else { out.append(nil); continue }
+            var sums = [Double](repeating: 0, count: present.count)
+            var total = 0.0
+            for j in 0..<frames {
+                let w = pow(10, present.map { levels[$0]![i][j] }.max()! / 10)
+                total += w
+                for (k, name) in present.enumerated() { sums[k] += w * (levels[name]![i][j] - reference[name]!) }
+            }
+            let rel = zip(present, sums.map { $0 / max(total, 1e-12) }).sorted { $0.1 > $1.1 }
+            out.append(rel.count < 2 || rel[0].1 - rel[1].1 >= uncertain ? rel[0].0 : nil)
+            if rel.count > 1 { margins.append(rel[0].1 - rel[1].1) }
         }
         let sorted = margins.sorted()
         return (out, sorted.isEmpty ? 0 : sorted[sorted.count / 2])

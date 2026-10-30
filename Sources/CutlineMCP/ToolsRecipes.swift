@@ -412,7 +412,7 @@ extension Toolbox {
         var labels: [String?]?
         var how = ""
         if signal != "speakers" {
-            var levels: [String: [Double?]] = [:]
+            var levels: [String: [[Double]]] = [:]
             for id in angles {
                 guard let m = current.mediaAsset(id) else { continue }
                 levels[id] = try await MulticamAudio.wordLevels(url: m.url, offset: offsets[id] ?? 0, words: spoken.map { TimeRange($0.element.start, $0.element.end) })
