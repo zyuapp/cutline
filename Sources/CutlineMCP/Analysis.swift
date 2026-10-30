@@ -148,6 +148,10 @@ extension Session {
                 out.append("\(job.id) \(job.mediaId) transcode")
                 continue
             }
+            if job.features == [Session.pictureJob] {
+                if resumePictures(job, p) { out.append("\(job.id) \(job.mediaId) picture") } else { jobs.update(job.id) { $0.status = "done"; $0.progress = 1 } }
+                continue
+            }
             let features = job.features.compactMap(Feature.init(rawValue:))
             guard let m = p.mediaAsset(job.mediaId), !features.isEmpty else {
                 jobs.update(job.id) { $0.status = "failed"; $0.message = "media \(job.mediaId) is no longer in the project" }

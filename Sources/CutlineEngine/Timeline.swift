@@ -16,6 +16,8 @@ public struct BuiltTimeline: @unchecked Sendable {
     public let layout: AudioLayout
     /// The rendered mix in `layout` (48 kHz float CAF), which export and delivery write instead of the composition's sound.
     public let surround: URL?
+    /// Clips with temporal effects whose processed picture isn't rendered yet; they play unprocessed.
+    public var missingPictures: [String] = []
 
     public func playerItem() -> AVPlayerItem {
         let item = AVPlayerItem(asset: composition)
@@ -62,6 +64,7 @@ public enum TimelineBuilder {
         var images: [String: CIImage] = [:]
         var audioParams: [AVMutableAudioMixInputParameters] = []
         var missingStems: [String] = []
+        var missingPictures: [String] = []
         let master = dryTrack == nil ? project.master.gain : 1
         var masterStem: URL?
         var surround: URL?
@@ -134,6 +137,24 @@ public enum TimelineBuilder {
                     base = 0
                 }
 
+                // Temporal effects play a processed copy of the picture once it is rendered.
+                var videoBase = base
+                if dryTrack == nil, !soundOnly, pictureKind == .video,
+                   let req = ProcessedPicture.request(clip, media: media, canvas: project.canvas, head: heads[clip.id] ?? 0, tail: tails[clip.id] ?? 0) {
+                    if let url = ProcessedPicture.cached(req) {
+                        let proxy = AVURLAsset(url: url)
+                        proxies.append(proxy)
+                        if let pv = try await proxy.loadTracks(withMediaType: .video).first {
+                            video = pv
+                            videoRange = try await pv.load(.timeRange)
+                            videoBase = clip.sourceIn - req.range.start
+                            orientations[clip.id] = .up
+                        }
+                    } else {
+                        missingPictures.append(clip.id)
+                    }
+                }
+
                 if dryTrack == nil, !soundOnly, pictureKind == .video, let v = video, let vr = videoRange {
                     let head = heads[clip.id] ?? 0, tail = tails[clip.id] ?? 0
                     let start = clip.start - head
@@ -157,7 +178,7 @@ public enum TimelineBuilder {
                         videoLanes[lane].end = clip.end + tail
                         trackIDs[clip.id] = videoLanes[lane].track.trackID
                     } else if let lane {
-                        try insertPieces(clip, from: -head, to: clip.duration + tail, base: base, fps: project.canvas.fps, source: v, available: vr, into: videoLanes[lane].track)
+                        try insertPieces(clip, from: -head, to: clip.duration + tail, base: videoBase, fps: project.canvas.fps, source: v, available: vr, into: videoLanes[lane].track)
                         videoLanes[lane].end = clip.end + tail
                         trackIDs[clip.id] = videoLanes[lane].track.trackID
                     }
@@ -243,7 +264,9 @@ public enum TimelineBuilder {
 
         let mix = AVMutableAudioMix()
         mix.inputParameters = audioParams
-        return BuiltTimeline(composition: comp, videoComposition: vc, audioMix: mix, scene: scene, duration: duration, missingStems: missingStems, layout: project.master.layout, surround: surround)
+        var built = BuiltTimeline(composition: comp, videoComposition: vc, audioMix: mix, scene: scene, duration: duration, missingStems: missingStems, layout: project.master.layout, surround: surround)
+        built.missingPictures = missingPictures
+        return built
     }
 
     /// Gain over the clip's sound: animated or fixed volume, times fades, with a few ms of ramp at

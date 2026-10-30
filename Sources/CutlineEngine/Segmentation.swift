@@ -17,12 +17,23 @@ public enum Segmentation {
         case person(Quality)
         /// Every foreground instance Vision finds: people, animals, objects.
         case subject
+        /// The foreground instance that best matches a box (image fractions, top-left origin), limited to the box
+        /// grown by `padding` (fraction of the image height); the box itself when `fallback` and no instance matches.
+        /// `id` names the followed object, so temporal smoothing joins its frames although the box moves.
+        case object(NormRect, padding: Double, fallback: Bool, id: String)
 
         public var description: String {
             switch self {
             case .person(let q): return "person.\(q.rawValue)"
             case .subject: return "subject"
+            case .object(let b, let pad, let fallback, let id): return String(format: "object.%@.%.4f,%.4f,%.4f,%.4f,%.4f,%d", id, b.x, b.y, b.width, b.height, pad, fallback ? 1 : 0)
             }
+        }
+
+        /// What successive frames' masks have in common, for smoothing.
+        var stream: String {
+            if case .object(_, let pad, let fallback, let id) = self { return "object.\(id).\(pad).\(fallback)" }
+            return description
         }
     }
 
@@ -106,6 +117,19 @@ public enum Segmentation {
             guard let observation = request.results?.first, !observation.allInstances.isEmpty else { return .empty }
             guard let out = try? observation.generateMask(forInstances: observation.allInstances) else { return nil }
             return MaskBuffer(out)
+        case .object(let box, let padding, let fallback, _):
+            let w = CVPixelBufferGetWidth(buffer), h = CVPixelBufferGetHeight(buffer)
+            let request = VNGenerateForegroundInstanceMaskRequest()
+            var picked: MaskBuffer?
+            if (try? handler.perform([request])) != nil, let observation = request.results?.first, !observation.allInstances.isEmpty,
+               let labels = MaskLabels(observation.instanceMask),
+               let best = labels.bestInstance(box, among: observation.allInstances),
+               let out = try? observation.generateMask(forInstances: IndexSet(integer: best)) {
+                picked = MaskBuffer(out)
+            }
+            let region = box.padded(padding * Double(h) / Double(max(w, 1)), padding)
+            guard let picked else { return fallback ? MaskBuffer.box(box, width: w, height: h) : .empty }
+            return picked.limited(to: region)
         }
     }
 
@@ -198,6 +222,83 @@ final class MaskBuffer {
                 .concatenating(CGAffineTransform(translationX: extent.minX, y: extent.minY)))
             .cropped(to: extent)
     }
+
+    /// 1 inside `box` (fractions, top-left origin), 0 elsewhere.
+    static func box(_ box: NormRect, width: Int, height: Int) -> MaskBuffer {
+        MaskBuffer(width: width, height: height, values: [Float](repeating: 1, count: width * height)).limited(to: box)
+    }
+
+    /// This mask with everything outside `region` (fractions, top-left origin) cleared.
+    func limited(to region: NormRect) -> MaskBuffer {
+        let x0 = Int((region.x * Double(width)).rounded()), x1 = Int(((region.x + region.width) * Double(width)).rounded())
+        let y0 = Int((region.y * Double(height)).rounded()), y1 = Int(((region.y + region.height) * Double(height)).rounded())
+        var out = values
+        for y in 0..<height {
+            for x in 0..<width where x < x0 || x >= x1 || y < y0 || y >= y1 { out[y * width + x] = 0 }
+        }
+        return MaskBuffer(width: width, height: height, values: out)
+    }
+}
+
+/// Vision's instance label map: 0 is background, n the n-th foreground instance.
+struct MaskLabels {
+    let width: Int
+    let height: Int
+    let labels: [UInt8]
+
+    init(width: Int, height: Int, labels: [UInt8]) {
+        self.width = width
+        self.height = height
+        self.labels = labels
+    }
+
+    init?(_ buffer: CVPixelBuffer) {
+        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_OneComponent8 else { return nil }
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        let w = CVPixelBufferGetWidth(buffer), h = CVPixelBufferGetHeight(buffer), rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+        var labels = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h {
+            let row = (base + y * rowBytes).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<w { labels[y * w + x] = row[x] }
+        }
+        self.init(width: w, height: h, labels: labels)
+    }
+
+    /// The instance whose pixels best overlap `box` (intersection over union), counting only instances mostly inside
+    /// the box or covering most of it; nil when none qualifies.
+    func bestInstance(_ box: NormRect, among instances: IndexSet) -> Int? {
+        var area = [Int](repeating: 0, count: 256), inside = [Int](repeating: 0, count: 256)
+        let x0 = box.x * Double(width), x1 = (box.x + box.width) * Double(width)
+        let y0 = box.y * Double(height), y1 = (box.y + box.height) * Double(height)
+        for y in 0..<height {
+            let cy = Double(y) + 0.5
+            for x in 0..<width {
+                let l = Int(labels[y * width + x])
+                guard l > 0 else { continue }
+                area[l] += 1
+                let cx = Double(x) + 0.5
+                if cx >= x0, cx < x1, cy >= y0, cy < y1 { inside[l] += 1 }
+            }
+        }
+        let boxArea = max(1, (x1 - x0) * (y1 - y0))
+        var best: (Int, Double)?
+        for l in instances where l > 0 && l < 256 && inside[l] > 0 {
+            let a = Double(area[l]), i = Double(inside[l])
+            let iou = i / (a + boxArea - i)
+            guard iou > 0.1 || i / a > 0.3 || i / boxArea > 0.5 else { continue }
+            if best == nil || iou > best!.1 { best = (l, iou) }
+        }
+        return best?.0
+    }
+}
+
+extension NormRect {
+    /// Grown by `dx` on the left and right and `dy` on the top and bottom.
+    func padded(_ dx: Double, _ dy: Double) -> NormRect {
+        NormRect(x: x - dx, y: y - dy, width: width + 2 * dx, height: height + 2 * dy)
+    }
 }
 
 /// Masks per source frame, since each costs a Vision request, with optional temporal smoothing.
@@ -229,7 +330,7 @@ public final class MaskCache: @unchecked Sendable {
     /// reduces flicker when frames are requested in order.
     public func mask(kind: Segmentation.Kind, key: Key, image: CIImage, smoothing: Double = 0) -> CIImage? {
         let s = Float(min(max(smoothing, 0), 0.95))
-        let stream = "\(key.mediaId)|\(kind)|\(String(format: "%.3f", s))"
+        let stream = "\(key.mediaId)|\(kind.stream)|\(String(format: "%.3f", s))"
         let rawKey = "\(key.mediaId)|\(kind)|\(key.tick)" as NSString
         let smoothKey = "\(stream)|\(key.tick)" as NSString
 

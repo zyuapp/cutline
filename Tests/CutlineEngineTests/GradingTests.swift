@@ -209,9 +209,12 @@ func skinPresetQualifiesFacesOnRealFootage() async throws {
     var faces = 0
     for t in stride(from: 20.0, to: 720, by: 6) {
         guard let cg = try? await gen.image(at: CMTime(seconds: t, preferredTimescale: 600)).image else { continue }
-        let req = VNDetectFaceRectanglesRequest()
-        try? VNImageRequestHandler(cgImage: cg).perform([req])
-        let boxes = (req.results ?? []).filter { $0.confidence > 0.8 && $0.boundingBox.width > 0.06 }.map(\.boundingBox)
+        // Vision waits on its own queues, so it runs off the cooperative pool.
+        let boxes = try await runBlocking { _ -> [CGRect] in
+            let req = VNDetectFaceRectanglesRequest()
+            try? VNImageRequestHandler(cgImage: cg).perform([req])
+            return (req.results ?? []).filter { $0.confidence > 0.8 && $0.boundingBox.width > 0.06 }.map(\.boundingBox)
+        }
         guard !boxes.isEmpty else { continue }
         faces += 1
         let img = CIImage(cgImage: cg)

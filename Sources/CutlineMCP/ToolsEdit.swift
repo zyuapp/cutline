@@ -574,7 +574,8 @@ extension Toolbox {
                 return .text("Dry run, nothing changed.\n" + lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before))
             }
             let p = try session.edit(label, run)
-            var result = ToolResult.text(lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before) + newIssues(p, before) + "\n" + footer(p))
+            let queued = session.queuePictures(p).map { "\n" + $0 }.joined()
+            var result = ToolResult.text(lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before) + newIssues(p, before) + queued + "\n" + footer(p))
             if let times = args.raw["verify"]?.array?.compactMap(\.double), !times.isEmpty {
                 let built = try await session.timeline(for: p)
                 let cell = Toolbox.cellWidth(width: p.canvas.width, height: p.canvas.height, count: times.count)
