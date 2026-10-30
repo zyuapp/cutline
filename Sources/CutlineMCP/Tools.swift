@@ -59,6 +59,7 @@ final class Toolbox {
         registerAudioTools()
         registerBatchTool()
         registerReviewTools()
+        registerVoiceOverTool()
         registerCaptionTools()
         registerBinTools()
         registerTimelineTools()

@@ -41,6 +41,7 @@ options=""
 # shellcheck disable=SC2086
 codesign --force $options --sign "$identity" "$app/Contents/MacOS/cutline-mcp"
 # shellcheck disable=SC2086
-codesign --force $options --sign "$identity" "$app"
+codesign --force $options --entitlements Resources/Cutline.entitlements --sign "$identity" "$app"
 codesign --verify --strict "$app"
+/usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$app/Contents/Info.plist" >/dev/null
 echo "Built $app ($version, signed: $identity)"

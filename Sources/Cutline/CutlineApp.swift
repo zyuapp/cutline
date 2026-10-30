@@ -127,6 +127,11 @@ final class AppModel {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let doc = self.doc else { return event }
             if NSApp.keyWindow?.firstResponder is NSTextView { return event }
+            if doc.recording != nil {
+                guard event.keyCode == 53 else { return event }
+                doc.closeRecording()
+                return nil
+            }
             let shift = event.modifierFlags.contains(.shift)
             if event.modifierFlags.contains(.command) { return event }
             switch event.keyCode {

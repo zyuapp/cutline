@@ -115,6 +115,38 @@ final class PlayerController {
         isPlaying = true
     }
 
+    // MARK: Recording
+
+    /// Paused exactly on `t` and prerolled, so `roll(atHost:)` starts on time.
+    func cue(_ t: Double, muted: Bool) async {
+        pause()
+        stopAt = nil
+        player.isMuted = muted
+        let target = CMTime(seconds: max(0, t), preferredTimescale: 60_000)
+        await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        time = target.seconds
+        _ = await player.preroll(atRate: 1)
+    }
+
+    /// Starts the cued item when the host clock reaches `host` and returns its clock read back from the item's
+    /// timebase shortly after.
+    func roll(atHost host: Double) async -> (host: Double, timeline: Double, requested: Double) {
+        let from = player.currentTime()
+        player.setRate(1, time: from, atHostTime: CMClockMakeHostTimeFromSystemUnits(AVAudioTime.hostTime(forSeconds: host)))
+        isPlaying = true
+        let settle = host + 0.05 - AVAudioTime.seconds(forHostTime: mach_absolute_time())
+        if settle > 0 { try? await Task.sleep(nanoseconds: UInt64(settle * 1e9)) }
+        guard let timebase = player.currentItem?.timebase else { return (host, from.seconds, from.seconds) }
+        let now = AVAudioTime.seconds(forHostTime: mach_absolute_time())
+        let t = CMTimebaseGetTime(timebase).seconds
+        return (now, t, from.seconds + (now - host))
+    }
+
+    func endRecording() {
+        pause()
+        player.isMuted = false
+    }
+
     func shuttle(_ rate: Float) {
         player.rate = rate
         isPlaying = rate != 0
