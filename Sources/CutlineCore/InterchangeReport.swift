@@ -63,6 +63,8 @@ extension Project {
     static let fcpClipKey = "com.cutline.clip"
     /// Names a .cube holding a clip's whole grade in notes and comments: "GRADE LUT <path>".
     static let gradeLUTTag = "GRADE LUT"
+    /// EDL comment with an event's source timecodes in the source's own counting, when the list's differs.
+    static let edlSourceTCTag = "SOURCE TC"
 
     static func clipJSON(_ c: Clip) -> String {
         let e = JSONEncoder()

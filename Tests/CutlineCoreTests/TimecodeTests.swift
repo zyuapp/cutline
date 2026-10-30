@@ -120,14 +120,31 @@ private func expectSameEdit(_ q: Project, _ p: Project, _ format: String, transi
     }
 }
 
-@Test func edlSourceTimecodeIsTheMediasOwnAndRoundTrips() throws {
+@Test func edlSourceTimecodeIsInTheListsCountingAndRoundTrips() throws {
     var p = timecodedProject()
     p.transitions = []
     let edl = p.edl(title: "Conform")
-    // c1 from 10:00:00:00 NDF + 150 frames, reel from the tape; pal at 25 fps from 14:22:10:05 + 1001 frames; prores DF.
-    #expect(edl.contains("001  TAPE7    AA/V  C        10:00:05:00 10:00:08:00 01:00:00;00 01:00:03;00"), "\(edl)")
-    #expect(edl.contains("002  A001     AA/V  C        14:22:50:06 14:22:52:06"), "\(edl)")
+    // In the drop-frame list: c1 (10:00:00:00 NDF + 150 frames) is the same frame relabeled drop frame; pal (25 fps,
+    // 14:22:10:05 + 1001 frames) the same time of day at 29.97; each with its own timecode in a comment.
+    #expect(edl.contains("001  TAPE7    AA/V  C        10:00:41;00 10:00:44;00 01:00:00;00 01:00:03;00"), "\(edl)")
+    #expect(edl.contains("* SOURCE TC: 10:00:05:00 10:00:08:00 (29.97 fps NDF)"), "\(edl)")
+    #expect(edl.contains("002  A001     AA/V  C        14:22:50;07 14:22:52;07 01:00:03;00 01:00:05;00"), "\(edl)")
+    #expect(edl.contains("* SOURCE TC: 14:22:50:06 14:22:52:06 (25 fps)"), "\(edl)")
     #expect(edl.contains("003  A002C003 AA/V  C        01:00:10;00 01:00:14;00"), "\(edl)")
+    #expect(edl.components(separatedBy: "SOURCE TC").count == 3, "the DF source matches the list")
+    // A non-drop list never mixes in drop-frame or 25 fps source timecode.
+    var n = p
+    n.canvas.dropFrame = false
+    let ndf = n.edl(title: "Conform")
+    #expect(!ndf.split(separator: "\n").contains { $0.first?.isNumber == true && $0.contains(";") }, "\(ndf)")
+    #expect(ndf.contains("* SOURCE TC: 01:00:10;00 01:00:14;00 (29.97 fps DF)") && ndf.contains("(25 fps)"), "\(ndf)")
+    expectSameEdit(try Importer.edl(ndf, into: n).project, n, "NDF EDL", transitions: false)
+    // Source and record durations agree on every event.
+    for l in edl.split(separator: "\n") where l.first?.isNumber == true {
+        let t = l.split(separator: " ").suffix(4).map(String.init)
+        let f = TimecodeFormat(fps: 30000.0 / 1001)
+        #expect(f.frames(t[1])! - f.frames(t[0])! == f.frames(t[3])! - f.frames(t[2])!, "\(l)")
+    }
     #expect(edl.contains("* SOURCE FILE: /footage/XDCAM_0001.MXF"))
     #expect(edl.contains("* FROM CLIP NAME: Xdcam"))
 

@@ -83,22 +83,43 @@ private func expectNotHeard(_ p: Project, media: String, source r: TimeRange, so
     }
 }
 
-@Test func deletingAClipTakesItsNeighboursSplitSoundWithIt() throws {
+@Test func deletingTheNextClipKeepsTheLCut() throws {
+    // a's L cut is a's own sound, so it keeps playing into the gap.
     var p = try lCut()
-    try p.deleteClips(["b"], ripple: false)
-    expectSilent(p, in: TimeRange(10, 20))
-    #expect(p.clip("a")!.audioLag == 0)
+    let notes = try p.deleteClips(["b"], ripple: false)
+    #expect(abs(p.clip("a")!.audioLag - 0.4) < 1e-9 && notes.isEmpty, "\(notes)")
+    expectSilent(p, in: TimeRange(10.4, 20))
+    try p.validate()
 
-    // b's own L cut into c: deleting b gives c its sound back from its first frame.
+    // With ripple the L cut stays against c, whose sound yields; the report says so.
+    var q = try lCut()
+    let rippled = try q.deleteClips(["b"], ripple: true)
+    expectNoOverlap(q)
+    let c = q.clip("c")!
+    #expect(c.start == 10 && abs(c.audioLead + 0.4) < 1e-9 && abs(q.clip("a")!.audioLag - 0.4) < 1e-9)
+    #expect(rippled == ["c sound start: at the picture cut → 0.40s after its picture starts"], "\(rippled)")
+    try q.validate()
+}
+
+@Test func deletingAClipTakesItsNeighboursSplitSoundWithIt() throws {
+    // b's J cut into a's tail is b's sound: deleting b gives a its sound back to its last frame.
+    var p = try lCut()
+    try p.splitEdit(left: "a", right: "b", offset: 0.48)
+    let notes = try p.deleteClips(["b"], ripple: false)
+    #expect(p.clip("a")!.audioLag == 0)
+    #expect(notes == ["a sound end: 0.48s before its picture ends → at the picture cut"], "\(notes)")
+    expectSilent(p, in: TimeRange(10, 20))
+
+    // b's own L cut into c: deleting b gives c its sound back, then a's L cut takes the head of it.
     var q = try lCut()
     try q.splitEdit(left: "b", right: "c", offset: -0.5)
     try q.deleteClips(["b"], ripple: true)
     expectNoOverlap(q)
     let c = q.clip("c")!
-    #expect(c.start == 10 && c.audioLead == 0)
+    #expect(c.start == 10 && abs(c.audioLead + 0.4) < 1e-9)
     #expect(TimeRange.merged(audible(q).map(\.range)).count == 1)
 
-    // A range covering exactly one clip behaves the same.
+    // A range delete silences everything inside the range, split sound included.
     var r = try lCut()
     r.deleteRange(TimeRange(10, 20), ripple: false)
     expectSilent(r, in: TimeRange(10, 20))

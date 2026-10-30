@@ -1,5 +1,34 @@
 import Foundation
 
+/// Files found for relinking, by name.
+public struct RelinkIndex: Sendable {
+    var byName: [String: [String]] = [:]
+    var byStem: [String: [String]] = [:]
+
+    public init(_ paths: [String]) {
+        for path in paths {
+            let url = URL(fileURLWithPath: path)
+            byName[url.lastPathComponent.lowercased(), default: []].append(path)
+            byStem[url.deletingPathExtension().lastPathComponent.lowercased(), default: []].append(path)
+        }
+    }
+
+    /// The file for `m`: the same file name, else the same name ignoring the extension (a picture for a picture).
+    /// Ties prefer the candidate sharing the most trailing folders with the old path.
+    public func match(_ m: MediaAsset) -> String? {
+        let old = URL(fileURLWithPath: m.conformPath)
+        var candidates = byName[old.lastPathComponent.lowercased()] ?? []
+        if candidates.isEmpty {
+            candidates = (byStem[old.deletingPathExtension().lastPathComponent.lowercased()] ?? [])
+                .filter { Project.imageExtensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) == m.isImage }
+        }
+        return candidates.max { a, b in
+            let sa = Project.sharedFolders(a, m.conformPath), sb = Project.sharedFolders(b, m.conformPath)
+            return sa != sb ? sa < sb : a.count > b.count
+        }
+    }
+}
+
 extension Project {
     /// Media whose file `exists` doesn't find.
     public func missingMedia(exists: (String) -> Bool) -> [MediaAsset] {
@@ -24,33 +53,42 @@ extension Project {
     public mutating func relinkAll(searchRoots: [URL], fileExists: (String) -> Bool) -> [(String, String)] {
         let missing = missingMedia(exists: fileExists)
         guard !missing.isEmpty else { return [] }
-        var byName: [String: [String]] = [:], byStem: [String: [String]] = [:]
-        let fm = FileManager.default
-        for root in searchRoots {
-            guard let e = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
-            for case let url as URL in e {
-                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
-                let path = url.standardizedFileURL.path
-                byName[url.lastPathComponent.lowercased(), default: []].append(path)
-                byStem[url.deletingPathExtension().lastPathComponent.lowercased(), default: []].append(path)
-            }
-        }
+        let index = RelinkIndex(Project.files(under: searchRoots))
         var out: [(String, String)] = []
         for m in missing {
-            let old = URL(fileURLWithPath: m.conformPath)
-            var candidates = byName[old.lastPathComponent.lowercased()] ?? []
-            if candidates.isEmpty {
-                candidates = (byStem[old.deletingPathExtension().lastPathComponent.lowercased()] ?? [])
-                    .filter { Project.imageExtensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) == m.isImage }
-            }
-            guard let best = candidates.max(by: { a, b in
-                let sa = Project.sharedFolders(a, m.conformPath), sb = Project.sharedFolders(b, m.conformPath)
-                return sa != sb ? sa < sb : a.count > b.count
-            }) else { continue }
+            guard let best = index.match(m) else { continue }
             relink(mediaId: m.id, to: best)
             out.append((m.id, best))
         }
         return out
+    }
+
+    /// Regular files under `roots`, recursively, skipping hidden files and package contents.
+    public static func files(under roots: [URL]) -> [String] {
+        var out: [String] = []
+        for root in roots {
+            guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            for case let url as URL in e where (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+                out.append(url.standardizedFileURL.path)
+            }
+        }
+        return out
+    }
+
+    /// Among probed `candidates` (their `path` set), the file for offline `m` by reel and timecode: the same reel
+    /// (`m`'s reel, else its EDL reel from the file name) and a timecode span covering the source time `m`'s clips
+    /// play (its whole length when unused), the shortest such file when several do. Nil without a timecode on `m`.
+    public func reelTimecodeMatch(_ m: MediaAsset, candidates: [MediaAsset]) -> MediaAsset? {
+        guard let start = m.timecodeStart, !m.isImage else { return nil }
+        let reel = Project.edlReel(m)
+        let used = usedSourceRanges(handles: 0)[m.id] ?? []
+        let lo = start + (used.map(\.start).min() ?? 0), hi = start + (used.map(\.end).max() ?? m.duration)
+        let tol = 0.5 / max(m.fps, 24)
+        return candidates.filter { c in
+            guard let cs = c.timecodeStart, let r = c.reel, !c.isImage, Project.edlReel(r) == reel else { return false }
+            guard !m.hasVideo || c.hasVideo, !m.hasAudio || c.hasAudio else { return false }
+            return cs <= lo + tol && cs + c.duration >= hi - tol
+        }.min { $0.duration < $1.duration }
     }
 
     static let maxNesting = 16

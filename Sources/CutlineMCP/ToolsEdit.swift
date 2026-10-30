@@ -327,8 +327,8 @@ extension Toolbox {
             "ripple": Schema.bool("Close the gap on the clip's track, default false"),
         ], required: ["clip_ids"]), label: { a, p in let ids = a.strings("clip_ids") ?? []; return ids.count == 1 ? "Delete \(Toolbox.clipName(ids[0], p))" : "Delete \(ids.count) clips" }) { p, args in
             let ids = args.strings("clip_ids") ?? []
-            try p.deleteClips(ids, ripple: args.bool("ripple", default: false))
-            return "Deleted \(ids.joined(separator: ", "))"
+            let sound = try p.deleteClips(ids, ripple: args.bool("ripple", default: false))
+            return "Deleted \(ids.joined(separator: ", "))" + (sound.isEmpty ? "" : "\nSplit edits: " + sound.joined(separator: "; "))
         })
 
         addEdit(EditTool(name: "range_delete", description: "Cut a timeline range out of every track (or only track_ids). With ripple (default) everything later moves up so tracks stay in sync.", schema: Schema.object([
@@ -365,11 +365,25 @@ extension Toolbox {
             "at": Schema.time("Timeline start, default the track end (or 0 with replace)"),
             "replace": Schema.bool("Clear the track first, default false"),
             "fit": Schema.string("Framing for every placed clip; fill crops landscape footage to cover a vertical canvas", values: ["fit", "fill", "stretch"]),
-        ], required: ["segments"]), label: { a, _ in "Assemble \(a.raw["segments"]?.array?.count ?? 0) takes" }) { p, args in
+            "pad": ["type": ["number", "array"], "items": ["type": "number"], "description": "Handles around the words of transcribed segments, seconds: [before, after] or one number for both; default [0.08, 0.12]. Handles stop at the neighbouring words; 0 cuts at the word edges. Clip ends round out to whole frames so the last word is never cut"],
+        ], required: ["segments"]), label: { a, _ in "Assemble \(a.raw["segments"]?.array?.count ?? 0) takes" }) { [unowned self] p, args in
             guard let raw = args.raw["segments"]?.array, !raw.isEmpty else { throw EditError("segments is empty") }
+            var pad = (before: 0.08, after: 0.12)
+            if let n = args.raw["pad"]?.double { pad = (n, n) } else if let list = args.raw["pad"]?.array?.compactMap(\.double) {
+                guard list.count == 2 else { throw EditError("pad is one number or [before, after]") }
+                pad = (list[0], list[1])
+            }
+            guard pad.before >= 0, pad.after >= 0, pad.before <= 2, pad.after <= 2 else { throw EditError("pad is 0–2 seconds") }
+            var transcripts: [String: Transcript] = [:]
+            var padded = 0
             let segs = try raw.map { j -> SourceSegment in
                 let a = Args(j)
-                return SourceSegment(mediaId: try a.string("media_id"), sourceIn: try a.sourceTime("start"), sourceOut: try a.sourceTime("end"))
+                let seg = SourceSegment(mediaId: try a.string("media_id"), sourceIn: try a.sourceTime("start"), sourceOut: try a.sourceTime("end"))
+                if transcripts[seg.mediaId] == nil { transcripts[seg.mediaId] = session.bundle?.transcript(seg.mediaId) }
+                guard seg.sourceOut > seg.sourceIn, let t = transcripts[seg.mediaId], let m = p.mediaAsset(seg.mediaId), !m.isImage else { return seg }
+                let out = seg.withHandles(t, before: pad.before, after: pad.after, fps: p.canvas.fps, duration: m.duration)
+                if out != seg { padded += 1 }
+                return out
             }
             let replace = args.bool("replace", default: false)
             var made = try p.assemble(segs, trackId: args.optString("track") ?? "V1", at: try args.optTime("at") ?? (replace ? 0 : nil), replaceTrack: replace)
@@ -379,7 +393,8 @@ extension Toolbox {
                     try p.replaceClip(made[i])
                 }
             }
-            return "Placed \(made.count) clips: " + made.map { "\($0.id) \(fmt2($0.start))–\(fmt2($0.end))" }.joined(separator: ", ")
+            return "Placed \(made.count) clips: " + made.map { "\($0.id) \(fmt2($0.start))–\(fmt2($0.end)) (src \(fmt2($0.sourceIn))–\(fmt2($0.sourceOut)))" }.joined(separator: ", ")
+                + (padded == 0 ? "" : "\nHandles: \(padded) segment(s) start \(fmt2(pad.before))s before their first word and end \(fmt2(pad.after))s after their last (stopping at neighbouring words), in whole frames; pad changes them")
         })
 
         addEdit(EditTool(name: "cut_silences", description: "Tighten talking footage: remove pauses longer than min_pause (leaving `keep` seconds of breathing room) and, by default, filler words (um, uh…). Works in source time on every clip of the media, rippling all tracks. Check the result with timeline_transcript.", schema: Schema.object([
@@ -387,24 +402,37 @@ extension Toolbox {
             "min_pause": Schema.time("Only pauses at least this long, default 0.5"),
             "keep": Schema.time("Pause length to leave behind, default 0.2"),
             "fillers": Schema.bool("Also remove filler words, default true"),
+            "by": Schema.string("Where pauses come from: speech (default with a transcript: gaps between transcribed words, so music or ambience under a pause doesn't hide it) or level (quiet audio from the level analysis; the fallback without a transcript)", values: ["speech", "level"]),
         ]), label: { a, _ in a.bool("fillers", default: true) ? "Cut pauses and filler words" : "Cut pauses" }) { [unowned self] p, args in
             let b = try session.requireBundle()
             let minPause = try args.optTime("min_pause") ?? 0.5
             let keep = try args.optTime("keep") ?? 0.2
+            let by = args.optString("by")
+            let fillersToo = args.bool("fillers", default: true)
             let ids = args.optString("media_id").map { [$0] } ?? Array(Set(p.tracks.flatMap(\.clips).compactMap(\.mediaId))).sorted()
             var report: [String] = []
             for id in ids {
-                guard let audio = b.audioAnalysis(id) else { continue }
-                var ranges = audio.silences.filter { $0.duration >= minPause }.map { TimeRange($0.start + keep / 2, $0.end - keep / 2) }
+                let t = b.transcript(id)
+                let speech = by == "speech" || (by == nil && t?.words.isEmpty == false)
+                if by == "speech", t == nil { throw EditError("\(id) has no transcript for by:\"speech\"; run media_analyze, or use by:\"level\"") }
+                let pauses: [TimeRange]
+                if speech, let t {
+                    pauses = t.pauses(atLeast: minPause, skippingFillers: fillersToo)
+                } else {
+                    guard let audio = b.audioAnalysis(id) else { continue }
+                    pauses = audio.silences.filter { $0.duration >= minPause }.map { TimeRange($0.start, $0.end) }
+                }
+                var ranges = pauses.map { TimeRange($0.start + keep / 2, $0.end - keep / 2) }.filter { $0.duration > 0 }
                 var fillerCount = 0
-                if args.bool("fillers", default: true), let t = b.transcript(id) {
+                if fillersToo, let t {
                     let fillers = t.words.filter(\.isFiller).map { TimeRange($0.start, $0.end) }
                     fillerCount = fillers.filter { !p.timelineRanges(mediaId: id, sourceRanges: [$0]).isEmpty }.count
                     ranges += fillers
                 }
+                let heard = pauses.filter { !p.timelineRanges(mediaId: id, sourceRanges: [$0]).isEmpty }.count
                 let removed = p.cutSourceRanges(mediaId: id, ranges: TimeRange.merged(ranges, tolerance: 0.05))
                 if !removed.isEmpty {
-                    report.append("\(id): \(removed.count) cuts, \(fmt2(removed.map(\.duration).reduce(0, +)))s removed (\(fillerCount) fillers)")
+                    report.append("\(id): \(removed.count) cuts, \(fmt2(removed.map(\.duration).reduce(0, +)))s removed (\(heard) pauses ≥\(fmt2(minPause))s from \(speech ? "gaps between transcribed words" : "audio level"), \(fillerCount) fillers)")
                 }
             }
             guard !report.isEmpty else { throw EditError("Nothing to cut. Is the media analyzed and on the timeline?") }

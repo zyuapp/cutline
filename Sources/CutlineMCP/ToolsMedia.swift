@@ -25,6 +25,7 @@ extension Toolbox {
             }
             return try await importMedia(paths, args: args)
         })
+        registerRelinkTool()
 
         add(Tool(name: "media_analyze", description: "Analyze media (import already runs the defaults). Features: transcript (words, pauses), scenes (cuts), beats (tempo, beats, downbeats; anchors <media>.b12, beat:12), speakers (who speaks when, word emphasis), shots (per-shot descriptions, shot size, people, on-screen text, faces, saliency, aesthetics; anchors <media>.s3), sounds (laughter, applause, music, etc.). Read results with analysis_read. Long analysis can run in the background; analysis_read and project_status show progress.", schema: Schema.object([
             "media_id": ["description": "Media id, a list of ids, or \"all\"", "anyOf": [["type": "string"], ["type": "array", "items": ["type": "string"]]]],
@@ -226,10 +227,13 @@ extension Toolbox {
                 if byClip[w.clipId] == nil { order.append(w.clipId) }
                 byClip[w.clipId, default: []].append(w)
             }
+            // Words inside nested sequences come from "<sequence clip>/<inner>" clips placed on the timeline.
+            var heard: [String: (clip: Clip, track: String)] = [:]
+            for t in p.flattenedForSound { for c in t.clips { heard[c.id] = (c, t.id) } }
             for id in order {
-                guard let group = byClip[id], let c = p.clip(id) else { continue }
-                let track = p.locateClip(id).map { " on " + p.tracks[$0.track].id } ?? ""
-                lines.append("── \(c.id)\(track) \(fmt2(c.start))–\(fmt2(c.end)) (\(c.mediaId ?? "") src \(fmt2(c.sourceIn))–\(fmt2(c.sourceOut)))")
+                guard let group = byClip[id], let (c, trackId) = heard[id] else { continue }
+                let nested = id.contains("/") ? " in nested \(id.split(separator: "/").first.map(String.init) ?? "")" : ""
+                lines.append("── \(c.id) on \(trackId)\(nested) \(fmt2(c.start))–\(fmt2(c.end)) (\(c.mediaId ?? "") src \(fmt2(c.sourceIn))–\(fmt2(c.sourceOut)))")
                 for s in Describe.sentences(group, text: { Word(text: $0.text, start: 0, end: 0).isFiller ? "*\($0.text)*" : $0.text }, start: \.start, end: \.end) {
                     lines.append("  [\(fmt2(s.start))–\(fmt2(s.end)) \(s.first.mediaId).w\(s.first.wordIndex)–w\(s.last.wordIndex)] \(s.text)" + (s.pauseAfter.map { "   (pause \(fmt1($0))s)" } ?? ""))
                 }
@@ -243,9 +247,10 @@ extension Toolbox {
     static func otherSpeechTracks(_ p: Project, transcripts: [String: Transcript], shown: [TimelineWord]) -> [String] {
         let read = Set(shown.map(\.clipId))
         var ids: [String] = []
+        var trackOf: [String: Track] = [:]
+        for t in p.flattenedForSound { for c in t.clips { trackOf[c.id] = t } }
         for w in p.timelineWords(transcripts: transcripts) where !read.contains(w.clipId) {
-            guard let loc = p.locateClip(w.clipId) else { continue }
-            let t = p.tracks[loc.track]
+            guard let t = trackOf[w.clipId] else { continue }
             let label = "\(t.id) \"\(t.name)\""
             if !ids.contains(label) { ids.append(label) }
         }
