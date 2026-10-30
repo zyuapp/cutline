@@ -23,6 +23,7 @@ extension Toolbox {
             "start": Schema.time("Export from this timeline time"),
             "end": Schema.time("Export until this timeline time"),
             "subtitles": Schema.string("Soft subtitles from the transcripts: none (default), embed, sidecar (.srt and .vtt) or both", values: ["none", "embed", "sidecar", "both"]),
+            "interlaced": Schema.string("Interlaced master (1080i broadcast): tff (HD) or bff; renders at the field rate and weaves. ProRes presets only", values: FieldOrder.allCases.map(\.rawValue)),
             "closed_captions": Schema.bool("Embed CEA-608 closed captions (broadcast, Apple TV, platform ingest) and write an .scc file beside the video, from the transcripts"),
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
             "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video"),
@@ -135,6 +136,8 @@ extension Toolbox {
             let started = Date()
             let project = b.url.path
             var options = ExportOptions(preset: preset, bitrateMbps: args.optDouble("bitrate_mbps"), range: range, subtitles: subs == "embed" || subs == "both" ? cues : [], chapters: chapters)
+            options.interlaced = try args.enumValue("interlaced", FieldOrder.self)
+            if options.interlaced != nil { report.append("Interlaced \(options.interlaced!.rawValue == "tff" ? "top" : "bottom") field first at \(fmt2(p.canvas.fps * 2)) fields/s") }
             options.closedCaptions = closed
             let tcFormat = p.canvas.timecodeFormat
             if let tc = args.optString("timecode_start") {

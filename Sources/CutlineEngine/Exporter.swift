@@ -103,6 +103,8 @@ public struct ExportOptions: Sendable {
     public var timecode: Bool = true
     /// Bars, tone, slate and 2-pop before the program; the timecode track starts that much earlier.
     public var leader: Leader?
+    /// Interlaced output: the timeline is rendered at the field rate and woven, top or bottom field first. ProRes only.
+    public var interlaced: FieldOrder?
 
     public init(preset: ExportPreset = .hevc, bitrateMbps: Double? = nil, range: TimeRange? = nil, subtitles: [TimedText] = [], subtitleLanguage: String = "en", chapters: [TimedText] = [], closedCaptions: [TimedText] = [], audioKbps: Int = 256, timecodeStart: String? = nil, leader: Leader? = nil) {
         self.preset = preset
@@ -143,7 +145,15 @@ public enum Exporter {
             kCVPixelBufferPixelFormatTypeKey as String: ColorManagement.pixelFormat(space),
             kCVPixelBufferMetalCompatibilityKey as String: true,
         ])
-        videoOut.videoComposition = built.videoComposition
+        if options.interlaced != nil {
+            guard options.preset.isProRes else { throw EditError("Interlaced output needs a ProRes preset (prores_hq for broadcast); VideoToolbox's H.264 and HEVC encoders are progressive only") }
+            guard leader == nil else { throw EditError("Interlaced output can't carry a leader yet; export the leader as a separate progressive file") }
+            let fields = built.videoComposition.mutableCopy() as! AVMutableVideoComposition
+            fields.frameDuration = CMTimeMultiplyByRatio(built.videoComposition.frameDuration, multiplier: 1, divisor: 2)
+            videoOut.videoComposition = fields
+        } else {
+            videoOut.videoComposition = built.videoComposition
+        }
         videoOut.alwaysCopiesSampleData = false
         reader.add(videoOut)
 
@@ -208,6 +218,9 @@ public enum Exporter {
             AVVideoColorPropertiesKey: ColorManagement.writerColorProperties(space),
         ]
         if !compression.isEmpty && !options.preset.isProRes { videoSettings[AVVideoCompressionPropertiesKey] = compression }
+        if let order = options.interlaced {
+            videoSettings[AVVideoCompressionPropertiesKey] = [kVTCompressionPropertyKey_FieldCount as String: 2, kVTCompressionPropertyKey_FieldDetail as String: order.fieldDetail as String]
+        }
         guard writer.canApply(outputSettings: videoSettings, forMediaType: .video) else { throw EditError("This Mac can't encode \(options.preset.title)") }
         let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoIn.expectsMediaDataInRealTime = false
@@ -282,7 +295,7 @@ public enum Exporter {
 
         let total = range.duration.seconds
         let audioStart = audioOffset - leaderTime
-        async let video: Void = pump(videoOut, into: videoIn, offset: offset - leaderTime, first: leaderVideo) { t in progress?(min(1, max(0, t - lead) / max(total, 0.001))) }
+        async let video: Void = pump(videoOut, into: videoIn, offset: offset - leaderTime, first: leaderVideo, weave: options.interlaced) { t in progress?(min(1, max(0, t - lead) / max(total, 0.001))) }
         async let audio: Void = {
             if let audioIn { try await pump(audioOut, into: audioIn, offset: audioStart, first: leaderAudio, report: nil) }
         }()
@@ -323,7 +336,7 @@ public enum Exporter {
     }
 
     /// Copies `first`, then samples from a reader output shifted back by `offset`, to a writer input.
-    static func pump(_ output: AVAssetReaderOutput?, into input: AVAssetWriterInput, offset: CMTime, first: [CMSampleBuffer] = [], report: ((Seconds) -> Void)?) async throws {
+    static func pump(_ output: AVAssetReaderOutput?, into input: AVAssetWriterInput, offset: CMTime, first: [CMSampleBuffer] = [], weave: FieldOrder? = nil, report: ((Seconds) -> Void)?) async throws {
         let queue = DispatchQueue(label: "cutline.export.\(input.mediaType.rawValue)")
         let box = PumpState()
         var next = 0
@@ -340,7 +353,7 @@ public enum Exporter {
                         }
                         continue
                     }
-                    guard let sample = output?.copyNextSampleBuffer() else {
+                    guard let sample = weave.map({ Interlace.nextFrame(output, order: $0) }) ?? output?.copyNextSampleBuffer() else {
                         input.markAsFinished()
                         box.finished = true
                         done.resume()
