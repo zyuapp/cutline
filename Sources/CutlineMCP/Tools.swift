@@ -63,6 +63,7 @@ final class Toolbox {
         registerReviewTools()
         registerCaptionTools()
         registerBinTools()
+        registerTimelineTools()
     }
 
     func add(_ tool: Tool) {

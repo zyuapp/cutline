@@ -23,6 +23,9 @@ public struct Project: Codable, Equatable, Sendable {
     /// Media recorded together (multicam angles, separate sound): each media's offset from the group's
     /// reference, so the same moment is at source time t in the reference and t + offset in the member.
     public var syncGroups: [[String: Seconds]]
+    /// Name of the timeline in `tracks`; the project's other timelines wait in `timelines`.
+    public var timelineName: String?
+    public var timelines: [StoredTimeline]
 
     public init(name: String, canvas: Canvas = Canvas()) {
         formatVersion = Project.currentFormat
@@ -39,9 +42,10 @@ public struct Project: Codable, Equatable, Sendable {
         transitions = []
         sequences = []
         syncGroups = []
+        timelines = []
     }
 
-    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions, sequences, syncGroups }
+    enum CodingKeys: String, CodingKey { case formatVersion, name, canvas, media, tracks, captions, markers, master, transitions, sequences, syncGroups, timelineName, timelines }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -56,6 +60,8 @@ public struct Project: Codable, Equatable, Sendable {
         transitions = try c.decodeIfPresent([Transition].self, forKey: .transitions) ?? []
         sequences = try c.decodeIfPresent([NestedSequence].self, forKey: .sequences) ?? []
         syncGroups = try c.decodeIfPresent([[String: Seconds]].self, forKey: .syncGroups) ?? []
+        timelineName = try c.decodeIfPresent(String.self, forKey: .timelineName)
+        timelines = try c.decodeIfPresent([StoredTimeline].self, forKey: .timelines) ?? []
     }
 
     public var duration: Seconds {
