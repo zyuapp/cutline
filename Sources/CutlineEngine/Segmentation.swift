@@ -51,11 +51,27 @@ public enum Segmentation {
     }
 
     /// Keeps the image where `mask` is white (the background instead when `invert`).
-    /// `expand` grows (negative: shrinks) the mask by that many pixels before
-    /// `feather` softens its edge over about that many pixels.
-    public static func apply(mask: CIImage, to image: CIImage, feather: CGFloat = 0, invert: Bool = false, expand: CGFloat = 0) -> CIImage {
-        let e = image.extent
-        var m = mask.composited(over: CIImage(color: .black)).cropped(to: e)
+    /// With `threshold` above 0 the matte is hardened first (see `harden`). `expand` then grows (negative: shrinks)
+    /// the mask by that many pixels before `feather` softens its edge over about that many pixels.
+    public static func apply(mask: CIImage, to image: CIImage, feather: CGFloat = 0, invert: Bool = false, expand: CGFloat = 0, threshold: CGFloat = 0) -> CIImage {
+        image.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(), kCIInputMaskImageKey: refine(mask, extent: image.extent, feather: feather, invert: invert, expand: expand, threshold: threshold)])
+    }
+
+    /// Steepens a soft matte around `threshold`: values 0.05 above it become 1, values 0.05 below become 0.
+    public static func harden(_ mask: CIImage, threshold: CGFloat) -> CIImage {
+        guard threshold > 0 else { return mask }
+        let k: CGFloat = 10
+        let bias = 0.5 - k * threshold
+        return mask.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: k, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: k, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: k, w: 0), "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            "inputBiasVector": CIVector(x: bias, y: bias, z: bias, w: 0),
+        ]).applyingFilter("CIColorClamp")
+    }
+
+    /// The gray matte `apply` keeps the image with, covering `e`.
+    public static func refine(_ mask: CIImage, extent e: CGRect, feather: CGFloat = 0, invert: Bool = false, expand: CGFloat = 0, threshold: CGFloat = 0) -> CIImage {
+        var m = harden(mask.composited(over: CIImage(color: .black)).cropped(to: e), threshold: threshold)
         if abs(expand) >= 0.5 {
             m = m.clampedToExtent()
                 .applyingFilter(expand > 0 ? "CIMorphologyMaximum" : "CIMorphologyMinimum", parameters: [kCIInputRadiusKey: abs(expand)])
@@ -65,7 +81,7 @@ public enum Segmentation {
             m = m.clampedToExtent().applyingGaussianBlur(sigma: Double(feather) / 2).cropped(to: e)
         }
         if invert { m = m.applyingFilter("CIColorInvert") }
-        return image.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(), kCIInputMaskImageKey: m])
+        return m
     }
 
     /// Runs Vision on a downscaled copy and returns its mask at Vision's resolution.

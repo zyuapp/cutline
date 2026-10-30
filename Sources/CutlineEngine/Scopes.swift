@@ -48,6 +48,8 @@ public enum Scopes {
         public var clipped: Double
         public var crushed: Double
         public var samples: Int
+        /// Share of the frame measured as picture; the rest was letterbox, pillarbox or background bars.
+        public var picture: Double = 1
     }
 
     public static let skinToneAngle = 123.0
@@ -316,9 +318,10 @@ public enum Scopes {
 
     // MARK: Numbers
 
-    public static func stats(_ image: CIImage, context: CIContext, space: WorkingSpace = .rec709) -> Stats? {
+    /// Numbers over the active picture: letterbox or pillarbox bars (near black, or the canvas `background`) are left out.
+    public static func stats(_ image: CIImage, context: CIContext, space: WorkingSpace = .rec709, background: RGBA? = nil) -> Stats? {
         guard let px = readback(image, context: context, space: space, maxWidth: 480, maxHeight: 270) else { return nil }
-        return stats(px, weights: lumaWeights(space))
+        return stats(px, weights: lumaWeights(space), background: background.map { ColorManagement.codeValues($0, in: space) })
     }
 
     public static func rgbParadeStats(_ image: CIImage, context: CIContext, space: WorkingSpace = .rec709) -> ParadeStats? {
@@ -329,27 +332,31 @@ public enum Scopes {
         stats(image, context: context, space: space)?.vectorscope
     }
 
-    static func stats(_ px: Pixels, weights: SIMD3<Float>) -> Stats {
+    static func stats(_ px: Pixels, weights: SIMD3<Float>, background: SIMD3<Float>? = nil) -> Stats {
         var bins = [[Int]](repeating: [Int](repeating: 0, count: 256), count: 4)
         var sums = [Double](repeating: 0, count: 4)
         var cbSum = 0.0, crSum = 0.0, magSum = 0.0
         var clipped = 0, crushed = 0
-        let n = px.width * px.height
+        let area = px.rgba.withUnsafeBufferPointer { PictureArea.active(bytes: $0.baseAddress!, width: px.width, height: px.height, rowBytes: px.width * 4, background: background) }
+        let n = area.width * area.height
         px.rgba.withUnsafeBufferPointer { src in
-            for i in 0..<n {
-                let c = SIMD3(Float(src[i * 4]), Float(src[i * 4 + 1]), Float(src[i * 4 + 2])) / 255
-                let y = (c * weights).sum()
-                let yi = Int((y * 255).rounded())
-                bins[0][Int(src[i * 4])] += 1
-                bins[1][Int(src[i * 4 + 1])] += 1
-                bins[2][Int(src[i * 4 + 2])] += 1
-                bins[3][min(255, max(0, yi))] += 1
-                sums[0] += Double(c.x); sums[1] += Double(c.y); sums[2] += Double(c.z); sums[3] += Double(y)
-                let (cb, cr) = chroma(c, weights)
-                cbSum += Double(cb); crSum += Double(cr)
-                magSum += Double(hypot(cb, cr))
-                if y >= 0.98 { clipped += 1 }
-                if y <= 0.02 { crushed += 1 }
+            for row in area.y..<(area.y + area.height) {
+                for col in area.x..<(area.x + area.width) {
+                    let i = row * px.width + col
+                    let c = SIMD3(Float(src[i * 4]), Float(src[i * 4 + 1]), Float(src[i * 4 + 2])) / 255
+                    let y = (c * weights).sum()
+                    let yi = Int((y * 255).rounded())
+                    bins[0][Int(src[i * 4])] += 1
+                    bins[1][Int(src[i * 4 + 1])] += 1
+                    bins[2][Int(src[i * 4 + 2])] += 1
+                    bins[3][min(255, max(0, yi))] += 1
+                    sums[0] += Double(c.x); sums[1] += Double(c.y); sums[2] += Double(c.z); sums[3] += Double(y)
+                    let (cb, cr) = chroma(c, weights)
+                    cbSum += Double(cb); crSum += Double(cr)
+                    magSum += Double(hypot(cb, cr))
+                    if y >= 0.98 { clipped += 1 }
+                    if y <= 0.02 { crushed += 1 }
+                }
             }
         }
         let total = Double(max(n, 1))
@@ -380,6 +387,6 @@ public enum Scopes {
         return Stats(
             parade: ParadeStats(red: channel(0), green: channel(1), blue: channel(2), luma: channel(3)),
             vectorscope: VectorscopeStats(cb: cb, cr: cr, hue: hue, saturation: sat, meanSaturation: magSum / total / 0.5, skinToneOffset: offset),
-            clipped: Double(clipped) / total, crushed: Double(crushed) / total, samples: n)
+            clipped: Double(clipped) / total, crushed: Double(crushed) / total, samples: n, picture: Double(n) / Double(max(1, px.width * px.height)))
     }
 }

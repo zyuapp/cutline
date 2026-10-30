@@ -8,17 +8,18 @@ import Foundation
 public enum EffectCatalog {
     public static func type(_ id: String) -> EffectType? { limited[id] ?? byId[id] ?? ProAudioCatalog.type(id) ?? GeneratorCatalog.type(id) ?? PluginRegistry.type(id) }
 
-    /// Secondary correction: any picture effect can be limited to a window (rectangle or ellipse) or to
-    /// pixels matching a hue/saturation/luma qualifier, like power windows and qualifiers in a grading suite.
+    /// Secondary correction: any picture effect can be limited to a window (rectangle or ellipse), to
+    /// pixels matching a hue/saturation/luma qualifier, or to qualified pixels inside a window,
+    /// like power windows and qualifiers in a grading suite.
     public static let limitSpecs: [ParamSpec] = [
-        ParamSpec("limit", .choice(["none", "rect", "ellipse", "qualifier"]), .string("none"), "Apply only inside a window or to qualified colors"),
-        ParamSpec("limit_x", .number, .number(0.5), min: -1, max: 2, "Window center, 0 left to 1 right (animate or bind to track an object)"),
-        ParamSpec("limit_y", .number, .number(0.5), min: -1, max: 2, "Window center, 0 top to 1 bottom"),
+        ParamSpec("limit", .choice(["none", "rect", "ellipse", "qualifier", "rect+qualifier", "ellipse+qualifier"]), .string("none"), "Apply only inside a window, to qualified colors, or to qualified colors inside a window (ellipse+qualifier: skin on one face)"),
+        ParamSpec("limit_x", .number, .number(0.5), min: -1, max: 2, "Window center in the clip's own picture, 0 left to 1 right. Follow a face or object with param_set bind {\"fx.<id>.limit_x\": {\"source\": \"face:<media>[:n].x\"}} (or \"track:<id>.x\" from media_track); same for limit_y with .y"),
+        ParamSpec("limit_y", .number, .number(0.5), min: -1, max: 2, "Window center, 0 top to 1 bottom; bind like limit_x"),
         ParamSpec("limit_width", .number, .number(0.5), min: 0, max: 3, "Window width, fraction of the frame"),
-        ParamSpec("limit_height", .number, .number(0.5), min: 0, max: 3, "Window height"),
+        ParamSpec("limit_height", .number, .number(0.5), min: 0, max: 3, "Window height; bind to face:<media>.size or track:<id>.height to follow the subject's size"),
         ParamSpec("limit_roundness", .number, .number(0), min: 0, max: 0.5, "Rounded rectangle corners"),
         ParamSpec("limit_feather", .number, .number(0.05), min: 0, max: 0.5, unit: "of frame height", "Soft edge of the window"),
-        ParamSpec("limit_invert", .bool, .bool(false), "Apply outside the window or to everything but the qualified colors"),
+        ParamSpec("limit_invert", .bool, .bool(false), "Apply outside the window, to everything but the qualified colors, or outside their intersection"),
         ParamSpec("q_hue", .number, .number(30), min: 0, max: 360, unit: "degrees", animatable: false, "Qualifier hue center (0 red, 30 skin/orange, 120 green, 210 sky blue)"),
         ParamSpec("q_hue_width", .number, .number(40), min: 1, max: 360, unit: "degrees", animatable: false, "Qualifier hue range"),
         ParamSpec("q_sat_min", .number, .number(0.1), min: 0, max: 1, animatable: false, "Minimum saturation"),
@@ -63,6 +64,37 @@ public enum EffectCatalog {
         ParamSpec("invert", .bool, .bool(false), "Keep the outside instead of the inside"),
     ]
 
+    /// Hardening for segmentation mattes, whose raw values are often partly transparent inside the subject.
+    static let matteSpecs: [ParamSpec] = [
+        ParamSpec("threshold", .number, .number(0.5), min: 0, max: 0.95, "Matte level that becomes the edge: values above are fully opaque, below fully transparent; 0 keeps the raw soft matte"),
+        ParamSpec("choke", .number, .number(0), min: 0, max: 0.03, unit: "of frame height", "Pulls the hardened edge inward to drop background fringe"),
+    ]
+
+    static let wheelSpecs: [ParamSpec] = {
+        let wheels: [(String, Double, Double, String)] = [
+            ("lift", -0.5, 0.5, "Blacks: moves black up (positive) or down while white stays put"),
+            ("gamma", -1, 1, "Midtones: positive brightens, negative darkens; ends stay put"),
+            ("gain", -0.9, 3, "Whites: scales white (0.1 is 10% brighter) while black stays put"),
+            ("offset", -0.5, 0.5, "Shifts every tone up or down"),
+        ]
+        var specs: [ParamSpec] = []
+        for (name, lo, hi, summary) in wheels {
+            specs.append(ParamSpec(name, .number, .number(0), min: lo, max: hi, "\(summary); master for all channels"))
+            for (ch, color) in [("r", "red"), ("g", "green"), ("b", "blue")] {
+                specs.append(ParamSpec("\(name)_\(ch)", .number, .number(0), min: lo, max: hi, "Added to \(name) for \(color) only, e.g. \(name)_\(ch) 0.03 pushes \(name == "offset" ? "everything" : name == "lift" ? "the blacks" : name == "gamma" ? "the midtones" : "the whites") toward \(color)"))
+            }
+        }
+        return specs + [
+            ParamSpec("temperature", .number, .number(0), min: -100, max: 100, "White balance: negative cooler (blue), positive warmer (orange)"),
+            ParamSpec("tint", .number, .number(0), min: -100, max: 100, "Negative green, positive magenta"),
+            ParamSpec("contrast", .number, .number(0), min: -1, max: 2, "Stretches tones away from the pivot (0.2 is 20% more contrast); negative flattens"),
+            ParamSpec("pivot", .number, .number(0.5), min: 0.05, max: 0.95, "Tone that contrast leaves unchanged; lower keeps shadows, higher keeps highlights"),
+            ParamSpec("shadows", .number, .number(0), min: -1, max: 1, "Shadow recovery: positive opens up dark areas, negative deepens them"),
+            ParamSpec("highlights", .number, .number(0), min: -1, max: 1, "Highlight recovery: negative pulls bright areas down, positive brightens them"),
+            ParamSpec("saturation", .number, .number(0), min: -1, max: 1, "-1 black and white, 0 unchanged, 1 doubled"),
+        ]
+    }()
+
     public static let all: [EffectType] = [
         EffectType(id: "blur.gaussian", category: "blur", summary: "Even soft blur", params: [
             ParamSpec("radius", .number, .number(0.01), min: 0, max: 0.2, unit: "of frame height", "Blur radius"),
@@ -104,6 +136,7 @@ public enum EffectCatalog {
             ParamSpec("highlights", .color, .string("#000000"), "Tint pushed into the highlights, e.g. warm #FFB070"),
             ParamSpec("highlights_amount", .number, .number(0), min: 0, max: 1, "Strength of the highlight tint"),
         ]),
+        EffectType(id: "color.wheels", category: "color", summary: "Full primary grade like Resolve's wheels: lift/gamma/gain/offset with per-channel RGB balance, white balance, contrast with pivot, shadows/highlights recovery and saturation. Every parameter is 0 when neutral; a wheel's color is its master plus _r/_g/_b, e.g. lift_b 0.03 lift_r -0.02 cools the blacks, gain_r 0.05 warms the whites. Order: white balance, offset, lift/gamma/gain, contrast, shadows/highlights, saturation", params: wheelSpecs),
         EffectType(id: "color.curves", category: "color", summary: "Tone curves for all channels and red, green, blue; points are \"x,y\" pairs 0…1 separated by spaces", params: [
             ParamSpec("master", .text, .string(""), "All channels, e.g. \"0,0 0.25,0.2 0.75,0.82 1,1\" for an S-curve"),
             ParamSpec("red", .text, .string(""), "Red channel curve"),
@@ -209,12 +242,13 @@ public enum EffectCatalog {
         ]),
         EffectType(id: "mask.person", category: "mask", summary: "Keeps the people (Apple person segmentation); invert to keep the background, e.g. text behind a person or a background swap", params: [
             ParamSpec("quality", .choice(["fast", "balanced", "accurate"]), .string("balanced"), "Edge quality against speed"),
+        ] + matteSpecs + [
             ParamSpec("feather", .number, .number(0.003), min: 0, max: 0.05, unit: "of frame height", "Soft edge"),
             ParamSpec("expand", .number, .number(0), min: -0.05, max: 0.05, unit: "of frame height", "Grow (positive) or shrink the mask"),
             ParamSpec("smoothing", .number, .number(0.4), min: 0, max: 0.95, animatable: false, "Blends each frame's mask with the last to stop flicker"),
             ParamSpec("invert", .bool, .bool(false), "Keep everything except the people"),
         ]),
-        EffectType(id: "mask.subject", category: "mask", summary: "Keeps the main subjects, people, animals or objects (Apple foreground segmentation)", params: [
+        EffectType(id: "mask.subject", category: "mask", summary: "Keeps the main subjects, people, animals or objects (Apple foreground segmentation)", params: matteSpecs + [
             ParamSpec("feather", .number, .number(0.003), min: 0, max: 0.05, unit: "of frame height", "Soft edge"),
             ParamSpec("expand", .number, .number(0), min: -0.05, max: 0.05, unit: "of frame height", "Grow or shrink the mask"),
             ParamSpec("smoothing", .number, .number(0.4), min: 0, max: 0.95, animatable: false, "Temporal smoothing against flicker"),
@@ -293,7 +327,7 @@ public enum EffectCatalog {
     public static func title(_ type: String) -> String {
         let titles = [
             "blur.gaussian": "blur", "blur.motion": "motion blur", "blur.zoom": "zoom blur", "blur.sharpen": "sharpening",
-            "color.adjust": "color correction", "color.grade": "color wheels", "color.curves": "curves", "color.hsl": "HSL", "color.look": "look", "color.lut": "LUT", "color.cdl": "CDL", "color.monochrome": "black and white", "color.invert": "invert",
+            "color.adjust": "color correction", "color.grade": "color wheels", "color.wheels": "primary grade", "color.curves": "curves", "color.hsl": "HSL", "color.look": "look", "color.lut": "LUT", "color.cdl": "CDL", "color.monochrome": "black and white", "color.invert": "invert",
             "stylize.drop_shadow": "drop shadow", "mask.rect": "rectangle mask", "mask.ellipse": "ellipse mask", "mask.person": "person mask", "mask.subject": "subject mask", "key.chroma": "chroma key",
             "distort.bulge": "bulge", "distort.twirl": "twirl",
         ]

@@ -164,6 +164,8 @@ extension Toolbox {
         for n in names {
             if n == "master" {
                 out.append(.master)
+            } else if let group = try groupTargets(n, p) {
+                out += group
             } else if n.hasSuffix("/*") {
                 let tid = String(n.dropLast(2))
                 guard let i = p.trackIndex(tid) else { throw EditError("No track \(tid)") }

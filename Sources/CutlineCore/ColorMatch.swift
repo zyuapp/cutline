@@ -1,48 +1,91 @@
 import Foundation
 
-/// Shot matching: statistics of a picture in CIELAB, and a transform that moves one shot's
-/// statistics onto a reference's (Reinhard color transfer), softened by `strength`.
+/// Shot matching: robust statistics of a picture in CIELAB, and a transform that moves one shot's
+/// tones and colors onto a reference's, softened by `strength`.
 public enum ColorMatch {
     public struct Stats: Codable, Equatable, Sendable {
+        /// Median L, a and b.
         public var mean: SIMD3<Double>
+        /// Half the 16th–84th percentile range of L, a and b (one standard deviation for normal data).
         public var sd: SIMD3<Double>
+        /// L at the 5th, 25th, 50th, 75th and 95th percentiles.
+        public var lightness: [Double]
+        /// Median distance of a pixel's (a, b) from the median color: how colorful the shot is beyond its cast.
+        public var chroma: Double
 
-        public init(mean: SIMD3<Double>, sd: SIMD3<Double>) {
+        public init(mean: SIMD3<Double>, sd: SIMD3<Double>, lightness: [Double]? = nil, chroma: Double? = nil) {
             self.mean = mean
             self.sd = sd
+            self.lightness = lightness ?? [-1.645, -0.674, 0, 0.674, 1.645].map { min(100, max(0, mean.x + $0 * sd.x)) }
+            self.chroma = chroma ?? hypot(sd.y, sd.z) * 0.83
         }
     }
 
-    /// Mean and spread of sRGB-encoded pixels (0…1) in Lab.
+    static let percentiles = [0.05, 0.25, 0.5, 0.75, 0.95]
+
+    /// Robust statistics of sRGB-encoded pixels (0…1) in Lab; a few extreme pixels barely move them.
     public static func stats(_ pixels: [SIMD3<Float>]) -> Stats {
-        guard !pixels.isEmpty else { return Stats(mean: .zero, sd: SIMD3(1, 1, 1)) }
-        var sum = SIMD3<Double>.zero, sq = SIMD3<Double>.zero
-        for p in pixels {
-            let l = lab(p)
-            sum += l
-            sq += l * l
-        }
-        let n = Double(pixels.count)
-        let mean = sum / n
-        let variance = sq / n - mean * mean
-        return Stats(mean: mean, sd: SIMD3(max(variance.x, 1e-6).squareRoot(), max(variance.y, 1e-6).squareRoot(), max(variance.z, 1e-6).squareRoot()))
+        guard !pixels.isEmpty else { return Stats(mean: SIMD3(50, 0, 0), sd: SIMD3(1, 1, 1)) }
+        let labs = pixels.map(lab)
+        func sorted(_ k: Int) -> [Double] { labs.map { $0[k] }.sorted() }
+        func at(_ s: [Double], _ q: Double) -> Double { s[min(s.count - 1, Int(q * Double(s.count - 1) + 0.5))] }
+        let L = sorted(0), A = sorted(1), B = sorted(2)
+        let mean = SIMD3(at(L, 0.5), at(A, 0.5), at(B, 0.5))
+        func spread(_ s: [Double]) -> Double { max((at(s, 0.84) - at(s, 0.16)) / 2, 1e-3) }
+        let chroma = labs.map { hypot($0.y - mean.y, $0.z - mean.z) }.sorted()
+        return Stats(mean: mean, sd: SIMD3(spread(L), spread(A), spread(B)), lightness: percentiles.map { at(L, $0) }, chroma: max(at(chroma, 0.5), 1e-3))
     }
 
-    /// Maps colors of a shot with `source` statistics toward `reference`. Spread changes are clamped so noisy
-    /// or nearly flat shots don't blow up, and `strength` blends with the untouched picture.
+    /// Largest change matching may make: tone slopes stay within 0.5…2, colorfulness within ±25%,
+    /// and the cast moves at most 40 Lab units.
+    static let maxChromaScale = 1.25, maxCastShift = 40.0
+
+    /// Maps colors of a shot with `source` statistics toward `reference`: lightness through a monotone curve that matches
+    /// the percentiles (black and white stay put), the cast by moving the median color, and colorfulness by scaling
+    /// chroma around it. Near-black and near-white pixels keep their color so bars and clipped highlights stay neutral.
+    /// `strength` blends with the untouched picture.
     public static func transform(from source: Stats, to reference: Stats, strength: Double = 1) -> ColorMath.Transform {
-        let ratio = SIMD3(clampRatio(reference.sd.x / source.sd.x), clampRatio(reference.sd.y / source.sd.y), clampRatio(reference.sd.z / source.sd.z))
         let k = min(max(strength, 0), 1)
+        let tone = toneCurve(source.lightness, reference.lightness, strength: k)
+        var shift = SIMD2(reference.mean.y - source.mean.y, reference.mean.z - source.mean.z)
+        let length = (shift * shift).sum().squareRoot()
+        if length > maxCastShift { shift *= maxCastShift / length }
+        let scale = 1 + (min(max(reference.chroma / source.chroma, 1 / maxChromaScale), maxChromaScale) - 1) * k
+        let center = SIMD2(source.mean.y, source.mean.z)
         return { c in
             let l = lab(c)
-            let moved = (l - source.mean) * ratio + reference.mean
-            let mixed = l + (moved - l) * k
-            let rgb = srgb(mixed)
+            let L = Double(tone.eval(Float(l.x / 100))) * 100
+            let ab = SIMD2(l.y, l.z)
+            let moved = center + shift * k + (ab - center) * scale
+            let w = smoothstep(0, 12, l.x) * (1 - smoothstep(92, 100, l.x))
+            let out = ab + (moved - ab) * w
+            let rgb = srgb(SIMD3(L, out.x, out.y))
             return SIMD3(Float(min(max(rgb.x, 0), 1)), Float(min(max(rgb.y, 0), 1)), Float(min(max(rgb.z, 0), 1)))
         }
     }
 
-    static func clampRatio(_ r: Double) -> Double { min(max(r, 0.5), 2) }
+    /// Lightness curve in 0…1 through (0, 0), the matched percentiles and (1, 1), with every segment's slope kept in 0.5…2.
+    static func toneCurve(_ from: [Double], _ to: [Double], strength k: Double) -> ColorMath.MonotoneCurve {
+        var points: [(Float, Float)] = [(0, 0)]
+        for (x, y) in zip(from, to) {
+            let x = x / 100, target = x + (y / 100 - x) * k
+            guard let last = points.last, x - Double(last.0) > 0.01, x < 0.99 else { continue }
+            let dx = x - Double(last.0)
+            let y = min(max(target, Double(last.1) + 0.5 * dx), Double(last.1) + 2 * dx)
+            guard y < 0.995 else { continue }
+            points.append((Float(x), Float(y)))
+        }
+        while points.count > 1, let last = points.last, (1 - last.1) > 2 * (1 - last.0) || (1 - last.1) < 0.5 * (1 - last.0) {
+            points.removeLast()
+        }
+        points.append((1, 1))
+        return ColorMath.MonotoneCurve(points: points)
+    }
+
+    static func smoothstep(_ a: Double, _ b: Double, _ x: Double) -> Double {
+        let t = min(max((x - a) / (b - a), 0), 1)
+        return t * t * (3 - 2 * t)
+    }
 
     // MARK: sRGB ↔ CIELAB (D65)
 
