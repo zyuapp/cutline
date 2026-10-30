@@ -26,6 +26,11 @@ public struct Transcript: Codable, Equatable, Sendable {
     public var mediaId: String
     public var locale: String
     public var words: [Word]
+    /// Who says each word, parallel to `words`, from the media's speaker analysis when it has one. Not saved with
+    /// the transcript; `ProjectBundle.transcript` fills it in.
+    public var speakers: [String?]?
+
+    enum CodingKeys: String, CodingKey { case mediaId, locale, words }
 
     public init(mediaId: String, locale: String, words: [Word]) {
         self.mediaId = mediaId

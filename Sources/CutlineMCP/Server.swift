@@ -14,7 +14,7 @@ public final class MCPServer {
     2. media_import the files. Analysis gives word-level transcripts, pauses and scene cuts.
     3. Read before cutting: media_transcript (source time, with word ids) and media_frames to look at footage.
     4. Structure the edit: assemble the best takes, cut_silences, source_cut flubs, clip_add b-roll (track "new"), text_add titles, captions_set.
-    5. Shape the look and sound with three general tools: param_set sets or animates any parameter by path (transform.scale, audio.volume, text.color, fx.<id>.<param>…); effect_add stacks effects (blur, color, glow, vignette, grain, masks, shadows…) on clips, tracks or adjustment layers; blend modes via param_set blend. catalog lists every effect, parameter, ease and anchor.
+    5. Shape the look and sound with three general tools: param_set sets or animates any parameter by path (transform.scale, audio.volume, text.color, fx.<id>.<param>…); effect_add stacks effects (blur, color, glow, vignette, grain, masks, shadows…) on clips, tracks or adjustment layers; blend modes via param_set blend. catalog lists every effect, parameter, ease and anchor; catalog tool=<name> gives a tool's full manual.
     6. Verify every change: timeline_frames to see it, timeline_transcript for cuts, project_status (target=<clip> for its parameters). Use dry_run:true to preview risky edits and batch to make one undoable step. preview_seek shows the human what changed.
     7. comments_list at the start of each turn; address each note, then comment_reply to resolve it.
     8. export when the human is happy.

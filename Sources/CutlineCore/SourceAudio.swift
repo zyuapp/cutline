@@ -149,12 +149,15 @@ public struct SourceChannel: Codable, Equatable, Sendable {
     public var label: String?
     /// Name from the recorder (iXML or bext track names) or the file's track title.
     public var name: String?
+    /// Audio track in the camera original, when the playable file is a mezzanine that regrouped the channels.
+    public var originalTrack: Int?
 
-    public init(track: Int, channel: Int, label: String? = nil, name: String? = nil) {
+    public init(track: Int, channel: Int, label: String? = nil, name: String? = nil, originalTrack: Int? = nil) {
         self.track = track
         self.channel = channel
         self.label = label
         self.name = name
+        self.originalTrack = originalTrack
     }
 }
 
@@ -168,23 +171,40 @@ extension MediaAsset {
         return chs.count > 2 || Set(chs.map(\.track)).count > 1
     }
 
-    /// "4 source channels in 4 mono tracks: ch1 "Boom", ch2 "Lav 1", ch3, ch4"; nil for one plain mono or stereo track.
+    /// "4 source channels in 4 mono tracks: ch1 "Boom", ch2 "Lav 1", ch3, ch4", or "…: ch1–ch4" without names. The
+    /// layout is the camera original's, with how a mezzanine regrouped it. nil for one plain mono or stereo track.
     public var channelSummary: String? {
-        guard let chs = audioChannels, !chs.isEmpty, isMultichannel || chs.contains(where: { $0.name != nil }) else { return nil }
-        let tracks = Dictionary(grouping: chs, by: \.track)
-        let shape: String
-        if tracks.count == 1 {
-            shape = "1 track"
-        } else if tracks.values.allSatisfy({ $0.count == 1 }) {
-            shape = "\(tracks.count) mono tracks"
-        } else {
-            shape = "\(tracks.count) tracks (" + tracks.keys.sorted().map { "\(tracks[$0]!.count)" }.joined(separator: "+") + " channels)"
+        guard let chs = audioChannels, !chs.isEmpty, isMultichannel || chs.contains(where: { $0.name != nil || $0.originalTrack != nil }) else { return nil }
+        func layout(_ track: (SourceChannel) -> Int) -> (text: String, groups: [[Int]]) {
+            var groups: [(track: Int, channels: [Int])] = []
+            for (i, c) in chs.enumerated() {
+                if let g = groups.firstIndex(where: { $0.track == track(c) }) { groups[g].channels.append(i + 1) } else { groups.append((track(c), [i + 1])) }
+            }
+            let text: String
+            if groups.count == 1 {
+                text = "1 track"
+            } else if groups.allSatisfy({ $0.channels.count == 1 }) {
+                text = "\(groups.count) mono tracks"
+            } else {
+                text = "\(groups.count) tracks (" + groups.map { $0.channels.map { "ch\($0)" }.joined(separator: "+") }.joined(separator: ", ") + ")"
+            }
+            return (text, groups.map(\.channels))
         }
-        let list = chs.enumerated().map { i, c in
-            let about = [c.label, c.name.map { "\"\($0)\"" }].compactMap { $0 }.joined(separator: " ")
-            return "ch\(i + 1)" + (about.isEmpty ? "" : " " + about)
+        let original = layout { $0.originalTrack ?? $0.track }
+        let playable = layout(\.track)
+        let named = chs.contains { $0.label != nil || $0.name != nil }
+        let list = named || chs.count < 3
+            ? chs.enumerated().map { i, c in
+                let about = [c.label, c.name.map { "\"\($0)\"" }].compactMap { $0 }.joined(separator: " ")
+                return "ch\(i + 1)" + (about.isEmpty ? "" : " " + about)
+            }.joined(separator: ", ")
+            : "ch1–ch\(chs.count)"
+        var s = "\(chs.count) source channel\(chs.count == 1 ? "" : "s") in \(original.text): " + list
+        if original.groups != playable.groups {
+            let paired = playable.groups.filter { $0.count > 1 }.map { $0.map { "ch\($0)" }.joined(separator: "+") }
+            s += " (the mezzanine carries " + (paired.isEmpty ? "them as \(playable.text)" : paired.joined(separator: " and ") + " as one stereo track") + "; channel numbers are the same)"
         }
-        return "\(chs.count) source channel\(chs.count == 1 ? "" : "s") in \(shape): " + list.joined(separator: ", ")
+        return s
     }
 }
 

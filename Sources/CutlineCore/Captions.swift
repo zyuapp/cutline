@@ -39,6 +39,16 @@ public struct TimelineWord: Equatable, Sendable {
     public var sourceStart: Seconds
     /// Index in the media's transcript, so "<mediaId>.w<index>" is this word's anchor.
     public var wordIndex: Int
+    /// Who says it, when the media has speaker analysis.
+    public var speaker: String? = nil
+
+    /// A caption cue starts at this word: it comes from another source file than `previous` across a clip change,
+    /// or another speaker says it.
+    func startsCue(after previous: TimelineWord) -> Bool {
+        if clipId != previous.clipId, mediaId != previous.mediaId { return true }
+        if let a = speaker, let b = previous.speaker, a != b { return true }
+        return false
+    }
 }
 
 extension Project {
@@ -54,7 +64,8 @@ extension Project {
                     guard mid >= heard.start, mid < heard.end else { continue }
                     let s = max(span.start, clip.timelineTime(atSource: w.start))
                     let e = min(span.end, clip.timelineTime(atSource: w.end))
-                    out.append(TimelineWord(text: w.text, start: s, end: max(e, s + 0.05), clipId: clip.id, mediaId: tr.mediaId, sourceStart: w.start, wordIndex: wi))
+                    let speaker = tr.speakers.flatMap { wi < $0.count ? $0[wi] : nil }
+                    out.append(TimelineWord(text: w.text, start: s, end: max(e, s + 0.05), clipId: clip.id, mediaId: tr.mediaId, sourceStart: w.start, wordIndex: wi, speaker: speaker))
                 }
             }
         }
@@ -101,16 +112,27 @@ extension Project {
     }
 
     /// Words the captions show, in timeline order, with replacements, hidden words and cue edits applied. Spoken casing.
+    /// A new cue starts where the source file changes at a clip change and where the speaker changes, unless a merge
+    /// edit joins the two.
     public func captionWords(transcripts: [String: Transcript]) -> [CaptionWord] {
         let hidden = Set(captions.hiddenWords.map { $0.lowercased() })
         let replacements = Dictionary(captions.replacements.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { a, _ in a })
         let joins = Set(captions.edits.filter { $0.mergeNext == true }.map { "\($0.mediaId).w\($0.toWord)" })
         var words: [CaptionWord] = []
-        var run: (edit: CaptionEdit, words: [TimelineWord])?
+        var run: (edit: CaptionEdit, words: [TimelineWord], breaks: Bool)?
+        // Set at a source or speaker change; the next shown word starts a cue.
+        var pendingBreak = false
+        func takeBreak() -> Bool {
+            defer { pendingBreak = false }
+            return pendingBreak && words.last?.joinNext != true
+        }
         func flush() {
             guard let r = run else { return }
             run = nil
-            if r.edit.hidden == true { return }
+            if r.edit.hidden == true {
+                pendingBreak = pendingBreak || r.breaks
+                return
+            }
             let start = r.words[0].start + (r.edit.startOffset ?? 0)
             let end = max(start + 0.05, r.words.last!.end + (r.edit.endOffset ?? 0))
             let anchor = "\(r.edit.mediaId).w\(r.words[0].wordIndex)"
@@ -132,17 +154,20 @@ extension Project {
                     made[made.count - 1].end = end
                 }
             }
-            if r.edit.breakBefore == true, !made.isEmpty { made[0].breakBefore = true }
+            if (r.edit.breakBefore == true || r.breaks), !made.isEmpty { made[0].breakBefore = true }
             for i in made.indices { made[i].joinNext = made[i].endAnchor.map(joins.contains) ?? false }
             words += made
         }
+        var previous: TimelineWord?
         for w in captionTimelineWords(transcripts: transcripts) {
+            if let p = previous, w.startsCue(after: p) { pendingBreak = true }
+            previous = w
             if let edit = captions.edits.last(where: { !$0.isMergeOnly && $0.covers(w.mediaId, w.wordIndex) }) {
-                if let r = run, r.edit == edit, r.words.last?.clipId == w.clipId {
+                if let r = run, r.edit == edit, r.words.last?.clipId == w.clipId, !pendingBreak {
                     run!.words.append(w)
                 } else {
                     flush()
-                    run = (edit, [w])
+                    run = (edit, [w], takeBreak())
                 }
                 continue
             }
@@ -156,7 +181,7 @@ extension Project {
             }
             guard !text.isEmpty else { continue }
             let anchor = "\(w.mediaId).w\(w.wordIndex)"
-            words.append(CaptionWord(text: text, start: w.start, end: w.end, anchor: anchor, joinNext: joins.contains(anchor)))
+            words.append(CaptionWord(text: text, start: w.start, end: w.end, anchor: anchor, breakBefore: takeBreak(), joinNext: joins.contains(anchor)))
         }
         flush()
         mergeMultiWordReplacements(&words, replacements: replacements)

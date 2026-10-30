@@ -160,8 +160,11 @@ public final class ProjectBundle: @unchecked Sendable {
 
     // MARK: Analysis
 
+    /// The media's transcript, with each word's speaker when speaker analysis matches it word for word.
     public func transcript(_ mediaId: String) -> Transcript? {
-        try? read(Transcript.self, from: analysisURL.appendingPathComponent("\(mediaId).transcript.json"))
+        guard var t = try? read(Transcript.self, from: analysisURL.appendingPathComponent("\(mediaId).transcript.json")) else { return nil }
+        if let s = analysis(SpeakerAnalysis.self, mediaId, "speakers"), s.wordSpeakers.count == t.words.count { t.speakers = s.wordSpeakers }
+        return t
     }
 
     public func saveTranscript(_ t: Transcript) throws {

@@ -1,12 +1,8 @@
-import AVFoundation
-import CoreGraphics
 import CutlineCore
 import CutlineEngine
 @testable import CutlineMCP
 import Foundation
-import ImageIO
 import Testing
-import UniformTypeIdentifiers
 
 private let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
@@ -60,24 +56,6 @@ private func recipeCases(_ file: String, from start: String, to end: String) thr
     #expect(nested.plainText.contains("    angle (string)"), "\(nested.plainText)")
 }
 
-private func png(_ url: URL) throws {
-    let ctx = CGContext(data: nil, width: 64, height: 36, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-    ctx.setFillColor(CGColor(srgbRed: 0.4, green: 0.5, blue: 0.6, alpha: 1))
-    ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 36))
-    let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)!
-    CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
-    #expect(CGImageDestinationFinalize(dest))
-}
-
-private func tone(_ url: URL) throws {
-    let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
-    let file = try AVAudioFile(forWriting: url, settings: format.settings)
-    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 144_000)!
-    buffer.frameLength = 144_000
-    for i in 0..<144_000 { buffer.floatChannelData![0][i] = 0.2 * sin(Float(i) * 2 * .pi * 440 / 48_000) }
-    try file.write(from: buffer)
-}
-
 /// A plausible value for each argument, so recipes get past their first checks.
 private func sample(_ a: RecipeArg) -> JSON {
     let named: [String: JSON] = [
@@ -109,8 +87,8 @@ private func sample(_ a: RecipeArg) -> JSON {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cutline-recipes-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: dir) }
-    try png(dir.appendingPathComponent("img.png"))
-    try tone(dir.appendingPathComponent("tone.caf"))
+    try writePNG(dir.appendingPathComponent("img.png"))
+    try writeTone(dir.appendingPathComponent("tone.caf"))
     var project = Project(name: "Recipes", canvas: Canvas(width: 320, height: 180, fps: 30))
     project.media = [try await MediaProbe.probe(dir.appendingPathComponent("img.png"), id: "img"), try await MediaProbe.probe(dir.appendingPathComponent("tone.caf"), id: "tone")]
     project.tracks[0].clips = [Clip(id: "c1", kind: .media, mediaId: "img", start: 0, duration: 2), Clip(id: "c2", kind: .media, mediaId: "img", start: 2, duration: 2)]

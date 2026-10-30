@@ -230,7 +230,8 @@ extension Session {
         if want.contains(.scenes), media.hasVideo, !media.isImage {
             let cuts = try await SceneDetector.detect(media)
             try b.saveVisualAnalysis(VisualAnalysis(mediaId: media.id, sceneCuts: cuts))
-            notes.append("scenes: \(cuts.count) cuts (shots \(media.id).s0…s\(cuts.count))")
+            let shots = Shot.spans(cuts: cuts, duration: media.duration).count
+            notes.append("scenes: \(cuts.count) cuts, \(shots) shots (\(media.id).s0…s\(max(0, shots - 1)), long takes split every 8 s)")
         }
         progress?(0.65)
         notes += try await analyzePerception(media, want, bundle: b, heard: heard.url, progress: progress)

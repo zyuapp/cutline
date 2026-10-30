@@ -3,14 +3,16 @@ import Foundation
 
 extension Toolbox {
     func registerBinTools() {
-        addEdit(EditTool(name: "media_organize", description: "Organize the media library like an editor's bins: put media in a bin (folders with \"/\", e.g. \"Interviews/Day 1\"), set metadata columns (scene, take, camera, angle, notes or any name), rename, or set how interlaced media is shown. Browse with media_list.", schema: Schema.object([
+        addEdit(EditTool(name: "media_organize", description: "Organize the media library like an editor's bins: put media in a bin (folders with \"/\", e.g. \"Interviews/Day 1\"), set metadata columns (scene, take, camera, angle, notes or any name), rename, set the camera log encoding (log clips are converted into the canvas color space with input.tone and input.exposure), or set how interlaced media is shown. Browse with media_list.", schema: Schema.object([
             "media_ids": Schema.strings("Media to change"),
             "bin": Schema.string("Bin path; empty string takes them out of any bin"),
             "metadata": ["type": "object", "additionalProperties": ["type": "string"], "description": "Columns to set, e.g. {\"scene\": \"12A\", \"take\": \"3\", \"camera\": \"A\"}; empty string removes a column"],
             "name": Schema.string("New display name (one media id only)"),
             "deinterlace": Schema.string("Interlaced media: auto (default, deinterlace when interlaced) or off to keep the woven fields", values: ["auto", "off"]),
             "field_order": Schema.string("Override the detected scan: progressive, tff (top field first) or bff", values: FieldOrder.allCases.map(\.rawValue)),
-        ], required: ["media_ids"]), label: { a, _ in a.optString("bin").map { "Move to bin \($0)" } ?? "Edit media metadata" }) { p, args in
+            "log": Schema.string("Camera log encoding, or \"none\" for display-referred video", values: ["none"] + LogProfile.allCases.map(\.rawValue)),
+            "signal_range": Schema.string("Whether log code values are legal (video, default) or full range", values: ["video", "full"]),
+        ], required: ["media_ids"]), label: { a, _ in a.optString("bin").map { "Move to bin \($0)" } ?? (a.has("log") || a.has("signal_range") ? "Set log encoding" : "Edit media metadata") }) { p, args in
             let ids = args.strings("media_ids") ?? []
             guard !ids.isEmpty else { throw EditError("Pass media_ids") }
             if args.has("name"), ids.count != 1 { throw EditError("Rename one media file at a time") }
@@ -31,8 +33,9 @@ extension Toolbox {
                 if let name = args.optString("name"), !name.isEmpty { p.media[i].name = name }
                 if let d = args.optString("deinterlace") { p.media[i].deinterlace = d == "off" ? false : nil }
                 if let f = try args.enumValue("field_order", FieldOrder.self) { p.media[i].fieldOrder = f }
+                try Toolbox.applyLog(&p.media[i], args)
             }
-            return "Updated \(ids.joined(separator: ", "))"
+            return "Updated \(ids.joined(separator: ", "))" + Toolbox.logNote(args)
         })
 
         add(Tool(name: "media_list", description: "Browse the media library as a list view: bins, metadata columns, keywords/ratings, format and whether each file is used on the timeline. Filter by bin, search text (name, metadata, keywords and transcript), rating, keyword, kind or unused; sort by any column.", schema: Schema.object([
@@ -93,5 +96,29 @@ extension Toolbox {
             if !bins.isEmpty { lines.append("Bins: " + bins.joined(separator: ", ")) }
             return .text(lines.joined(separator: "\n"))
         })
+    }
+}
+
+extension Toolbox {
+    /// Applies the `log` ("none" clears it) and `signal_range` arguments to one media item.
+    static func applyLog(_ m: inout MediaAsset, _ args: Args) throws {
+        if let raw = args.optString("log") {
+            if raw == "none" {
+                m.log = nil
+            } else {
+                guard let log = LogProfile(rawValue: raw) else { throw EditError("log is none or one of \(LogProfile.allCases.map(\.rawValue).joined(separator: ", "))") }
+                guard m.hasVideo else { throw EditError("\(m.id) has no picture to decode as log") }
+                m.log = log
+            }
+        }
+        if let raw = args.optString("signal_range") {
+            guard let r = SignalRange(rawValue: raw) else { throw EditError("signal_range is video or full") }
+            m.signalRange = r
+        }
+    }
+
+    static func logNote(_ args: Args) -> String {
+        let parts = [args.optString("log").map { $0 == "none" ? "no log encoding" : "log \($0)" }, args.optString("signal_range").map { "\($0) range" }].compactMap { $0 }
+        return parts.isEmpty ? "" : ": " + parts.joined(separator: ", ")
     }
 }

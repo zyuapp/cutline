@@ -217,6 +217,9 @@ public enum MediaIngest {
         if m.hasVideo { m.fieldOrder = info.fieldOrder ?? m.fieldOrder }
         if var chs = m.audioChannels {
             for (i, name) in sourceChannelNames(info) where i < chs.count && chs[i].name == nil { chs[i].name = name }
+            if let planned = mezzanineChannels(info), planned.count == chs.count {
+                for i in chs.indices { chs[i].originalTrack = planned[i].originalTrack }
+            }
             m.audioChannels = chs
         }
         if m.timecodeStart == nil, let tc = info.timecode, let fps = info.video?.frameRate, fps > 0 {
@@ -254,7 +257,7 @@ public enum MediaIngest {
             for c in 0..<max(1, stream.channels) {
                 let track = paired ? max(1, s) : s + 1
                 let channel = paired ? (s < 2 ? s + 1 : 1) : c + 1
-                out.append(SourceChannel(track: track, channel: channel, name: names[out.count]))
+                out.append(SourceChannel(track: track, channel: channel, name: names[out.count], originalTrack: paired ? s + 1 : nil))
             }
         }
         return out

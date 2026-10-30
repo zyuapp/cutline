@@ -1,8 +1,12 @@
 import Foundation
 
 extension Project {
+    /// Generators that paint the whole frame; the others are graphics drawn over the picture.
+    static let fullFrameGenerators: Set<String> = ["gradient"]
+
     /// Fraction of the canvas a picture clip covers at timeline time `t` (0…1), from its source size, crop, fit,
-    /// scale and position; rotation and 3D tilts are ignored. Text and adjustment clips cover nothing.
+    /// scale and position; rotation and 3D tilts are ignored. Text, adjustment clips and graphics generators
+    /// (lower thirds, shapes, callouts…) cover nothing.
     public func frameCoverage(_ c: Clip, at t: Seconds) -> Double {
         let local = t - c.start
         let xf = c.resolvedTransform(at: local)
@@ -19,7 +23,8 @@ extension Project {
             case .fill: let s = max(cw / sw, ch / sh); (w, h) = (sw * s, sh * s)
             case .stretch: break
             }
-        case .solid, .sequence, .generator: break
+        case .solid, .sequence: break
+        case .generator: guard c.effects.first.map({ Self.fullFrameGenerators.contains($0.type) }) == true else { return 0 }
         case .text, .adjustment: return 0
         }
         w *= xf.scale

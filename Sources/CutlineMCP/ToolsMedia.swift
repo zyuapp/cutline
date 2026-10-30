@@ -39,11 +39,10 @@ extension Toolbox {
                 let p = try session.edit("Set log encoding of \(ids.joined(separator: ", "))") { p in
                     for id in ids {
                         guard let i = p.media.firstIndex(where: { $0.id == id }) else { throw EditError("No media \(id)") }
-                        p.media[i].log = log == "none" ? nil : LogProfile(rawValue: log)
-                        if let r = args.optString("signal_range") { p.media[i].signalRange = SignalRange(rawValue: r) }
+                        try Toolbox.applyLog(&p.media[i], args)
                     }
                 }
-                return .text("\(ids.joined(separator: ", ")): log \(log)\n" + footer(p))
+                return .text("\(ids.joined(separator: ", ")): log \(log) (media_organize log sets it too)\n" + footer(p))
             }
             var p = try session.project()
             var ids = args.strings("media_id") ?? []
@@ -205,35 +204,53 @@ extension Toolbox {
             return r
         })
 
-        add(Tool(name: "timeline_transcript", description: "Read what the edited timeline says, in TIMELINE time, grouped by clip so you can check cuts land between words. Shows remaining pauses ≥0.4s and leftover filler words.", schema: Schema.object([
+        add(Tool(name: "timeline_transcript", description: "Read what the edited timeline says, in TIMELINE time, grouped by clip so you can check cuts land between words. Reads the dialogue tracks the captions use (the dialogue role, else every track not named or roled music, effects or ambience; captions_set track_ids overrides); all_tracks:true reads every track. Shows remaining pauses ≥0.4s and leftover filler words.", schema: Schema.object([
             "start": Schema.time("From timeline time"),
             "end": Schema.time("Until timeline time"),
+            "all_tracks": Schema.bool("Read every track, including music, effects and ambience; default false"),
         ])) { [unowned self] args in
             let b = try session.requireBundle()
             let p = try b.loadProject()
-            let words = p.timelineWords(transcripts: b.transcripts(for: p))
+            let transcripts = b.transcripts(for: p)
+            let all = args.bool("all_tracks", default: false)
+            let words = all ? p.timelineWords(transcripts: transcripts) : p.captionTimelineWords(transcripts: transcripts)
             let lo = try args.optTime("start") ?? 0, hi = try args.optTime("end") ?? .infinity
             let shown = words.filter { $0.end > lo && $0.start < hi }
-            guard !shown.isEmpty else { return .text("No transcribed speech on the timeline in that range.") }
+            let skipped = all ? [] : Toolbox.otherSpeechTracks(p, transcripts: transcripts, shown: words)
+            let note = skipped.isEmpty ? "" : "\nNot read: \(skipped.joined(separator: ", ")) (not dialogue; all_tracks:true includes them)"
+            guard !shown.isEmpty else { return .text("No transcribed speech on the dialogue tracks in that range." + note) }
             var lines: [String] = []
-            var clipId = ""
-            var group: [TimelineWord] = []
-            func flush() {
-                guard let first = group.first, let c = p.clip(first.clipId) else { return }
-                lines.append("── \(c.id) \(fmt2(c.start))–\(fmt2(c.end)) (\(c.mediaId ?? "") src \(fmt2(c.sourceIn))–\(fmt2(c.sourceOut)))")
+            // One header per clip, clips in order of their first word.
+            var order: [String] = []
+            var byClip: [String: [TimelineWord]] = [:]
+            for w in shown {
+                if byClip[w.clipId] == nil { order.append(w.clipId) }
+                byClip[w.clipId, default: []].append(w)
+            }
+            for id in order {
+                guard let group = byClip[id], let c = p.clip(id) else { continue }
+                let track = p.locateClip(id).map { " on " + p.tracks[$0.track].id } ?? ""
+                lines.append("── \(c.id)\(track) \(fmt2(c.start))–\(fmt2(c.end)) (\(c.mediaId ?? "") src \(fmt2(c.sourceIn))–\(fmt2(c.sourceOut)))")
                 for s in Describe.sentences(group, text: { Word(text: $0.text, start: 0, end: 0).isFiller ? "*\($0.text)*" : $0.text }, start: \.start, end: \.end) {
                     lines.append("  [\(fmt2(s.start))–\(fmt2(s.end)) \(s.first.mediaId).w\(s.first.wordIndex)–w\(s.last.wordIndex)] \(s.text)" + (s.pauseAfter.map { "   (pause \(fmt1($0))s)" } ?? ""))
                 }
-                group = []
             }
-            for w in shown {
-                if w.clipId != clipId { flush(); clipId = w.clipId }
-                group.append(w)
-            }
-            flush()
             let fillers = shown.filter { Word(text: $0.text, start: 0, end: 0).isFiller }.count
-            return .text(lines.joined(separator: "\n") + "\n\(shown.count) words, \(fillers) fillers, timeline \(fmt2(p.duration))s")
+            return .text(lines.joined(separator: "\n") + "\n\(shown.count) words, \(fillers) fillers, timeline \(fmt2(p.duration))s" + note)
         })
+    }
+
+    /// Tracks with transcribed words that the dialogue reading leaves out, as "A3 \"Room tone\"".
+    static func otherSpeechTracks(_ p: Project, transcripts: [String: Transcript], shown: [TimelineWord]) -> [String] {
+        let read = Set(shown.map(\.clipId))
+        var ids: [String] = []
+        for w in p.timelineWords(transcripts: transcripts) where !read.contains(w.clipId) {
+            guard let loc = p.locateClip(w.clipId) else { continue }
+            let t = p.tracks[loc.track]
+            let label = "\(t.id) \"\(t.name)\""
+            if !ids.contains(label) { ids.append(label) }
+        }
+        return ids
     }
 
     /// timeline_frames view:"matte": renders where one clip effect acts, white on black.

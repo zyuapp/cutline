@@ -31,6 +31,7 @@ extension Toolbox {
             "chapters": Schema.bool("Chapters from markers, embedded plus a .chapters.txt list; default true with 2+ markers"),
             "interchange": Schema.strings("Also write otio, fcpxml, edl and/or xml (Final Cut Pro 7 XML, best for Premiere and Resolve) next to the video"),
             "check_only": Schema.bool("Only run the platform checks; render nothing"),
+            "strict": Schema.bool("With platform: refuse to export when the platform check finds issues, listing them; default false exports anyway and leads the report with them"),
             "reveal": Schema.bool("Show the file in Finder when done, default false"),
             "deliver": Schema.string("What to make: video (default); audio (mix only, see audio_format); stems (one audio file per role: dialogue, music, effects, in the master layout); stills (frames at `times`); image_sequence; gif; archive (copy the project and its media, trimmed with trim:true, to path)", values: ["video", "audio", "stems", "stills", "image_sequence", "gif", "archive"]),
             "audio_format": Schema.string("For audio and stems, default wav24", values: Delivery.AudioFormat.allCases.map(\.rawValue)),
@@ -60,6 +61,8 @@ extension Toolbox {
             if args.has("start") || args.has("end") { range = TimeRange(try args.optTime("start") ?? 0, try args.optTime("end") ?? p0.duration) }
 
             var report: [String] = []
+            // Report lines that go before the export summary: the platform check when it found issues.
+            var lead = 0
             var loudness: LoudnessReport?
             if let platform {
                 var warnings = platform.check(p0, preset: args.has("preset") ? preset.rawValue : nil)
@@ -73,15 +76,20 @@ extension Toolbox {
                     warnings.append((p0.master.loudnessTarget == nil ? "Loudness is \(fmt1(mix.integrated)) LUFS" : "The master loudness target is \(fmt1(delivered)) LUFS") + "; \(platform.name) needs \(fmt1(platform.loudness)) ±\(fmt1(platform.loudnessTolerance)). Run recipe loudness_normalize target_lufs:\(Int(platform.loudness)).")
                 }
                 if peak > platform.truePeak + 0.1 { warnings.append("True peak \(fmt1(peak)) dBTP is above \(fmt1(platform.truePeak)); add a limiter (recipe loudness_normalize ceiling_db:\(fmt1(platform.truePeak - 0.5))).") }
-                if let d = p0.master.drift(integrated: mix.integrated, truePeak: mix.truePeakDb) { report.append("Master loudness target: " + d) }
                 let text = try await measureText(p0, range: range, platform: platform)
                 warnings += text.filter { $0.contains("outside") || $0.contains("hard to read") }.map { $0.trimmingCharacters(in: .whitespaces) }
-                report.append("\(platform.name) check: " + (warnings.isEmpty ? "ready." : "\(warnings.count) issue(s)"))
+                let checkOnly = args.bool("check_only", default: false)
+                if args.bool("strict", default: false), !checkOnly, !warnings.isEmpty {
+                    throw EditError("Not exported: the \(platform.name) check found \(warnings.count) issue(s):\n" + warnings.map { "  - " + $0 }.joined(separator: "\n") + "\nFix them, or export without strict to render anyway.")
+                }
+                report.append("\(platform.name) check: " + (warnings.isEmpty ? "ready." : "\(warnings.count) issue(s)" + (checkOnly ? "" : ", exported anyway (strict:true refuses)")))
                 report += warnings.map { "  - " + $0 }
                 if !platform.notes.isEmpty { report.append("  Note: " + platform.notes) }
-                if args.bool("check_only", default: false) { return .text(report.joined(separator: "\n")) }
-            } else if args.bool("check_only", default: false) {
-                throw EditError("check_only needs a platform")
+                if let d = p0.master.drift(integrated: mix.integrated, truePeak: mix.truePeakDb) { report.append("Master loudness target: " + d) }
+                if checkOnly { return .text(report.joined(separator: "\n")) }
+                if !warnings.isEmpty { lead = report.count }
+            } else if args.bool("check_only", default: false) || args.bool("strict", default: false) {
+                throw EditError("\(args.bool("check_only", default: false) ? "check_only" : "strict") needs a platform")
             }
 
             if let target = args.optString("path").map({ session.resolve($0) }), ["otio", "fcpxml", "edl", "xml"].contains(target.pathExtension.lowercased()) {
@@ -218,7 +226,7 @@ extension Toolbox {
             if range == nil, let conform { session.measuredMix[try session.stems().masterKey(for: p)] = conform.before }
             try? session.sendPreview(["action": "export", "state": "finished", "path": url.path])
             if preset.needsFFmpeg {
-                report.insert(try await Toolbox.describeFFmpegExport(url, preset: preset, took: Date().timeIntervalSince(started)), at: 0)
+                report.insert(try await Toolbox.describeFFmpegExport(url, preset: preset, took: Date().timeIntervalSince(started)), at: lead)
                 return .text(report.joined(separator: "\n"))
             }
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
@@ -232,8 +240,8 @@ extension Toolbox {
             let seconds = check.duration
             let mbps = seconds > 0 ? Double(size) * 8 / seconds / 1_000_000 : 0
             let timecode = try await TimecodeTrack.read(url)
-            report.insert("Exported \(url.path)\n\(check.width)×\(check.height), \(fmt2(seconds))s, \(String(format: "%.1f", Double(size) / 1_048_576)) MB (\(fmt1(mbps)) Mb/s), \(preset.title), \(p.master.layout.title) audio, took \(fmt1(Date().timeIntervalSince(started)))s", at: 0)
-            report.insert(timecode.map { "Timecode track starts at \($0)" + (tcFormat.dropFrame ? " (drop frame)" : "") } ?? "No timecode track: MP4 can't carry one; export with container:\"mov\" for a timecode track.", at: 1)
+            report.insert("Exported \(url.path)\n\(check.width)×\(check.height), \(fmt2(seconds))s, \(String(format: "%.1f", Double(size) / 1_048_576)) MB (\(fmt1(mbps)) Mb/s), \(preset.title), \(p.master.layout.title) audio, took \(fmt1(Date().timeIntervalSince(started)))s", at: lead)
+            report.insert(timecode.map { "Timecode track starts at \($0)" + (tcFormat.dropFrame ? " (drop frame)" : "") } ?? "No timecode track: MP4 can't carry one; export with container:\"mov\" for a timecode track.", at: lead + 1)
             return .text(report.joined(separator: "\n"))
         })
     }

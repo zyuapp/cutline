@@ -23,9 +23,10 @@ extension Project {
                 out.append("\(last.id) on \(t.id) runs \(fmt2(last.end - pictureEnd))s past the picture; trim it or fade it out")
             }
         }
-        // Edges that slice through a spoken word.
-        for t in tracks where !t.muted {
-            for c in t.clips where c.kind == .media && c.volume > 0 {
+        // Edges that slice through a spoken word, on the dialogue tracks.
+        let dialogue = Set(captions.trackIds.isEmpty ? captionTrackIds : captions.trackIds)
+        for t in tracks where !t.muted && dialogue.contains(t.id) {
+            for c in t.clips where c.kind == .media && c.volume > 0 && playsTranscribedChannels(c) {
                 guard let mid = c.mediaId, let tr = transcripts[mid] else { continue }
                 let heard = c.audioSourceRange
                 for (edge, s) in [("starts", heard.start), ("ends", heard.end)] {
@@ -66,6 +67,12 @@ extension Project {
 }
 
 extension Project {
+    /// Whether a clip plays the source channels its media was transcribed from; true when either is unknown.
+    func playsTranscribedChannels(_ c: Clip) -> Bool {
+        guard let r = c.channels, !r.isAsRecorded, let heard = c.mediaId.flatMap({ mediaAsset($0) })?.analysisChannel, !heard.isAsRecorded else { return true }
+        return !Set(r.sourceChannels).isDisjoint(with: heard.sourceChannels)
+    }
+
     /// Each track's audio role: its own, else dialogue when it carries transcribed speech, music for
     /// audio tracks without speech, and effects for the rest.
     public func roles(transcripts: [String: Transcript]) -> [String: String] {

@@ -39,7 +39,7 @@ private func tempDir() throws -> URL {
 
 @Test func freeFormObjectsAreNotChecked() async {
     let box = Toolbox()
-    for (tool, args) in [("recipe", ["name": "duck", "args": ["anything": 1]] as JSON),
+    for (tool, args) in [("recipe", ["name": "template", "args": ["values": ["anything": "x"]]] as JSON),
                          ("param_set", ["target": "c", "set": ["transform.scale": 2], "dry_run": true]),
                          ("effect_add", ["target": "c", "type": "blur.gaussian", "params": ["radius": 3]]),
                          ("export", ["leader": true, "variants": [["name": "a", "ops": [], "platform": "youtube"]]])] {

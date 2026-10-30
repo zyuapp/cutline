@@ -24,10 +24,6 @@ struct Tool {
     let description: String
     let schema: JSON
     let run: (Args) async throws -> ToolResult
-
-    var definition: JSON {
-        ["name": .string(name), "description": .string(description), "inputSchema": schema]
-    }
 }
 
 /// An edit that can run alone or inside `batch`. Returns a one-line summary.
@@ -123,7 +119,7 @@ final class Toolbox {
         Args.sourceResolver = { try p.resolveSourceTime($0, transcripts: transcripts, index: index) }
     }
 
-    var definitions: [JSON] { order.compactMap { tools[$0]?.definition } }
+    var definitions: [JSON] { order.compactMap { tools[$0].map(Toolbox.listing) } }
 
     func call(_ name: String, _ args: JSON?) async -> ToolResult {
         guard let tool = tools[name] else {
@@ -231,7 +227,11 @@ enum Describe {
             var a: [String] = []
             if let t = bundle.transcript(m.id) { a.append("transcript \(t.words.count) words") }
             if let au = bundle.audioAnalysis(m.id) { a.append("\(au.silences.filter { $0.duration >= 0.5 }.count) pauses") }
-            if let v = bundle.visualAnalysis(m.id), !v.sceneCuts.isEmpty { a.append("\(v.sceneCuts.count) scene cuts") }
+            if let shots = bundle.analysis(ShotAnalysis.self, m.id, "shots"), !m.isImage {
+                a.append("\(shots.shots.count) shots")
+            } else if let v = bundle.visualAnalysis(m.id), !v.sceneCuts.isEmpty {
+                a.append("\(Shot.spans(cuts: v.sceneCuts, duration: m.duration).count) shots from \(v.sceneCuts.count) scene cuts")
+            }
             if let log = m.log { a.append("log \(log.rawValue)") }
             if m.isInterlaced { a.append(Toolbox.interlaceNote(m)) }
             if let t = m.transcoded { a.append(m.isTranscoding ? "transcoding from \(m.conformPath)" : "ProRes mezzanine of \(m.conformPath) (\(t))") }

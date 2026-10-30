@@ -119,8 +119,10 @@ extension Toolbox {
             "search": Schema.string("Word to search for, e.g. \"blur\" or \"warm\""),
             "paths": Schema.bool("List every clip and track parameter path"),
             "recipe": Schema.string("A recipe's arguments, or \"all\""),
+            "tool": Schema.string("A tool's full description and every argument"),
             "plugins": Schema.bool("List installed Audio Unit effects (use their id as an effect_add type; catalog type=<id> lists parameters)"),
-        ])) { args in
+        ])) { [unowned self] args in
+            if let t = args.optString("tool") { return .text(try toolManual(t)) }
             if args.bool("plugins", default: false) {
                 let list = AudioUnitHost.installedEffects()
                 return .text(list.isEmpty ? "No Audio Unit effects installed." : list.map { "\($0.id): \($0.name) by \($0.manufacturer)\($0.apple ? " (built in)" : "")" }.joined(separator: "\n"))
