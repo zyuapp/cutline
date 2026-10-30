@@ -137,6 +137,19 @@ public enum AnimatedText {
         return ctx
     }
 
+    /// Applies the fonts and sizes of a title's spans.
+    static func withSpanFonts(_ text: NSAttributedString, _ spec: TextSpec, font: NSFont) -> NSAttributedString {
+        guard spec.spans?.isEmpty == false else { return text }
+        let out = NSMutableAttributedString(attributedString: text)
+        var at = 0
+        for run in TextRenderer.runs(spec, font: font) {
+            let len = (run.text as NSString).length
+            if let f = run.font { out.addAttribute(.font, value: f, range: NSRange(location: at, length: len)) }
+            at += len
+        }
+        return out
+    }
+
     static func build(_ spec: TextSpec, canvasHeight: Double, canvasWidth: Double, unit: Animator.Unit) -> Layout? {
         let text = spec.text as NSString
         guard text.length > 0 else { return nil }
@@ -154,7 +167,7 @@ public enum AnimatedText {
         if unit == .char { base[NSAttributedString.Key(kCTLigatureAttributeName as String)] = 0 }
         var fillAttrs = base
         fillAttrs[NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String)] = true
-        let fillText = NSAttributedString(string: spec.text, attributes: fillAttrs)
+        let fillText = withSpanFonts(NSAttributedString(string: spec.text, attributes: fillAttrs), spec, font: font)
         let framesetter = CTFramesetterCreateWithAttributedString(fillText)
         let maxWidth = spec.maxWidth * canvasWidth
         let suggested = CTFramesetterSuggestFrameSizeWithConstraints(framesetter, CFRange(location: 0, length: 0), nil, CGSize(width: maxWidth, height: .greatestFiniteMagnitude), nil)
@@ -181,7 +194,7 @@ public enum AnimatedText {
             attrs[.foregroundColor] = CGColor.clear
             attrs[.strokeColor] = s.with(alpha: spec.color.a * s.a).cgColor
             attrs[.strokeWidth] = spec.strokeWidth * 200
-            stroke = lines(NSAttributedString(string: spec.text, attributes: attrs))
+            stroke = lines(withSpanFonts(NSAttributedString(string: spec.text, attributes: attrs), spec, font: font))
         }
 
         let ranges = unitRanges(text, unit: unit, lines: fill.map { CTLineGetStringRange($0.0) })

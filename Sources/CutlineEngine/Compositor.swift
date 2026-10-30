@@ -319,15 +319,8 @@ public final class RenderScene: @unchecked Sendable {
         let key = "t\(spec.hashValue):\(reveal ?? -1)" as NSString
         if let hit = cache.object(forKey: key) { return hit }
         let h = Double(min(project.canvas.width, project.canvas.height))
-        var runs: [TextRenderer.Run]
-        if let reveal {
-            let chars = Array(spec.text)
-            let n = min(reveal, chars.count)
-            runs = [.init(text: String(chars[..<n]), color: spec.color), .init(text: String(chars[n...]), color: spec.color.with(alpha: 0))]
-        } else {
-            runs = [.init(text: spec.text, color: spec.color)]
-        }
         let font = TextRenderer.font(spec.font, size: spec.size * h, weight: spec.weight)
+        let runs = TextRenderer.runs(spec, font: font, visible: reveal)
         guard let cg = TextRenderer.render(runs: runs, font: font, align: spec.align, maxWidth: spec.maxWidth * Double(project.canvas.width), background: spec.background, stroke: spec.stroke, strokeWidth: spec.strokeWidth, shadow: spec.shadow, letterSpacing: spec.letterSpacing) else { return nil }
         let img = CIImage(cgImage: cg)
         cache.setObject(img, forKey: key)

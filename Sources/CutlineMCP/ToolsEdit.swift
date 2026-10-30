@@ -25,6 +25,18 @@ extension Toolbox {
         "letter_spacing": Schema.number("Extra spacing as a fraction of font size, e.g. 0.05"),
         "animation_in": Schema.string("Entrance", values: TextAnimation.allCases.map(\.rawValue)),
         "animation_out": Schema.string("Exit", values: TextAnimation.allCases.map(\.rawValue)),
+        "spans": Schema.array(Schema.object([
+            "match": Schema.string("Restyle every occurrence of this text (case-insensitive)"),
+            "from": Schema.integer("Or: first character index"),
+            "to": Schema.integer("Character index after the last"),
+            "color": Schema.string("Hex"),
+            "font": Schema.string("Font family"),
+            "weight": Schema.integer("100–900"),
+            "scale": Schema.number("Size relative to the title, e.g. 1.4"),
+            "italic": Schema.bool("Italic"),
+            "underline": Schema.bool("Underline"),
+            "highlight": Schema.string("Hex marker box behind these characters"),
+        ]), "Style parts of the text differently (one word in another color, a bigger name, a highlighted phrase). Replaces existing spans; [] clears. Static titles show every span property; word/letter animators show fonts and sizes"),
     ]
 
     func registerEditTools() {
@@ -639,6 +651,15 @@ extension Toolbox {
         if let v = args.optDouble("letter_spacing") { s.letterSpacing = v }
         if let v = try args.enumValue("animation_in", TextAnimation.self) { s.animationIn = v }
         if let v = try args.enumValue("animation_out", TextAnimation.self) { s.animationOut = v }
+        if let list = args.raw["spans"]?.array {
+            s.spans = try list.map { j in
+                let a = Args(j)
+                let span = TextSpan(match: a.optString("match"), from: a.optInt("from"), to: a.optInt("to"), color: try a.color("color"), font: a.optString("font"), weight: a.optInt("weight"), scale: a.optDouble("scale"), italic: a.optBool("italic"), underline: a.optBool("underline"), highlight: try a.color("highlight"))
+                guard span.match != nil || span.from != nil || span.to != nil else { throw EditError("Each span needs match or from/to") }
+                return span
+            }
+            if s.spans?.isEmpty == true { s.spans = nil }
+        }
         if let raw = args.raw["animator"] {
             if raw.isNull || raw.string == "none" { s.animator = nil } else {
                 do { s.animator = try JSONDecoder().decode(TextAnimator.self, from: JSONEncoder().encode(raw)) } catch {

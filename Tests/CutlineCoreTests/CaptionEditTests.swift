@@ -125,3 +125,13 @@ private func scene() -> (Project, [String: Transcript]) {
     #expect(abs(clips.last!.end - 32) < 0.05)
     for (a, b) in zip(clips, clips.dropFirst()) { #expect(abs(a.end - b.start) < 1e-6) }
 }
+
+@Test func titleSpansSplitTextWhereStyleChanges() {
+    var s = TextSpec(text: "Meet Ada, the first")
+    s.spans = [TextSpan(match: "ada", color: .black), TextSpan(from: 2, to: 6, weight: 900)]
+    let pieces = s.styledPieces()
+    #expect(pieces.map(\.text) == ["Me", "et ", "Ad", "a", ", the first"])
+    #expect(pieces[2].style?.color == .black && pieces[2].style?.weight == 900)
+    #expect(pieces[1].style?.color == nil && pieces[4].style == nil)
+    #expect(pieces.map(\.text).joined() == s.text)
+}

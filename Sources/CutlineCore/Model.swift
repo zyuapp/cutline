@@ -673,6 +673,8 @@ public struct TextSpec: Codable, Equatable, Hashable, Sendable {
     public var animator: TextAnimator?
     /// When each unit starts, in seconds from the clip start (spoken word times for kinetic captions).
     public var unitTimes: [Seconds]?
+    /// Restyles parts of the text, later spans over earlier ones.
+    public var spans: [TextSpan]?
 
     public init(text: String, font: String = "system", size: Double = 0.07, weight: Int = 700, color: RGBA = .white, background: RGBA? = nil, stroke: RGBA? = nil, strokeWidth: Double = 0, shadow: Bool = true, align: TextAlign = .center, x: Double = 0.5, y: Double = 0.5, maxWidth: Double = 0.85, letterSpacing: Double = 0, animationIn: TextAnimation = .fade, animationOut: TextAnimation = .fade) {
         self.text = text
@@ -691,6 +693,75 @@ public struct TextSpec: Codable, Equatable, Hashable, Sendable {
         self.letterSpacing = letterSpacing
         self.animationIn = animationIn
         self.animationOut = animationOut
+    }
+}
+
+/// A style for part of a title: every occurrence of `match`, or characters `from..<to`.
+public struct TextSpan: Codable, Equatable, Hashable, Sendable {
+    public var match: String?
+    public var from: Int?
+    public var to: Int?
+    public var color: RGBA?
+    public var font: String?
+    public var weight: Int?
+    /// Multiplies the title's size.
+    public var scale: Double?
+    public var italic: Bool?
+    public var underline: Bool?
+    /// Marker-style box behind the characters.
+    public var highlight: RGBA?
+
+    public init(match: String? = nil, from: Int? = nil, to: Int? = nil, color: RGBA? = nil, font: String? = nil, weight: Int? = nil, scale: Double? = nil, italic: Bool? = nil, underline: Bool? = nil, highlight: RGBA? = nil) {
+        self.match = match
+        self.from = from
+        self.to = to
+        self.color = color
+        self.font = font
+        self.weight = weight
+        self.scale = scale
+        self.italic = italic
+        self.underline = underline
+        self.highlight = highlight
+    }
+
+    /// Character ranges of `text` this span covers.
+    public func ranges(in text: String) -> [Range<Int>] {
+        let n = text.count
+        if let match, !match.isEmpty {
+            var out: [Range<Int>] = []
+            var search = text.startIndex
+            while let r = text.range(of: match, options: .caseInsensitive, range: search..<text.endIndex) {
+                out.append(text.distance(from: text.startIndex, to: r.lowerBound)..<text.distance(from: text.startIndex, to: r.upperBound))
+                search = r.upperBound
+            }
+            return out
+        }
+        let lo = max(0, min(n, from ?? 0)), hi = max(lo, min(n, to ?? n))
+        return hi > lo ? [lo..<hi] : []
+    }
+
+    /// Fields set here override `other`'s.
+    func over(_ other: TextSpan) -> TextSpan {
+        TextSpan(color: color ?? other.color, font: font ?? other.font, weight: weight ?? other.weight, scale: scale ?? other.scale, italic: italic ?? other.italic, underline: underline ?? other.underline, highlight: highlight ?? other.highlight)
+    }
+}
+
+extension TextSpec {
+    /// The text cut where its style changes, each piece with its merged span style (nil for the base style).
+    public func styledPieces() -> [(text: String, style: TextSpan?)] {
+        let chars = Array(text)
+        guard let spans, !spans.isEmpty, !chars.isEmpty else { return [(text, nil)] }
+        var per = [TextSpan?](repeating: nil, count: chars.count)
+        for span in spans {
+            for r in span.ranges(in: text) {
+                for i in r where i < chars.count { per[i] = per[i].map { span.over($0) } ?? span.over(TextSpan()) }
+            }
+        }
+        var out: [(text: String, style: TextSpan?)] = []
+        for (i, c) in chars.enumerated() {
+            if let last = out.last, last.style == per[i] { out[out.count - 1].text.append(c) } else { out.append((String(c), per[i])) }
+        }
+        return out
     }
 }
 

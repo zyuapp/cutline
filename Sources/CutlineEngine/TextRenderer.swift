@@ -8,6 +8,37 @@ enum TextRenderer {
     struct Run {
         var text: String
         var color: RGBA
+        var font: NSFont? = nil
+        var underline = false
+        var highlight: RGBA? = nil
+    }
+
+    static let highlightKey = NSAttributedString.Key("CutlineHighlight")
+
+    /// Runs for a title's styled pieces; characters from `visible` on are transparent.
+    static func runs(_ spec: TextSpec, font: NSFont, visible: Int? = nil) -> [Run] {
+        var out: [Run] = []
+        var index = 0
+        for piece in spec.styledPieces() {
+            var run = Run(text: piece.text, color: spec.color)
+            if let st = piece.style {
+                run.color = st.color ?? spec.color
+                run.underline = st.underline ?? false
+                run.highlight = st.highlight
+                if st.font != nil || st.weight != nil || st.scale != nil || st.italic == true {
+                    var f = self.font(st.font ?? spec.font, size: font.pointSize * (st.scale ?? 1), weight: st.weight ?? spec.weight)
+                    if st.italic == true { f = NSFontManager.shared.convert(f, toHaveTrait: .italicFontMask) }
+                    run.font = f
+                }
+            }
+            guard let visible else { out.append(run); continue }
+            let chars = Array(piece.text)
+            let n = max(0, min(chars.count, visible - index))
+            if n > 0 { var r = run; r.text = String(chars[..<n]); out.append(r) }
+            if n < chars.count { var r = run; r.text = String(chars[n...]); r.color = r.color.with(alpha: 0); r.highlight = r.highlight?.with(alpha: 0); out.append(r) }
+            index += chars.count
+        }
+        return out
     }
 
     static func font(_ name: String, size: CGFloat, weight: Int) -> NSFont {
@@ -52,9 +83,12 @@ enum TextRenderer {
         func attributed(fill: Bool) -> NSAttributedString {
             let s = NSMutableAttributedString()
             for run in runs {
-                var attrs: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: para, .kern: letterSpacing * font.pointSize]
+                let f = run.font ?? font
+                var attrs: [NSAttributedString.Key: Any] = [.font: f, .paragraphStyle: para, .kern: letterSpacing * f.pointSize]
                 if fill {
                     attrs[.foregroundColor] = run.color.cgColor
+                    if run.underline { attrs[.underlineStyle] = NSUnderlineStyle.thick.rawValue; attrs[.underlineColor] = run.color.cgColor }
+                    if let h = run.highlight { attrs[highlightKey] = h.cgColor }
                 } else {
                     attrs[.foregroundColor] = CGColor.clear
                     attrs[.strokeColor] = (stroke ?? .black).with(alpha: run.color.a * (stroke?.a ?? 1)).cgColor
@@ -90,6 +124,7 @@ enum TextRenderer {
             }
             let fs = CTFramesetterCreateWithAttributedString(text)
             let frame = CTFramesetterCreateFrame(fs, CFRange(location: 0, length: 0), CGPath(rect: textRect, transform: nil), nil)
+            drawHighlights(frame, in: ctx, origin: textRect.origin)
             CTFrameDraw(frame, ctx)
             ctx.restoreGState()
         }
@@ -97,6 +132,33 @@ enum TextRenderer {
         if hasStroke { draw(attributed(fill: false), shadowed: shadow && background == nil) }
         draw(fillText, shadowed: shadow && !hasStroke && background == nil)
         return ctx.makeImage()
+    }
+}
+
+extension TextRenderer {
+    /// Fills a box behind each run carrying a highlight color.
+    static func drawHighlights(_ frame: CTFrame, in ctx: CGContext, origin: CGPoint) {
+        let lines = CTFrameGetLines(frame) as! [CTLine]
+        var origins = [CGPoint](repeating: .zero, count: lines.count)
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+        for (line, o) in zip(lines, origins) {
+            for run in CTLineGetGlyphRuns(line) as! [CTRun] {
+                let attrs = CTRunGetAttributes(run) as NSDictionary
+                guard let color = attrs[highlightKey] else { continue }
+                var ascent: CGFloat = 0, descent: CGFloat = 0
+                let width = CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), &ascent, &descent, nil)
+                var pos = CGPoint.zero
+                CTRunGetPositions(run, CFRange(location: 0, length: 1), &pos)
+                let padX = (ascent + descent) * 0.12
+                let rect = CGRect(x: origin.x + o.x + pos.x - padX, y: origin.y + o.y - descent * 1.1, width: CGFloat(width) + 2 * padX, height: (ascent + descent) * 1.05)
+                ctx.saveGState()
+                ctx.setShadow(offset: .zero, blur: 0, color: nil)
+                ctx.setFillColor(color as! CGColor)
+                ctx.addPath(CGPath(roundedRect: rect, cornerWidth: rect.height * 0.15, cornerHeight: rect.height * 0.15, transform: nil))
+                ctx.fillPath()
+                ctx.restoreGState()
+            }
+        }
     }
 }
 
