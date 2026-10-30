@@ -210,6 +210,7 @@ enum Describe {
         }
         var extra: [String] = []
         if c.speed != 1 { extra.append("speed \(fmt2(c.speed))") }
+        if let link = c.link { extra.append("linked with " + p.linked(c.id).joined(separator: ",").ifEmptyText(link)) }
         if c.volume != 1 { extra.append("vol \(fmt2(c.volume))") }
         if c.fadeIn > 0 || c.fadeOut > 0 { extra.append("fade \(fmt2(c.fadeIn))/\(fmt2(c.fadeOut))") }
         if c.audioFadeIn > 0 || c.audioFadeOut > 0 { extra.append("audio fade \(fmt2(c.audioFadeIn))/\(fmt2(c.audioFadeOut))") }

@@ -139,9 +139,28 @@ extension Toolbox {
             "name": Schema.string("Label"),
             "text": Schema.string("New words for a title clip"),
             "ripple": Schema.bool("Shift later clips on the track by the change in end time, default false"),
+            "media_id": Schema.string("Replace edit: swap in other media at the same place and length (source_in picks where it starts)"),
+            "link": Schema.strings("Link this clip with these clips so they move, split and delete together (e.g. picture and its separately recorded sound)"),
+            "unlink": Schema.bool("Break this clip's link"),
         ], required: ["clip_id"]), label: { a, p in Toolbox.describeUpdate(a, p) }) { p, args in
             let id = try args.string("clip_id")
             guard var c = p.clip(id) else { throw EditError("No clip \(id)") }
+            if args.bool("unlink", default: false) { c.link = nil }
+            if let others = args.strings("link") {
+                let group = c.link ?? IDs.make("lnk")
+                c.link = group
+                for o in others {
+                    guard let loc = p.locateClip(o) else { throw EditError("No clip \(o)") }
+                    p.tracks[loc.track].clips[loc.clip].link = group
+                }
+            }
+            if let mid = args.optString("media_id") {
+                guard let m = p.mediaAsset(mid) else { throw EditError("No media \(mid)") }
+                guard c.kind == .media else { throw EditError("Replace edits work on media clips") }
+                c.mediaId = mid
+                c.name = m.name
+                if try args.optSourceTime("source_in") == nil { c.sourceIn = m.isImage ? 0 : min(c.sourceIn, max(0, m.duration - c.duration * c.speed)) }
+            }
             if let v = args.optDouble("speed") {
                 let src = c.duration * c.speed
                 c.speed = v
@@ -156,7 +175,14 @@ extension Toolbox {
                 c.duration = (newOut - newIn) / c.speed
             }
             if let d = try args.optTime("duration") { c.duration = d }
-            if let s = try args.optTime("start") { c.start = s }
+            if let s = try args.optTime("start") {
+                let delta = s - c.start
+                c.start = s
+                for other in p.linked(id) {
+                    guard let loc = p.locateClip(other) else { continue }
+                    p.tracks[loc.track].clips[loc.clip].start += delta
+                }
+            }
             if let e = try args.optTime("end") { c.duration = e - c.start }
             if let v = args.optString("name") { c.name = v }
             if let t = args.optString("text") {

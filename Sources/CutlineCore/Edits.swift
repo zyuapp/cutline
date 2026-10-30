@@ -108,6 +108,23 @@ extension Project {
         tracks[loc.track].clips = clips
     }
 
+    /// Other clips linked to this one.
+    public func linked(_ id: String) -> [String] {
+        guard let link = clip(id)?.link else { return [] }
+        return tracks.flatMap(\.clips).filter { $0.link == link && $0.id != id }.map(\.id)
+    }
+
+    /// Moves a clip and, by the same amount, the clips linked to it.
+    public mutating func moveLinked(_ id: String, start: Seconds, trackId: String? = nil) throws {
+        guard let old = clip(id) else { throw EditError("No clip \(id)") }
+        let delta = start - old.start
+        try moveClip(id, start: start, trackId: trackId)
+        for other in linked(id) {
+            guard let c = clip(other) else { continue }
+            try moveClip(other, start: c.start + delta)
+        }
+    }
+
     public mutating func moveClip(_ id: String, start: Seconds, trackId: String? = nil) throws {
         guard let loc = locateClip(id) else { throw EditError("No clip \(id)") }
         var clip = tracks[loc.track].clips[loc.clip]
@@ -138,9 +155,20 @@ extension Project {
         guard t > clip.start + eps, t < clip.end - eps else {
             throw EditError("Split time \(fmt(t)) is outside \(id) (\(fmt(clip.start))–\(fmt(clip.end)))")
         }
-        let (left, right) = Project.split(clip, at: t)
+        var (left, right) = Project.split(clip, at: t)
+        let partners = clip.link == nil ? [] : linked(id)
+        if clip.link != nil { right.link = IDs.make("lnk") }
         tracks[loc.track].clips.replaceSubrange(loc.clip...loc.clip, with: [left, right])
         for i in transitions.indices where transitions[i].from == id { transitions[i].from = right.id }
+        for other in partners {
+            guard let o = locateClip(other) else { continue }
+            let c = tracks[o.track].clips[o.clip]
+            guard t > c.start + eps, t < c.end - eps else { continue }
+            var (l, r) = Project.split(c, at: t)
+            r.link = right.link
+            tracks[o.track].clips.replaceSubrange(o.clip...o.clip, with: [l, r])
+            for i in transitions.indices where transitions[i].from == other { transitions[i].from = r.id }
+        }
         return (left.id, right.id)
     }
 
@@ -161,6 +189,7 @@ extension Project {
     /// Removes clips. With `ripple`, later clips on the same track close the gap.
     public mutating func deleteClips(_ ids: [String], ripple: Bool) throws {
         for id in ids where locateClip(id) == nil { throw EditError("No clip \(id)") }
+        let ids = Array(Set(ids + ids.flatMap { linked($0) }))
         let doomed = ids.compactMap { clip($0) }.sorted { $0.start > $1.start }
         for clip in doomed {
             guard let loc = locateClip(clip.id) else { continue }
