@@ -148,7 +148,7 @@ enum Describe {
         var lines: [String] = []
         let history = bundle.loadHistory()
         lines.append("Project \"\(p.name)\" at \(bundle.url.path)")
-        lines.append("Canvas \(p.canvas.width)×\(p.canvas.height) @\(fmtFps(p.canvas.fps))fps, background \(p.canvas.background.hex), duration \(Frames.timecode(p.duration)) (\(fmt(p.duration))s)")
+        lines.append("Canvas \(p.canvas.width)×\(p.canvas.height)" + (p.canvas.colorSpace == .rec709 ? "" : " \(p.canvas.colorSpace.rawValue)") + " @\(fmtFps(p.canvas.fps))fps, background \(p.canvas.background.hex), duration \(Frames.timecode(p.duration)) (\(fmt(p.duration))s)")
         if let cur = history.current { lines.append("History \(cur.id) \"\(cur.label)\" (\(history.cursor + 1)/\(history.entries.count))") }
         lines.append("")
         lines.append("Media:")
@@ -158,6 +158,7 @@ enum Describe {
             if let t = bundle.transcript(m.id) { a.append("transcript \(t.words.count) words") }
             if let au = bundle.audioAnalysis(m.id) { a.append("\(au.silences.filter { $0.duration >= 0.5 }.count) pauses") }
             if let v = bundle.visualAnalysis(m.id), !v.sceneCuts.isEmpty { a.append("\(v.sceneCuts.count) scene cuts") }
+            if let log = m.log { a.append("log \(log.rawValue)") }
             if let tc = m.timecodeStart { a.append("TC \(Project.timecodeString(tc, fps: m.fps > 0 ? m.fps : p.canvas.fps))" + (m.reel.map { " reel \($0)" } ?? "")) }
             if let tags = m.tags, !tags.isEmpty { a.append("tags " + tags.map { tag in tag.rating.map { "\(tag.label) (\($0))" } ?? tag.label }.joined(separator: ", ")) }
             let kind = m.isImage ? "image" : [m.hasVideo ? "video" : nil, m.hasAudio ? "audio" : nil].compactMap { $0 }.joined(separator: "+")

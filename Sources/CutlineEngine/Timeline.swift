@@ -213,14 +213,15 @@ public enum TimelineBuilder {
 
         let scene = RenderScene(project: project, captions: project.captions.enabled && dryTrack == nil ? project.captionSegments(transcripts: transcripts) : [], trackIDs: trackIDs, orientations: orientations, images: images)
         let vc = AVMutableVideoComposition()
-        vc.customVideoCompositorClass = CutlineCompositor.self
+        vc.customVideoCompositorClass = CutlineCompositor.compositorClass(project.canvas.colorSpace)
         vc.frameDuration = CMTime(value: 1000, timescale: CMTimeScale(project.canvas.fps * 1000))
         let w = (Double(project.canvas.width) * renderScale / 2).rounded() * 2
         let h = (Double(project.canvas.height) * renderScale / 2).rounded() * 2
         vc.renderSize = CGSize(width: w, height: h)
-        vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
-        vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
-        vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+        let tags = ColorManagement.videoCompositionTags(project.canvas.colorSpace)
+        vc.colorPrimaries = tags.primaries
+        vc.colorTransferFunction = tags.transfer
+        vc.colorYCbCrMatrix = tags.matrix
         vc.instructions = [CutlineInstruction(timeRange: CMTimeRange(start: .zero, duration: time(duration)), scene: scene)]
 
         let mix = AVMutableAudioMix()

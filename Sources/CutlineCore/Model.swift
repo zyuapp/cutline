@@ -82,12 +82,35 @@ public struct Canvas: Codable, Equatable, Hashable, Sendable {
     public var height: Int
     public var fps: Double
     public var background: RGBA
+    /// Output color: Rec.709 SDR (default), Display P3, or HDR as Rec.2100 HLG or PQ.
+    public var colorSpace: WorkingSpace
 
-    public init(width: Int = 1920, height: Int = 1080, fps: Double = 30, background: RGBA = .black) {
+    public init(width: Int = 1920, height: Int = 1080, fps: Double = 30, background: RGBA = .black, colorSpace: WorkingSpace = .rec709) {
         self.width = width
         self.height = height
         self.fps = fps
         self.background = background
+        self.colorSpace = colorSpace
+    }
+
+    enum CodingKeys: String, CodingKey { case width, height, fps, background, colorSpace }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        width = try c.decode(Int.self, forKey: .width)
+        height = try c.decode(Int.self, forKey: .height)
+        fps = try c.decode(Double.self, forKey: .fps)
+        background = try c.decodeIfPresent(RGBA.self, forKey: .background) ?? .black
+        colorSpace = try c.decodeIfPresent(WorkingSpace.self, forKey: .colorSpace) ?? .rec709
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(width, forKey: .width)
+        try c.encode(height, forKey: .height)
+        try c.encode(fps, forKey: .fps)
+        try c.encode(background, forKey: .background)
+        if colorSpace != .rec709 { try c.encode(colorSpace, forKey: .colorSpace) }
     }
 
     public func snap(_ t: Seconds) -> Seconds {
@@ -114,6 +137,10 @@ public struct MediaAsset: Codable, Equatable, Sendable, Identifiable {
     public var reel: String?
     /// Keyword ranges, favorites and rejects, in source time.
     public var tags: [MediaTag]?
+    /// Camera log encoding, detected at import or set by hand; nil is display-referred video.
+    public var log: LogProfile?
+    /// Whether log code values were recorded in legal (video) or full range.
+    public var signalRange: SignalRange?
 
     public init(id: String, path: String, name: String, duration: Seconds, width: Int, height: Int, fps: Double, hasVideo: Bool, hasAudio: Bool, isImage: Bool = false) {
         self.id = id
@@ -258,6 +285,9 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
     public var interpolate: String?
     /// Clips sharing a link id move, split and delete together (picture with its separately recorded sound).
     public var link: String?
+    /// How log footage is brought into the working space: tone map ("aces" default) and exposure in stops.
+    public var inputTone: ToneMap?
+    public var inputExposure: Double?
 
     public init(id: String, kind: ClipKind, name: String? = nil, mediaId: String? = nil, start: Seconds, duration: Seconds, sourceIn: Seconds = 0, speed: Double = 1, volume: Double = 1, audioFadeIn: Seconds = 0, audioFadeOut: Seconds = 0, fadeIn: Seconds = 0, fadeOut: Seconds = 0, transform: Transform = Transform(), blend: BlendMode = .normal, effects: [Effect] = [], anim: [String: Curve] = [:], text: TextSpec? = nil, color: RGBA? = nil) {
         self.id = id
@@ -285,7 +315,7 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, mediaId, start, duration, sourceIn, speed, volume, audioFadeIn, audioFadeOut, audioLead, audioLag
-        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link
+        case fadeIn, fadeOut, transform, blend, effects, anim, text, color, keyframes, reverse, interpolate, link, inputTone, inputExposure
     }
 
     public init(from decoder: Decoder) throws {
@@ -305,6 +335,8 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         reverse = try c.decodeIfPresent(Bool.self, forKey: .reverse) ?? false
         interpolate = try c.decodeIfPresent(String.self, forKey: .interpolate)
         link = try c.decodeIfPresent(String.self, forKey: .link)
+        inputTone = try c.decodeIfPresent(ToneMap.self, forKey: .inputTone)
+        inputExposure = try c.decodeIfPresent(Double.self, forKey: .inputExposure)
         audioLag = try c.decodeIfPresent(Double.self, forKey: .audioLag) ?? 0
         fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
         fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
@@ -354,6 +386,8 @@ public struct Clip: Codable, Equatable, Sendable, Identifiable {
         if reverse { try c.encode(reverse, forKey: .reverse) }
         try c.encodeIfPresent(interpolate, forKey: .interpolate)
         try c.encodeIfPresent(link, forKey: .link)
+        try c.encodeIfPresent(inputTone, forKey: .inputTone)
+        try c.encodeIfPresent(inputExposure, forKey: .inputExposure)
     }
 
     public var end: Seconds { start + duration }

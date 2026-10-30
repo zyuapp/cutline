@@ -1,3 +1,4 @@
+import CoreImage
 import CutlineCore
 import CutlineEngine
 import Foundation
@@ -7,7 +8,8 @@ extension Toolbox {
         add(Tool(name: "timeline_measure", description: "Measure the edit as exported. sound: integrated loudness (LUFS), short-term and momentary maximums, loudness range and sample peak for the mix (and each track with tracks:true); targets −14 LUFS for streaming and social, −16 podcasts, −23 broadcast; peaks at or below −1 dBFS. picture: exposure (luma with 2nd/98th percentiles), clipped whites, crushed blacks, saturation and color cast per shot, shot-to-shot mismatches, black stretches, flash frames and photosensitive flashing. text: each title's and caption's contrast against the picture behind it (WCAG; aim for 4.5:1) and whether it sits inside the title-safe area.", schema: Schema.object([
             "start": Schema.time("From this timeline time or anchor"),
             "end": Schema.time("Until this timeline time or anchor"),
-            "what": Schema.strings("Any of sound, picture, text; default all three"),
+            "what": Schema.strings("Any of sound, picture, text, scopes; default sound, picture and text. scopes renders waveform, RGB parade, vectorscope and histogram of the frame at `at`, with their numbers"),
+            "at": Schema.time("Timeline time for scopes, default the middle"),
             "tracks": Schema.bool("Also measure each track's sound on its own, default false"),
             "platform": Schema.string("Check text against this platform's UI-free area", values: Platform.all.map(\.id)),
         ])) { [unowned self] args in
@@ -17,11 +19,19 @@ extension Toolbox {
             if args.has("start") || args.has("end") { range = TimeRange(try args.optTime("start") ?? 0, try args.optTime("end") ?? p.duration) }
             let what = Set(args.strings("what") ?? ["sound", "picture", "text"])
             var lines: [String] = []
+            var sheet: Data?
+            if what.contains("scopes") {
+                let (text, image) = try await measureScopes(p, at: try args.optTime("at") ?? p.duration / 2)
+                lines += text
+                sheet = image
+            }
             if what.contains("sound") { lines += try await measureSound(p, range: range, tracks: args.bool("tracks", default: false)) }
             if what.contains("picture") { lines += try await measurePicture(p, range: range) }
             if what.contains("text") { lines += try await measureText(p, range: range, platform: args.optString("platform").flatMap(Platform.named)) }
-            guard !lines.isEmpty else { throw EditError("what is any of sound, picture, text") }
-            return .text(lines.joined(separator: "\n"))
+            guard !lines.isEmpty else { throw EditError("what is any of sound, picture, text, scopes") }
+            var r = ToolResult.text(lines.joined(separator: "\n"))
+            if let sheet { r.addImage(sheet) }
+            return r
         })
 
         add(Tool(name: "recipe", description: "Common multi-step edits, each one undoable step that reports exactly what it changed (dry_run:true previews). Sound: duck, loudness_normalize, split_edit. Time: speed_ramp, freeze_frame. Framing: punch_in, pip, split_screen, reframe. Rhythm: beat_cut. Style: look, glitch, whip_pan, kinetic_text. Reuse: template, multicam_switch. catalog recipe=<name> gives each recipe's arguments.", schema: Schema.object([
@@ -89,6 +99,30 @@ extension Toolbox {
         }
         if mix.truePeakDb > -0.9 { lines.append("  Warning: true peak reaches \(fmt1(mix.truePeakDb)) dBTP; add audio.limiter (ceiling −1) to the loudest track or the master, or lower the gain.") }
         return lines
+    }
+
+    func measureScopes(_ p: Project, at t: Seconds) async throws -> ([String], Data?) {
+        let built = try await session.timeline(for: p)
+        guard let frame = try await Frames.timeline(built, times: [t], maxSize: CGSize(width: 1280, height: 1280)).first else { return (["No frame at \(fmt2(t))"], nil) }
+        let image = CIImage(cgImage: frame.image)
+        let ctx = CIContext()
+        let space = p.canvas.colorSpace
+        var cells: [LabeledFrame] = [LabeledFrame(time: t, label: "Frame " + Frames.timecode(t), image: frame.image)]
+        for (kind, name) in [(Scopes.Kind.waveform, "Waveform"), (.parade, "RGB parade"), (.vectorscope, "Vectorscope"), (.histogram, "Histogram")] {
+            let size = CGSize(width: 768, height: 432)
+            if let img = Scopes.render(image, kind: kind, size: size, context: ctx, space: space) { cells.append(LabeledFrame(time: t, label: name, image: img)) }
+        }
+        var lines = ["Scopes at \(fmt2(t))s (code values 0–1):"]
+        if let s = Scopes.stats(image, context: ctx, space: space) {
+            func ch(_ c: Scopes.ChannelStats) -> String { "\(fmt2(c.low))–\(fmt2(c.high)) median \(fmt2(c.median))" }
+            lines.append("  Luma \(ch(s.parade.luma)); R \(ch(s.parade.red)); G \(ch(s.parade.green)); B \(ch(s.parade.blue))")
+            lines.append("  Clipped \(fmt1(s.clipped * 100))%, crushed \(fmt1(s.crushed * 100))%")
+            let v = s.vectorscope
+            lines.append("  Vectorscope: hue \(Int(v.hue))°, centroid saturation \(fmt2(v.saturation)), average \(fmt2(v.meanSaturation))" + (v.skinToneOffset.map { ", \(fmt1($0))° off the skin-tone line" } ?? ""))
+            let spread = [s.parade.red.median, s.parade.green.median, s.parade.blue.median]
+            if (spread.max()! - spread.min()!) > 0.06 { lines.append("  Channel medians differ by \(fmt2(spread.max()! - spread.min()!)): a color cast; balance with color.adjust temperature/tint or color.grade") }
+        }
+        return (lines, Frames.contactSheet(cells, columns: 2, cellWidth: 520))
     }
 
     func measurePicture(_ p: Project, range: TimeRange?) async throws -> [String] {

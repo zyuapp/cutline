@@ -10,6 +10,12 @@ public struct LabeledFrame {
     public var time: Seconds
     public var label: String
     public var image: CGImage
+
+    public init(time: Seconds, label: String, image: CGImage) {
+        self.time = time
+        self.label = label
+        self.image = image
+    }
 }
 
 public enum Frames {

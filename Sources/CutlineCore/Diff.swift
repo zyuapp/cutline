@@ -5,7 +5,7 @@ extension Project {
     public func changes(from old: Project) -> [String] {
         var out: [String] = []
         if canvas != old.canvas {
-            out.append("canvas \(old.canvas.width)×\(old.canvas.height)@\(old.canvas.fps) → \(canvas.width)×\(canvas.height)@\(canvas.fps)")
+            out.append("canvas \(old.canvas.width)×\(old.canvas.height)@\(old.canvas.fps) \(old.canvas.colorSpace.rawValue) → \(canvas.width)×\(canvas.height)@\(canvas.fps) \(canvas.colorSpace.rawValue)")
         }
         let oldMedia = Set(old.media.map(\.id)), newMedia = Set(media.map(\.id))
         for id in newMedia.subtracting(oldMedia).sorted() { out.append("+ media \(id)") }

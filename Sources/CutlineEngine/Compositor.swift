@@ -89,7 +89,12 @@ public final class RenderScene: @unchecked Sendable {
             if let still = images[mid] {
                 img = still
             } else if let pb = source(clip.id) {
-                img = CIImage(cvPixelBuffer: pb).oriented(orientations[clip.id] ?? orientations[mid] ?? .up)
+                let orientation = orientations[clip.id] ?? orientations[mid] ?? .up
+                if let media = project.mediaAsset(mid), let log = media.log {
+                    img = ColorManagement.applyInput(ColorManagement.rawImage(pb), log: log, target: project.canvas.colorSpace, tone: clip.inputTone ?? .aces, exposure: Float(clip.inputExposure ?? 0), recordedIn: media.signalRange ?? .video).oriented(orientation)
+                } else {
+                    img = CIImage(cvPixelBuffer: pb).oriented(orientation)
+                }
                 opaque = true
             }
             guard var img else { return nil }
@@ -403,25 +408,45 @@ final class CutlineInstruction: NSObject, AVVideoCompositionInstructionProtocol,
     }
 }
 
-public final class CutlineCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
+/// Renders frames of a timeline in its working space. AVFoundation creates compositors by class,
+/// so each output color space has its own subclass.
+public class CutlineCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
     static let device = MTLCreateSystemDefaultDevice()
     static let colorSpace = CGColorSpace(name: CGColorSpace.itur_709)!
-    private let context: CIContext = {
-        let options: [CIContextOption: Any] = [.cacheIntermediates: false, .outputColorSpace: CutlineCompositor.colorSpace]
+    class var space: WorkingSpace { .rec709 }
+
+    static func compositorClass(_ w: WorkingSpace) -> AVVideoCompositing.Type {
+        switch w {
+        case .rec709: CutlineCompositor.self
+        case .p3: CutlineCompositorP3.self
+        case .rec2020_hlg: CutlineCompositorHLG.self
+        case .rec2020_pq: CutlineCompositorPQ.self
+        }
+    }
+
+    private lazy var output = ColorManagement.colorSpace(Self.space)
+    private lazy var context: CIContext = {
+        let options: [CIContextOption: Any] = [.cacheIntermediates: false, .outputColorSpace: output]
         if let device = CutlineCompositor.device { return CIContext(mtlDevice: device, options: options) }
         return CIContext(options: options)
     }()
     private let queue = DispatchQueue(label: "cutline.compositor", qos: .userInteractive)
     private var renderContext: AVVideoCompositionRenderContext?
 
-    public let sourcePixelBufferAttributes: [String: any Sendable]? = [
-        kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_32BGRA],
-        kCVPixelBufferMetalCompatibilityKey as String: true,
-    ]
-    public let requiredPixelBufferAttributesForRenderContext: [String: any Sendable] = [
-        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-        kCVPixelBufferMetalCompatibilityKey as String: true,
-    ]
+    public var sourcePixelBufferAttributes: [String: any Sendable]? {
+        // Ten-bit sources keep log and HDR footage from banding; 8-bit SDR stays cheap.
+        let formats: [OSType] = Self.space == .rec709
+            ? [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_32BGRA]
+            : [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, kCVPixelFormatType_64RGBAHalf]
+        return [kCVPixelBufferPixelFormatTypeKey as String: formats.map { NSNumber(value: $0) }, kCVPixelBufferMetalCompatibilityKey as String: true]
+    }
+
+    public var requiredPixelBufferAttributesForRenderContext: [String: any Sendable] {
+        [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: ColorManagement.pixelFormat(Self.space)), kCVPixelBufferMetalCompatibilityKey as String: true]
+    }
+
+    public var supportsHDRSourceFrames: Bool { Self.space.isHDR }
+    public var supportsWideColorSourceFrames: Bool { Self.space != .rec709 }
 
     public func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {
         queue.sync { renderContext = newRenderContext }
@@ -446,11 +471,24 @@ public final class CutlineCompositor: NSObject, AVVideoCompositing, @unchecked S
                 let fitted = canvas.width == CGFloat(w) && canvas.height == CGFloat(h)
                     ? image
                     : image.transformed(by: CGAffineTransform(scaleX: CGFloat(w) / canvas.width, y: CGFloat(h) / canvas.height))
-                context.render(fitted, to: out, bounds: CGRect(x: 0, y: 0, width: w, height: h), colorSpace: Self.colorSpace)
+                ColorManagement.tag(out, Self.space)
+                context.render(fitted, to: out, bounds: CGRect(x: 0, y: 0, width: w, height: h), colorSpace: output)
                 request.finish(withComposedVideoFrame: out)
             }
         }
     }
 
     public func cancelAllPendingVideoCompositionRequests() {}
+}
+
+final class CutlineCompositorP3: CutlineCompositor, @unchecked Sendable {
+    override class var space: WorkingSpace { .p3 }
+}
+
+final class CutlineCompositorHLG: CutlineCompositor, @unchecked Sendable {
+    override class var space: WorkingSpace { .rec2020_hlg }
+}
+
+final class CutlineCompositorPQ: CutlineCompositor, @unchecked Sendable {
+    override class var space: WorkingSpace { .rec2020_pq }
 }

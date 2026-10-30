@@ -33,7 +33,8 @@ extension Toolbox {
                     continue
                 }
                 let id = Toolbox.mediaId(for: url, existing: Set(project.media.map(\.id)))
-                let m = try await MediaProbe.probe(url, id: id)
+                var m = try await MediaProbe.probe(url, id: id)
+                if m.hasVideo, !m.isImage { m.log = await ColorManagement.detectLog(AVURLAsset(url: url)) }
                 project.media.append(m)
                 imported.append(m)
             }
@@ -65,7 +66,20 @@ extension Toolbox {
             "features": Schema.strings("Default: transcript, scenes, beats, speakers, shots, sounds as the media allows"),
             "language": Schema.string("Speech language, default en-US"),
             "background": Schema.bool("Return immediately and analyze in the background, default false"),
+            "log": Schema.string("Set the camera log encoding instead of analyzing (\"none\" for normal video); log clips are converted into the canvas color space with input.tone and input.exposure", values: ["none"] + LogProfile.allCases.map(\.rawValue)),
+            "signal_range": Schema.string("Whether log code values are legal (video, default) or full range", values: ["video", "full"]),
         ], required: ["media_id"])) { [unowned self] args in
+            if let log = args.optString("log") {
+                let ids = args.strings("media_id") ?? []
+                let p = try session.edit("Set log encoding of \(ids.joined(separator: ", "))") { p in
+                    for id in ids {
+                        guard let i = p.media.firstIndex(where: { $0.id == id }) else { throw EditError("No media \(id)") }
+                        p.media[i].log = log == "none" ? nil : LogProfile(rawValue: log)
+                        if let r = args.optString("signal_range") { p.media[i].signalRange = SignalRange(rawValue: r) }
+                    }
+                }
+                return .text("\(ids.joined(separator: ", ")): log \(log)\n" + footer(p))
+            }
             let p = try session.project()
             var ids = args.strings("media_id") ?? []
             if ids == ["all"] { ids = p.media.map(\.id) }

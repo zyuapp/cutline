@@ -81,9 +81,11 @@ public enum Exporter {
         reader.timeRange = range
 
         let size = built.videoComposition.renderSize
+        let space = built.scene.project.canvas.colorSpace
+        if space.isHDR && options.preset == .h264 { throw EditError("HDR needs HEVC or ProRes; use preset hevc") }
         let videoTracks = try await comp.loadTracks(withMediaType: .video)
         let videoOut = AVAssetReaderVideoCompositionOutput(videoTracks: videoTracks, videoSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey as String: ColorManagement.pixelFormat(space),
             kCVPixelBufferMetalCompatibilityKey as String: true,
         ])
         videoOut.videoComposition = built.videoComposition
@@ -115,16 +117,12 @@ public enum Exporter {
             compression[AVVideoAverageBitRateKey] = bitrate
             compression[AVVideoMaxKeyFrameIntervalDurationKey] = 2
             compression[AVVideoAllowFrameReorderingKey] = true
-            compression[AVVideoProfileLevelKey] = options.preset == .hevc ? kVTProfileLevel_HEVC_Main_AutoLevel as String : AVVideoProfileLevelH264HighAutoLevel
+            compression[AVVideoProfileLevelKey] = options.preset == .hevc ? (space.isHDR ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel) as String : AVVideoProfileLevelH264HighAutoLevel
         }
         var videoSettings: [String: Any] = [
             AVVideoCodecKey: options.preset.codec,
             AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
-            AVVideoColorPropertiesKey: [
-                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
-                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
-            ],
+            AVVideoColorPropertiesKey: ColorManagement.writerColorProperties(space),
         ]
         if !compression.isEmpty && !options.preset.isProRes { videoSettings[AVVideoCompressionPropertiesKey] = compression }
         let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
