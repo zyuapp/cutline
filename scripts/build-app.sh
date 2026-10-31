@@ -1,8 +1,10 @@
 #!/bin/sh
 # Builds dist/Cutline.app with the preview app and the cutline-mcp server inside.
 #
-# Signs with the first "Apple Development" identity, or CUTLINE_SIGNING_IDENTITY, falling
-# back to ad-hoc. Set CUTLINE_RELEASE=1 to sign with Developer ID and the hardened runtime.
+# Signs ad-hoc by default, which macOS runs without a Gatekeeper prompt when built on this Mac;
+# certificate-signed builds are blocked as unverified until notarized. Set CUTLINE_RELEASE=1 to
+# sign with Developer ID and the hardened runtime for scripts/notarize.sh, or
+# CUTLINE_SIGNING_IDENTITY to pick an identity.
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -13,15 +15,11 @@ build=${CUTLINE_BUILD:-$(date +%Y%m%d%H%M)}
 release=${CUTLINE_RELEASE:-0}
 identity=${CUTLINE_SIGNING_IDENTITY:-}
 
-if [ -z "$identity" ]; then
-  kind="Apple Development"
-  [ "$release" = 1 ] && kind="Developer ID Application"
-  identity=$(security find-identity -v -p codesigning | sed -n "s/.*\"\($kind: [^\"]*\)\".*/\1/p" | head -1)
+if [ -z "$identity" ] && [ "$release" = 1 ]; then
+  identity=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
+  [ -n "$identity" ] || { echo "No Developer ID Application certificate found" >&2; exit 1; }
 fi
-if [ -z "$identity" ]; then
-  [ "$release" = 1 ] && { echo "No Developer ID Application certificate found" >&2; exit 1; }
-  identity="-"
-fi
+identity=${identity:--}
 
 swift build -c release --arch arm64 --product Cutline
 swift build -c release --arch arm64 --product cutline-mcp
