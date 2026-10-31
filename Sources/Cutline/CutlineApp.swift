@@ -2,6 +2,7 @@ import AppKit
 import CutlineCore
 import Observation
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct CutlineApp: App {
@@ -100,6 +101,14 @@ final class AppModel {
 
     func open(_ url: URL) {
         guard doc?.url.standardizedFileURL != url.standardizedFileURL else { return }
+        guard ProjectBundle.isBundle(url) else {
+            let path = (url.path as NSString).abbreviatingWithTildeInPath
+            let media = UTType(filenameExtension: url.pathExtension)?.conforms(to: .audiovisualContent) == true
+            error = media
+                ? "\(url.lastPathComponent) is a video, not a Cutline project. Ask Claude to edit it, for example: “Make a 60-second cut of \(path) with captions.”"
+                : "\(url.lastPathComponent) is not a Cutline project. Open a .cutline folder that Claude created."
+            return
+        }
         do {
             doc?.close()
             doc = try ProjectDocument(url: url)

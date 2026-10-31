@@ -321,7 +321,7 @@ struct WelcomeView: View {
         let helper = inBundle
             ? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/cutline-mcp").path
             : "/Applications/Cutline.app/Contents/MacOS/cutline-mcp"
-        return "claude mcp add cutline -- \"\(helper)\""
+        return "claude mcp add -s user cutline -- \"\(helper)\""
     }
 
     var body: some View {
@@ -360,6 +360,7 @@ struct WelcomeView: View {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(mcpCommand, forType: .string)
                                 copied = true
+                                Task { try? await Task.sleep(for: .seconds(2)); copied = false }
                             }
                             .buttonStyle(QuietButtonStyle(bordered: true))
                         }
