@@ -3,7 +3,8 @@ import Foundation
 
 /// Names that mean the same argument. For each tool (or recipe) the member it declares is canonical and the others
 /// are rewritten to it before arguments are checked; a group the tool declares more than one member of is left
-/// alone, so an alias never stands in for a different real argument.
+/// alone, so an alias never stands in for a different real argument. Objects nested in a declared argument go by
+/// "<tool>.<argument>", e.g. "assemble.segments".
 struct ArgAliasGroup {
     let names: [String]
     /// Only these tools or recipes; nil is every one.
@@ -43,7 +44,7 @@ extension Toolbox {
         ArgAliasGroup(["id", "effect_id", "effect"], only: ["effect_add"]),
         ArgAliasGroup(["id", "transition_id", "transition"], only: ["transition_set"]),
         ArgAliasGroup(["operations", "ops", "steps", "edits", "patch", "patches"], only: ["batch", "project_patch"]),
-        ArgAliasGroup(["cut", "cuts", "edit", "edit_point"], only: ["transition_set", "whip_pan", "split_edit"]),
+        ArgAliasGroup(["cut", "cuts", "edit", "edit_point", "between"], only: ["transition_set", "whip_pan", "split_edit"]),
         ArgAliasGroup(["edge", "side"], only: ["transition_set"]),
         ArgAliasGroup(["args", "arguments", "parameters"], only: ["recipe"]),
         ArgAliasGroup(["type", "transition_type", "kind"], only: ["transition_set"]),
@@ -68,6 +69,9 @@ extension Toolbox {
         ArgAliasGroup(["target_lufs", "target", "lufs", "integrated", "loudness", "target_loudness"], only: ["loudness_normalize"]),
         ArgAliasGroup(["ceiling_db", "true_peak", "true_peak_db", "ceiling", "peak", "max_true_peak", "tp"], only: ["loudness_normalize"]),
         ArgAliasGroup(["audio_layout", "layout", "master_layout", "channel_layout"], only: ["canvas_set"]),
+        ArgAliasGroup(["start", "from", "in", "source_in", "source_start"], only: ["assemble.segments"]),
+        ArgAliasGroup(["end", "to", "out", "source_out", "source_end"], only: ["assemble.segments"]),
+        ArgAliasGroup(["reverse", "reversed", "backwards"], only: ["clip_update"]),
     ]
 
     /// Every alias `tool` accepts and the declared argument it stands for.
@@ -95,6 +99,8 @@ extension Toolbox {
         let declared = Set(props.keys)
         let table = argAliases(tool, declared: declared)
         if tool == "markers" { try markerShorthand(&o) }
+        try animateShorthand(&o, declared: declared)
+        if tool == "transition_set" || tool == "whip_pan" || tool == "split_edit" { betweenShorthand(&o, declared: declared) }
         func move(_ from: String, to: String) throws {
             guard let v = o.removeValue(forKey: from) else { return }
             if let have = o[to], have != v { throw EditError("'\(from)' is another name for '\(to)'; pass one of them") }
@@ -117,8 +123,55 @@ extension Toolbox {
                 o[into] = .object(dict)
             }
         }
-        for (k, v) in o { if let sub = props[k] { o[k] = normalizingValues(v, schema: sub, name: k) } }
+        for (k, v) in o {
+            guard let sub = props[k] else { continue }
+            o[k] = normalizingValues(try nestedAliases("\(tool).\(k)", v, schema: sub), schema: sub, name: k)
+        }
         return .object(o)
+    }
+
+    /// Aliases inside an object argument, or each object of an array argument, whose schema lists properties.
+    static func nestedAliases(_ key: String, _ v: JSON, schema: JSON) throws -> JSON {
+        switch v {
+        case .object:
+            return schema["properties"]?.object == nil ? v : try applyingAliases(key, v, schema: schema)
+        case .array(let a):
+            guard let items = schema["items"], items["properties"]?.object != nil else { return v }
+            return .array(try a.map { try nestedAliases(key, $0, schema: items) })
+        default:
+            return v
+        }
+    }
+
+    /// Titles' animate (or animation): an entrance name goes to animation_in, a per-word animator preset or an
+    /// animator object to animator, true to a fade in.
+    static func animateShorthand(_ o: inout [String: JSON], declared: Set<String>) throws {
+        guard declared.contains("animation_in"), declared.contains("animator") else { return }
+        for key in ["animate", "animation"] where !declared.contains(key) {
+            guard let v = o.removeValue(forKey: key) else { continue }
+            func put(_ name: String, _ value: JSON) throws {
+                if let have = o[name], have != value { throw EditError("'\(key)' sets \(name), which is passed too; pass one of them") }
+                o[name] = value
+            }
+            switch v {
+            case .object: try put("animator", v)
+            case .bool(let on): try put("animation_in", .string(on ? "fade" : "none"))
+            case .string(let s):
+                let entrances = TextAnimation.allCases.map(\.rawValue)
+                if let e = canonicalValue(s, valid: entrances, name: "animation_in") { try put("animation_in", .string(e)) }
+                else if let preset = TextAnimator.Preset.allCases.first(where: { enumKey($0.rawValue) == enumKey(s) }) { try put("animator", ["unit": "word", "preset": .string(preset.rawValue)]) }
+                else { throw EditError(invalidValueMessage(s, name: key, valid: entrances + TextAnimator.Preset.allCases.map(\.rawValue)) + " (an entrance sets animation_in, the rest animate word by word with animator)") }
+            default:
+                throw EditError("\(key) is an entrance name (animation_in), a word animation preset or an animator object")
+            }
+        }
+    }
+
+    /// between: ["clip_a", "clip_b"] names one cut, "clip_a|clip_b".
+    static func betweenShorthand(_ o: inout [String: JSON], declared: Set<String>) {
+        guard !declared.contains("between"), let pair = o["between"]?.array, pair.count == 2,
+              let a = pair[0].string, let b = pair[1].string, !a.contains("|"), !b.contains("|") else { return }
+        o["between"] = .string("\(a)|\(b)")
     }
 
     /// markers {action, at|time, label, …} for one marker, and a single object for add or update, as the lists

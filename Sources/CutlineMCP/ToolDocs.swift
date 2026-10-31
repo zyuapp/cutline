@@ -74,7 +74,7 @@ extension Toolbox {
         ]),
         "multicam_create": ToolBrief(text: "Build a multicam clip of synced angles playing one live angle per range.", args: [
             "angles": "Camera media", "audio": "Sound media", "sync": "audio, timecode, marker, in_points", "name": "",
-        ], hide: ["at", "channel", "names", "points", "place", "track", "audio_follows_video"]),
+        ], hide: ["at", "channel", "names", "points", "place", "track", "audio_follows_video", "force"]),
         "multicam_angles": ToolBrief(text: "A multicam clip's angles and live angle per range.", args: ["clip": "", "at": ""]),
         "multicam_cut": ToolBrief(text: "Switch a multicam clip's angle from at, or for from–to.", args: [
             "clip": "", "at": "", "from": "", "to": "", "angle": "", "audio": "",
@@ -114,7 +114,7 @@ extension Toolbox {
             "media_id": "Replace edit: other media, same place and length", "text": "New title words", "name": "",
             "ripple": "Shift later clips on the track", "link": "Clips that move together with it", "unlink": "",
             "allow_stretch": "Allow audio below 0.25×",
-        ], hide: ["detach_audio", "attach_audio", "audio_track", "resync"]),
+        ], hide: ["detach_audio", "attach_audio", "audio_track", "resync", "reverse"]),
         "clip_split": ToolBrief(text: "Split one clip, or every clip under a time, at a timeline time.", args: [
             "at": "", "clip_id": "", "track_ids": "",
         ]),

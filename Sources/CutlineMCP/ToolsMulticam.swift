@@ -17,6 +17,7 @@ extension Toolbox {
             "place": Schema.bool("Put the clip on the timeline, default true"),
             "audio_follows_video": Schema.bool("Each range plays the active camera's own sound"),
             "channel": Schema.string("Source channel(s) to sync by, e.g. \"ch1\""),
+            "force": Schema.bool("Keep angles whose sound syncs with confidence under \(fmt2(Toolbox.minSyncConfidence)) (left out by default)"),
             "dry_run": Schema.bool("Report what would change without applying it"),
         ], required: ["angles"])) { [unowned self] args in
             try await self.createMulticam(args)
@@ -97,10 +98,15 @@ extension Toolbox {
         return lines.joined(separator: "\n")
     }
 
-    /// Each angle's source time at one shared moment, by sound, timecode or given points.
-    func multicamOffsets(_ ids: [String], method: String, points: [String: Seconds], channel: String?, project p: Project) async throws -> (offsets: [String: Seconds], notes: [String]) {
+    /// Sound syncs below this confidence are not trusted: the angle is left out unless forced.
+    static let minSyncConfidence = 0.3
+
+    /// Each angle's source time at one shared moment, by sound, timecode or given points; `unsure` lists the angles
+    /// whose sound synced below `minSyncConfidence`.
+    func multicamOffsets(_ ids: [String], method: String, points: [String: Seconds], channel: String?, project p: Project) async throws -> (offsets: [String: Seconds], notes: [String], unsure: [(id: String, offset: Seconds, confidence: Double)]) {
         var offsets: [String: Seconds] = [:]
         var notes: [String] = []
+        var unsure: [(id: String, offset: Seconds, confidence: Double)] = []
         switch method {
         case "audio":
             guard let refId = ids.first(where: { p.mediaAsset($0)?.hasAudio == true }), let ref = p.mediaAsset(refId) else { throw EditError("No angle has sound to sync by; use sync timecode, marker or in_points") }
@@ -112,7 +118,8 @@ extension Toolbox {
                 let r = try await AudioSync.offset(reference: refURL, other: try await heard(m, channel))
                 offsets[id] = r.offset
                 notes.append("\(id) \(r.offset >= 0 ? "+" : "")\(String(format: "%.3f", r.offset))s (confidence \(fmt2(r.confidence)))")
-                if r.confidence < 0.5 { notes.append("warning: \(id) synced with low confidence; check it with timeline_frames multicam:true") }
+                if r.confidence < Toolbox.minSyncConfidence { unsure.append((id, r.offset, r.confidence)) }
+                else if r.confidence < 0.5 { notes.append("warning: \(id) synced with low confidence; check it with timeline_frames multicam:true") }
             }
             notes.insert("synced by sound to \(refId)", at: 0)
         case "timecode":
@@ -132,7 +139,7 @@ extension Toolbox {
         default:
             throw EditError("sync is audio, timecode, marker or in_points")
         }
-        return (offsets, notes)
+        return (offsets, notes, unsure)
     }
 
     func createMulticam(_ args: Args) async throws -> ToolResult {
@@ -140,15 +147,36 @@ extension Toolbox {
         guard let angles = args.strings("angles"), !angles.isEmpty else { throw EditError("Pass angles: the media ids of the cameras") }
         let names = args.strings("names") ?? []
         let audioIds = (args.strings("audio") ?? []).filter { !angles.contains($0) }
-        let ids = angles + audioIds
+        var ids = angles + audioIds
         var points: [String: Seconds] = [:]
         for (k, v) in args.value("points")?.object ?? [:] { points[k] = try Args.parseTime(v, name: "points") }
         let method = args.optString("sync") ?? "audio"
-        let (offsets, notes) = try await multicamOffsets(ids, method: method, points: points, channel: args.optString("channel"), project: p0)
+        let synced = try await multicamOffsets(ids, method: method, points: points, channel: args.optString("channel"), project: p0)
+        var offsets = synced.offsets, notes = synced.notes
+        let unsure = synced.unsure
+        var named = Dictionary(ids.enumerated().map { i, id in (id, i < names.count ? names[i] : id) }, uniquingKeysWith: { a, _ in a })
+        var audio = args.strings("audio") ?? []
+        if !unsure.isEmpty {
+            let list = unsure.map { String(format: "%@ (confidence %.2f at %+.1fs)", $0.id, $0.confidence, $0.offset) }.joined(separator: ", ")
+            if args.bool("force", default: false) {
+                notes.append("warning: kept \(list) on force:true though their sound barely matches; check them with timeline_frames multicam:true")
+            } else {
+                let gone = Set(unsure.map(\.id))
+                ids.removeAll { gone.contains($0) }
+                audio.removeAll { gone.contains($0) }
+                for id in gone { offsets[id] = nil; named[id] = nil }
+                guard ids.contains(where: { p0.mediaAsset($0)?.hasVideo == true }), ids.count > 1 else {
+                    throw EditError("Sound sync failed: \(list) don't match the reference sound (confidence under \(fmt2(Toolbox.minSyncConfidence))). Sync by timecode (sync:\"timecode\") or a shared moment such as a clap (sync:\"marker\" with points), or pass force:true to keep these offsets")
+                }
+                notes.append("left out \(list): the sound doesn't match the reference well enough to trust the offset (confidence under \(fmt2(Toolbox.minSyncConfidence))). Sync by timecode (sync:\"timecode\") or a shared moment (sync:\"marker\" with points), or pass force:true to keep it")
+            }
+        }
+        let kept = ids
+        let keptAudio = audio
         let dry = args.bool("dry_run", default: false)
-        return try runEdit("Create multicam from \(angles.count) angles", dry: dry) { p in
-            let list = ids.enumerated().map { i, id in (name: i < names.count ? names[i] : id, mediaId: id, offset: offsets[id] ?? 0) }
-            let seq = try p.createMulticam(name: args.optString("name") ?? "Multicam \(p.sequences.filter { $0.multicam != nil }.count + 1)", angles: list, audio: args.strings("audio") ?? [], sync: method)
+        return try runEdit("Create multicam from \(angles.filter(kept.contains).count) angles", dry: dry) { p in
+            let list = kept.map { id in (name: named[id] ?? id, mediaId: id, offset: offsets[id] ?? 0) }
+            let seq = try p.createMulticam(name: args.optString("name") ?? "Multicam \(p.sequences.filter { $0.multicam != nil }.count + 1)", angles: list, audio: keptAudio, sync: method)
             p.addSyncGroup(offsets)
             var out = ["Multicam \(seq.id) \"\(seq.name)\" (\(fmt2(seq.duration))s), " + notes.joined(separator: ", ") + "."]
             if let o = p.multicamOverlap(seq) { out.append("All video angles overlap at multicam time \(fmt2(o.start))–\(fmt2(o.end))s.") }
@@ -161,7 +189,7 @@ extension Toolbox {
                 let placed = try p.addClip(c, trackId: trackId, mode: .overwrite)
                 out.append("Placed \(placed.id) on \(trackId) at \(fmt2(placed.start))–\(fmt2(placed.end))s.")
             }
-            out.append(Toolbox.describeAngles(p.tracks.flatMap(\.clips).last { $0.mediaId == seq.id } ?? Clip(id: "-", kind: .sequence, mediaId: seq.id, start: 0, duration: seq.duration), p, at: nil).components(separatedBy: "\n").dropFirst().prefix(ids.count).joined(separator: "\n"))
+            out.append(Toolbox.describeAngles(p.tracks.flatMap(\.clips).last { $0.mediaId == seq.id } ?? Clip(id: "-", kind: .sequence, mediaId: seq.id, start: 0, duration: seq.duration), p, at: nil).components(separatedBy: "\n").dropFirst().prefix(kept.count).joined(separator: "\n"))
             let id = p.tracks.flatMap(\.clips).last { $0.mediaId == seq.id }?.id ?? "<id>"
             out.append("Switch angles with recipe multicam_switch clip:\(id) (by speaker) or multicam_cut; see them all with timeline_frames multicam:true.")
             return out.joined(separator: "\n")
@@ -260,6 +288,9 @@ extension Toolbox {
             let r = try await AudioSync.offset(reference: try await heard(audio, a.optString("audio_channel")), other: try await heard(m, a.optString("channel")))
             offsets[id] = r.offset
             notes.append("\(id) \(r.offset >= 0 ? "+" : "")\(String(format: "%.3f", r.offset))s (confidence \(fmt2(r.confidence)))")
+            if r.confidence < Toolbox.minSyncConfidence, !a.bool("force", default: false) {
+                throw EditError(String(format: "%@'s sound doesn't match %@ (sync confidence %.2f at %+.1fs, under %.2f), so its offset can't be trusted. Build the multicam by timecode or a shared moment (multicam_create sync:\"timecode\" or sync:\"marker\" with points) and pass clip, or pass force:true", id, audioId, r.confidence, r.offset, Toolbox.minSyncConfidence))
+            }
             if r.confidence < 0.5 { notes.append("warning: \(id) synced with low confidence; check it with timeline_frames") }
         }
         let lo = try a.optSourceTime("start") ?? 0

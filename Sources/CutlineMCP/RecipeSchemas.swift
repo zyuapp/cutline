@@ -242,6 +242,7 @@ extension Toolbox {
             .init("track", .string, "Default V1"),
             .init("channel", .string, "Source channel(s) of each angle to sync and compare mics by, e.g. \"ch3\""),
             .init("audio_channel", .string, "The main sound's channel to sync to"),
+            .init("force", .bool, "Keep angles whose sound syncs with confidence under 0.3 (refused by default)"),
             .init("cuts", .objects, "Switch by hand instead", fields: [
                 .init("at", .time, "Timeline time"),
                 .init("angle", .string, "Media id, or angle name/number on a multicam clip"),
@@ -284,10 +285,10 @@ extension Toolbox {
             .init("at", .time, "Default 0"),
             .init("values", .object, "{field: text}"),
         ]),
-        RecipeSpec(name: "match_color", group: "Color", summary: "Shot matching like Resolve's: measures each shot's tones and color (inside its crop, ignoring letterbox bars; robust to a few extreme pixels) and adds a match LUT (effect \"match\") in front of its other color effects. Lightness moves at most ±20 L unless allow_large, colorfulness at most ±25%, black and white stay put; warns when a shot isn't comparable with the reference.", args: [
+        RecipeSpec(name: "match_color", group: "Color", summary: "Shot matching like Resolve's: measures each shot's tones and color (inside its crop, ignoring letterbox bars; robust to a few extreme pixels) and adds a match LUT (effect \"match\") in front of its other color effects. Both are measured as rendered (camera log, ACES and RAW input applied), the reference with its grade. Lightness moves at most ±20 L unless allow_large, colorfulness at most ±25%, black and white stay put; warns when a shot isn't comparable with the reference.", args: [
             .init("clips", .ids, "Clips to match; default every media clip on V1"),
             .init("track", .string, "Or every media clip on this track"),
-            .init("reference", .string, "Clip whose look the others match"),
+            .init("reference", .string, "Clip whose look the others match, or a timeline time or anchor (the clip showing there)"),
             .init("reference_at", .time, "Timeline time of the exact reference frame (picks the clip there when reference is omitted)"),
             .init("strength", .number, "0…1, default 0.8"),
             .init("allow_large", .bool, "Lift the lightness cap, default false"),

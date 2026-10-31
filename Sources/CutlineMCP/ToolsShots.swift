@@ -68,8 +68,10 @@ extension Toolbox {
         var region: CGRect
         var faceBox: CGRect?
         var hit: Double
-        /// Why the sample is from another time than asked.
+        /// Why the sample is from another time or place than asked.
         var note: String?
+        /// The qualifier preset used when nothing could be sampled.
+        var preset: String?
     }
 
     /// Timeline times inside `range` where analyzed faces show, best first: at least n + 1 faces at once, the
@@ -101,14 +103,14 @@ extension Toolbox {
     static func faceSample(_ c: Clip, _ m: MediaAsset, before existing: String?, at: Seconds, explicit: Bool, range: TimeRange, shot: TimeRange? = nil, faces: [FaceTrack]?, _ a: Args) async throws -> QualifySample {
         let firstError: Error
         do { return try await qualifySample(c, m, before: existing, at: at, a) } catch { firstError = error }
-        guard a.bool("face", default: false), !m.isImage else { throw firstError }
+        guard a.bool("face", default: false) else { throw firstError }
         let n = a.optInt("n") ?? 0
         func inShot(_ t: Seconds) -> Bool { shot.map { t >= $0.start && t < $0.end } ?? false }
         let analyzed: [Seconds] = faces.map { f -> [Seconds] in
             let all = faceSearchTimes(f, clip: c, range: range, n: n)
             return all.filter(inShot) + all.filter { !inShot($0) }
         } ?? []
-        let times = analyzed.isEmpty ? Frames.spread(8, from: range.start, to: max(range.start + 0.01, range.end - 0.01)) : analyzed
+        let times = m.isImage ? [] : analyzed.isEmpty ? Frames.spread(8, from: range.start, to: max(range.start + 0.01, range.end - 0.01)) : analyzed
         var best: QualifySample?
         func score(_ s: QualifySample) -> Double { (s.faceBox.map { $0.width * $0.height } ?? 0) + (inShot(s.at) ? 10 : 0) }
         for t in times where abs(t - at) > 0.04 {
@@ -117,7 +119,10 @@ extension Toolbox {
             if score(s) > best.map(score) ?? 0 { best = s }
         }
         guard var found = best else {
-            throw EditError("No face\(n > 0 ? " \(n)" : "") found in \(c.id) at \(fmt2(at))s nor \(analyzed.isEmpty ? "at \(times.count) frames across" : "where shot analysis saw faces in") \(fmt2(range.start))–\(fmt2(range.end))s; pass x and y of a skin area instead")
+            var skin = QualifySample(at: at, q: Qualifier.skin, sampled: 0, region: .zero, faceBox: nil, hit: 0)
+            skin.preset = "skin"
+            skin.note = "No face\(n > 0 ? " \(n)" : "") or person found in \(c.id) at \(fmt2(at))s" + (m.isImage ? "" : " nor \(analyzed.isEmpty ? "at \(times.count) frames across" : "where shot analysis saw faces in") \(fmt2(range.start))–\(fmt2(range.end))s") + ", so the key uses the skin preset (every skin-toned area); pass x and y of a skin area to sample it instead."
+            return skin
         }
         let place = shot == nil ? "" : inShot(found.at) ? " in the same shot" : " in another shot (none in this one)"
         found.note = "No face\(n > 0 ? " \(n)" : "") at \(fmt2(at))s\(explicit ? "" : " (the default, the clip's middle)"); sampled at \(fmt2(found.at))s\(place) instead, " + (analyzed.isEmpty ? "the largest face among \(times.count) frames checked" : "where shot analysis shows the largest face") + "."
@@ -132,8 +137,18 @@ extension Toolbox {
         let picture = ShotColor.picture(frame, effects: c.effects, before: existing, clip: c, at: at - c.start)
         var region: CGRect
         var faceBox: CGRect?
+        var note: String?
         if a.bool("face", default: false) {
-            let faces = ShotColor.faces(picture)
+            var faces = ShotColor.faces(picture)
+            if faces.isEmpty {
+                // Soft-focus and turned faces score low; then the head of the person outline.
+                faces = ShotColor.faces(picture, minConfidence: 0.2)
+                if !faces.isEmpty { note = "Only a low-confidence face at \(fmt2(at))s (soft focus or turned); sampled it." }
+                else if let head = ShotColor.personHead(picture) {
+                    faces = [head]
+                    note = "No face detected at \(fmt2(at))s; sampled the head of the person outline (person segmentation) instead."
+                }
+            }
             let n = a.optInt("n") ?? 0
             guard n >= 0, n < faces.count else { throw EditError(faces.isEmpty ? "No face found in \(c.id) at \(fmt2(at))s; pass x and y of a skin area instead" : "Only \(faces.count) face(s) at \(fmt2(at))s; n counts from 0, largest first") }
             faceBox = faces[n]
@@ -141,14 +156,14 @@ extension Toolbox {
         } else {
             let x = try a.double("x"), y = try a.double("y")
             guard (0...1).contains(x), (0...1).contains(y) else { throw EditError("x and y are fractions of the frame, 0…1 from the top left") }
-            let r = a.optDouble("radius") ?? 0.02
+            let r = a.optDouble("radius") ?? 0.03
             let rx = r * Double(picture.height) / Double(picture.width)
             region = CGRect(x: x - rx, y: y - r, width: 2 * rx, height: 2 * r)
         }
         let samples = ShotColor.samples(picture, in: region)
         guard let q = Qualifier.pick(samples) else { throw EditError("The sampled pixels at \(fmt2(at))s are nearly gray, so there is no hue to key; sample a colored area, or set q_hue_width 360 for a luma-only key") }
         let hit = Double(samples.filter { q.clean(Double(q.weight($0))) > 0.9 }.count) / Double(max(1, samples.count))
-        return QualifySample(at: at, q: q, sampled: samples.count, region: region, faceBox: faceBox, hit: hit)
+        return QualifySample(at: at, q: q, sampled: samples.count, region: region, faceBox: faceBox, hit: hit, note: note)
     }
 
     /// Clip-local window keys (limit_x, limit_y, limit_width, limit_height) following the analyzed face track that
@@ -261,8 +276,13 @@ extension Toolbox {
                 }
                 if let i = clip.effects.firstIndex(where: { $0.id == e.id }) { clip.effects[i] = e } else { clip.effects.append(e) }
                 let place = s.faceBox.map { String(format: "face %d (%.2f, %.2f, %.2f×%.2f)", a.optInt("n") ?? 0, $0.minX, $0.minY, $0.width, $0.height) } ?? String(format: "(%.2f, %.2f)", s.region.midX, s.region.midY)
-                var text = (s.note.map { $0 + "\n" } ?? "") + "Qualifier on \(clipId) effect \(e.id) (\(e.type), limit \(e.params["limit"]!.string!))" + (plan.shotText.map { ", only in \($0)" } ?? "") + " sampled from \(s.sampled) pixels at \(place), \(fmt2(s.at))s: \(s.q.summary). "
-                text += String(format: "%.0f%% of the sampled area keys fully", s.hit * 100)
+                var text = (s.note.map { $0 + "\n" } ?? "") + "Qualifier on \(clipId) effect \(e.id) (\(e.type), limit \(e.params["limit"]!.string!))" + (plan.shotText.map { ", only in \($0)" } ?? "")
+                if let preset = s.preset {
+                    text += " from the \(preset) preset: \(s.q.summary)"
+                } else {
+                    text += " sampled from \(s.sampled) pixels at \(place), \(fmt2(s.at))s (outliers dropped): \(s.q.summary). "
+                    text += String(format: "%.0f%% of the sampled area keys fully", s.hit * 100)
+                }
                 let cover = matte[index]
                 if let (full, partial) = cover { text += String(format: "; its matte (window, softness and cleanup included) is %.0f%% of the frame white, %.0f%% partial at %@s, as timeline_frames view:\"matte\" shows.", full * 100, partial * 100, fmt2(s.at)) } else { text += "." }
                 if let n = plan.keys?["limit_x"]?.count { text += " The ellipse window follows the face through the shot (\(n) keys)." }

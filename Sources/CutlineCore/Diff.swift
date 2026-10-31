@@ -3,6 +3,17 @@ import Foundation
 /// Human- and agent-readable differences between two versions of a project.
 extension Project {
     public func changes(from old: Project) -> [String] {
+        // Another timeline became current: the clips differ wholesale, so name the switch instead.
+        if currentTimelineName != old.currentTimelineName, timelines.contains(where: { $0.name == old.currentTimelineName }) {
+            let made = !old.timelineNames.contains(currentTimelineName)
+            var out = [made ? "new timeline \(currentTimelineName), now current (\(old.currentTimelineName) kept)" : "switched to timeline \(currentTimelineName) (from \(old.currentTimelineName))"]
+            var same = self
+            same.load(old.stored(as: old.currentTimelineName))
+            same.timelineName = old.timelineName
+            same.timelines = old.timelines
+            out += same.changes(from: old)
+            return out
+        }
         var out: [String] = []
         var shape = canvas
         shape.timecodeStart = old.canvas.timecodeStart

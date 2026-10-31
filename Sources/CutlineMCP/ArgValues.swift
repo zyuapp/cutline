@@ -8,12 +8,16 @@ extension Toolbox {
     static let valueAliases: [String: [String: String]] = {
         let entrance = ["fadeup": "slideUp", "rise": "slideUp", "slide": "slideUp", "riseup": "slideUp", "moveup": "slideUp",
                         "typing": "typewriter", "typeon": "typewriter", "type": "typewriter", "scale": "pop", "zoom": "pop", "bounce": "pop",
-                        "dissolve": "fade", "off": "none", "cut": "none"]
+                        "dissolve": "fade", "fadein": "fade", "popin": "pop", "slidein": "slideUp", "off": "none", "cut": "none"]
         let layouts = ["5.1": "surround51", "51": "surround51", "7.1": "surround71", "71": "surround71", "2.0": "stereo", "1.0": "mono"]
         return [
             "layout": layouts, "downmix": layouts,
             "animation_in": entrance,
             "animation_out": entrance.merging(["fadedown": "slideUp", "sink": "slideUp"]) { a, _ in a },
+            // Caption presets.
+            "preset": ["subtitle": "clean", "subtitles": "clean", "subs": "clean", "srt": "clean", "boxed": "clean", "box": "clean", "standard": "clean",
+                       "plain": "minimal", "simple": "minimal", "subtle": "minimal", "highlight": "karaoke", "wordhighlight": "karaoke",
+                       "social": "bold", "tiktok": "bold", "reels": "bold", "shorts": "bold", "punchy": "bold", "typewriter": "reveal", "wordbyword": "reveal"],
             "view": ["beforeafter": "compare", "split": "compare", "ab": "compare", "sidebyside": "compare", "diff": "compare", "mask": "matte", "key": "matte", "normal": "picture"],
         ]
     }()

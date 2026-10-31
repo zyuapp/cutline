@@ -13,7 +13,7 @@ extension Project {
         if !nested.isEmpty { out.append("\(nested.count) nested sequence(s) → flattened into the clips they play") }
         for c in tracks.flatMap(\.clips) {
             guard let setup = multicamSetup(c) else { continue }
-            out.append("\(label(c)) multicam clip (\(setup.angles.count) angles) → its active angles as plain clips; the other angles and the switching aren't carried (no multigroup)")
+            out.append("\(label(c)) multicam clip (\(setup.angles.count) angles) → its active angles as plain clips; the other angles and the switching aren't carried: Cutline doesn't write AAF multigroups (no sample AAF from Media Composer to check one against); FCPXML and FCP7 XML export keep it multicam")
         }
         var short: [String] = []
         for track in flat.tracks {
