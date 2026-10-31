@@ -98,5 +98,3 @@ A native macOS 26 app: the system toolbar and inspector, Liquid Glass on the tra
 ## License
 
 [MIT](LICENSE). Test fixtures from other projects are listed in [THIRD_PARTY_NOTICES.md](Tests/CutlineCoreTests/Fixtures/THIRD_PARTY_NOTICES.md).
-
-Unofficial project. Not affiliated with or endorsed by Anthropic.

@@ -161,7 +161,7 @@ public enum Proxies {
     static func write(_ media: MediaAsset, quality: Quality, to url: URL, progress: (@Sendable (Double) -> Void)?) async throws -> CGSize {
         let asset = AVURLAsset(url: media.url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         guard let video = try await asset.loadTracks(withMediaType: .video).first else { throw EditError("\(media.name) has no video") }
-        let (natural, preferred, timescale, formats, rate) = try await video.load(.naturalSize, .preferredTransform, .naturalTimeScale, .formatDescriptions, .nominalFrameRate)
+        let (natural, preferred, timescale, formats) = try await video.load(.naturalSize, .preferredTransform, .naturalTimeScale, .formatDescriptions)
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         let duration = try await asset.load(.duration)
         let format = formats.first
@@ -185,7 +185,6 @@ public enum Proxies {
             AVVideoScalingModeKey: AVVideoScalingModeResize,
         ]
         if let format, let color = colorProperties(format) { settings[AVVideoColorPropertiesKey] = color }
-        if rate > 0 { settings[AVVideoCompressionPropertiesKey] = [AVVideoExpectedSourceFrameRateKey: Double(rate)] }
         let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
         videoIn.expectsMediaDataInRealTime = false
         videoIn.transform = transform(preferred, for: size)
