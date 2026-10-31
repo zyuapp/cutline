@@ -171,7 +171,7 @@ extension Toolbox {
         "catalog": ToolBrief(text: "Reference: effects, transitions, eases, paths, anchors; type, recipe or tool for details; search a task; plugins: Audio Units.", args: [
             "type": "Effect, transition or raw", "search": "", "paths": "", "recipe": "Name or \"all\"", "plugins": "", "tool": "Tool name",
         ]),
-        "transition_set": ToolBrief(text: "Add, change or remove transitions on cuts (borrowing handles), or in/out over what lies beneath. Types in catalog; part sound/both crossfades audio.", args: [
+        "transition_set": ToolBrief(text: "Add, change or remove transitions on cuts or clip edges; types in catalog; part sound crossfades audio.", args: [
             "cut": "\"clip_a|clip_b\" or a list", "track": "Every cut on this track (skips misfits)", "from": "Alone: transition out", "to": "Alone: transition in",
             "type": "Default dissolve", "duration": "Default 0.5", "align": "Default center", "ease": "", "part": "Default both",
             "params": "e.g. {\"direction\": \"left\"}", "id": "Existing transition", "remove": "",
@@ -198,7 +198,7 @@ extension Toolbox {
             "media_id": "Omit for the timeline", "what": "Default summary", "start": "", "end": "",
             "wait": "Seconds to wait for running analysis/renders (≤600)", "start_missing": "Start analysis that never ran", "cancel": "Render job id to stop",
         ]),
-        "export": ToolBrief(text: "Render the timeline (default HEVC .mp4 in <project>/exports); platform picks the codec and checks the spec. Also subtitles, captions, interchange, stems, stills, variants; catalog tool=export for all options.", args: [
+        "export": ToolBrief(text: "Render the timeline (default HEVC .mp4 in exports/); platform picks codec and checks the spec. catalog tool=export lists all options.", args: [
             "path": "", "platform": "", "strict": "Refuse on failed checks (default for masters)", "auto_conform": "Conform loudness, size, fps", "check_only": "Checks only",
             "hdr": "PQ HDR10 metadata",
             "hdr.mastering": "", "hdr.max_nits": "", "hdr.min_nits": "", "hdr.max_cll": "", "hdr.max_fall": "",
