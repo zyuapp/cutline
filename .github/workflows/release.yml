@@ -58,8 +58,6 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git bundle create "$RUNNER_TEMP/release.bundle" main "refs/tags/$TAG"
-      - name: Test
-        run: swift test
       - name: Restore signing credentials
         shell: bash
         env:

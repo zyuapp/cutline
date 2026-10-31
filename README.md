@@ -80,7 +80,7 @@ scripts/build-app.sh                  # dist/Cutline.app
 scripts/create-dmg.sh                 # dist/Cutline.dmg
 ```
 
-Releases come from the **Release** workflow (Actions → Release → Run workflow). It bumps `VERSION`, runs the tests, signs and notarizes the app, then publishes `Cutline.zip` and `Cutline.dmg`, which `install.sh` downloads.
+Releases come from the **Release** workflow (Actions → Release → Run workflow). It bumps `VERSION`, signs and notarizes the app, then publishes `Cutline.zip` and `Cutline.dmg`, which `install.sh` downloads.
 
 The repo's `.mcp.json` points Claude Code at the development build, so opening Claude Code in this folder gives you the tools right away. `scripts/mcp-session.py` drives the server from a JSON list of tool calls and saves returned images.
 
