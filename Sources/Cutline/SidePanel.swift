@@ -12,53 +12,32 @@ struct SidePanel: View {
     @Binding var selected: String?
     @Binding var draft: DraftNote?
     var startNote: () -> Void
-    @Namespace private var tabs
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 24) {
-                tabButton(.notes, count: doc.openComments.count)
-                tabButton(.history, count: nil)
-                Spacer()
-            }
-            .padding(.horizontal, 24)
-            .frame(height: 54)
-            Rectangle().fill(Theme.rule).frame(height: 0.5)
+        Group {
             switch tab {
             case .notes: notes
             case .history: HistoryList(doc: doc)
             }
         }
-        .background(Theme.panel)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .safeAreaBar(edge: .top) {
+            Picker("Panel", selection: $tab) {
+                Text(notesLabel).tag(PanelTab.notes).help("Notes pinned to frames")
+                Text(PanelTab.history.rawValue).tag(PanelTab.history).help("Claude's edits, newest first")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.large)
+            .tint(Theme.segment)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
     }
 
-    private func tabButton(_ t: PanelTab, count: Int?) -> some View {
-        let on = tab == t
-        return Button {
-            withAnimation(.smooth(duration: 0.25)) { tab = t }
-        } label: {
-            HStack(spacing: 7) {
-                Text(t.rawValue)
-                if let count, count > 0 {
-                    Text("\(count)")
-                        .font(Typeface.font(11.5, .semibold).monospacedDigit())
-                        .foregroundStyle(on ? Theme.desk : Theme.ink2)
-                        .padding(.horizontal, 6)
-                        .frame(minWidth: 19, minHeight: 18)
-                        .background(Capsule().fill(on ? Theme.wax : Theme.raised))
-                }
-            }
-            .font(Typeface.font(14, .medium))
-            .foregroundStyle(on ? Theme.ink : Theme.ink3)
-            .frame(maxHeight: .infinity)
-            .overlay(alignment: .bottom) {
-                if on {
-                    Capsule().fill(Theme.ink).frame(height: 2).matchedGeometryEffect(id: "tab", in: tabs)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+    private var notesLabel: String {
+        let n = doc.openComments.count
+        return n > 0 ? "Notes \(n)" : "Notes"
     }
 
     // MARK: Notes
@@ -70,7 +49,7 @@ struct SidePanel: View {
                     doc.addComment(text: text, time: d.time, x: d.x, y: d.y)
                     draft = nil
                 } cancel: { draft = nil }
-                Rectangle().fill(Theme.rule).frame(height: 0.5)
+                Rectangle().fill(Theme.rule).frame(height: 0.5).padding(.horizontal, 20)
             }
             if doc.comments.isEmpty {
                 if draft == nil { emptyNotes }
@@ -81,7 +60,7 @@ struct SidePanel: View {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(doc.comments.enumerated()), id: \.element.id) { i, c in
                                 if i > 0 {
-                                    Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1).padding(.horizontal, 12)
+                                    Rectangle().fill(Theme.rule).frame(height: 0.5).padding(.horizontal, 24)
                                 }
                                 NoteEntry(comment: c, fps: doc.project.canvas.fps, selected: c.id == selected, doc: doc) {
                                     selected = c.id
@@ -106,14 +85,14 @@ struct SidePanel: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("No notes yet")
                 .font(Typeface.font(16, .medium))
-                .foregroundStyle(Theme.ink)
+                .foregroundStyle(.primary)
             Text("Pause where something should change, press C, and click the spot on the frame. Claude reads every open note.")
                 .font(Typeface.font(14))
-                .foregroundStyle(Theme.ink2)
+                .foregroundStyle(.secondary)
                 .lineSpacing(3)
             Button(action: startNote) {
                 HStack(spacing: 6) {
-                    Text("Add note at")
+                    Text("Add Note at")
                     Text(Theme.compact(doc.player.time, fps: doc.project.canvas.fps)).monospacedDigit()
                 }
             }
@@ -147,7 +126,7 @@ struct NoteEntry: View {
                     .opacity(resolved ? 0.55 : 1)
                 Text(human ? "You" : "Claude")
                     .font(Typeface.font(12.5, .semibold))
-                    .foregroundStyle(resolved ? Theme.ink2 : Theme.ink)
+                    .foregroundStyle(resolved ? .secondary : .primary)
                 Text(Theme.compact(comment.time, fps: fps))
                     .font(Typeface.font(12).monospacedDigit())
                     .foregroundStyle(human && !resolved ? Theme.wax : Theme.ink3)
@@ -159,7 +138,7 @@ struct NoteEntry: View {
                     Label("Resolved", systemImage: "checkmark")
                         .labelStyle(.titleAndIcon)
                         .font(Typeface.font(12))
-                        .foregroundStyle(Theme.ink3)
+                        .foregroundStyle(.tertiary)
                 }
             }
             .frame(height: 22)
@@ -195,7 +174,7 @@ struct NoteEntry: View {
                 TextField("Reply to Claude", text: $reply, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(Typeface.font(14))
-                    .foregroundStyle(Theme.ink)
+                    .foregroundStyle(.primary)
                     .padding(11)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.field))
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.rule, lineWidth: 0.5))
@@ -215,7 +194,7 @@ struct NoteEntry: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Theme.ink.opacity(selected ? 0.06 : hovering ? 0.03 : 0))
+                .fill(Theme.ink.opacity(selected ? 0.08 : hovering ? 0.04 : 0))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
         )
@@ -229,35 +208,25 @@ struct NoteEntry: View {
             Button {
                 doc.setStatus(comment.id, resolved ? .open : .resolved)
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: resolved ? "arrow.uturn.backward" : "checkmark").font(.system(size: 10, weight: .bold))
-                    Text(resolved ? "Reopen" : "Resolve")
-                }
-                .font(Typeface.font(12.5, .medium))
-                .foregroundStyle(Theme.ink.opacity(0.9))
-                .padding(.horizontal, 10)
-                .frame(height: 24)
-                .background(Capsule().fill(Theme.ink.opacity(0.1)))
-                .contentShape(Capsule())
+                Label(resolved ? "Reopen" : "Resolve", systemImage: resolved ? "arrow.uturn.backward" : "checkmark")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             .fixedSize()
             Button("Reply") { replying = true }
-                .buttonStyle(.plain)
-                .font(Typeface.font(12.5, .medium))
-                .foregroundStyle(Theme.ink2)
-                .padding(.horizontal, 6)
-                .frame(height: 24)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
                 .fixedSize()
             Menu {
-                Button("Delete note", role: .destructive) { doc.deleteComment(comment.id) }
+                Button("Delete Note", role: .destructive) { doc.deleteComment(comment.id) }
             } label: {
-                Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold))
+                Label("More", systemImage: "ellipsis").labelStyle(.iconOnly)
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
             .menuIndicator(.hidden)
-            .frame(width: 22)
-            .foregroundStyle(Theme.ink3)
+            .controlSize(.small)
+            .fixedSize()
         }
     }
 }
@@ -279,13 +248,13 @@ struct NoteComposer: View {
                     .foregroundStyle(Theme.wax)
                 Text(pinned ? "Pinned to the frame" : "Whole frame")
                     .font(Typeface.font(12.5, .medium))
-                    .foregroundStyle(Theme.ink3)
+                    .foregroundStyle(.tertiary)
             }
             TextField("What should change here?", text: $text, axis: .vertical)
                 .lineLimit(3...8)
                 .textFieldStyle(.plain)
                 .font(Typeface.font(14.5))
-                .foregroundStyle(Theme.ink)
+                .foregroundStyle(.primary)
                 .lineSpacing(4)
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.field))
@@ -293,10 +262,10 @@ struct NoteComposer: View {
                 .focused($focused)
                 .onSubmit(submit)
             HStack(spacing: 6) {
-                Text("Return to add").font(Typeface.font(12)).foregroundStyle(Theme.ink3)
+                Text("Return to add").font(Typeface.font(12)).foregroundStyle(.tertiary)
                 Spacer()
                 Button("Cancel", action: cancel).keyboardShortcut(.cancelAction).buttonStyle(QuietButtonStyle())
-                Button("Add note", action: submit).buttonStyle(QuietButtonStyle(prominent: true))
+                Button("Add Note", action: submit).buttonStyle(QuietButtonStyle(prominent: true))
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
@@ -336,10 +305,10 @@ struct HistoryList: View {
 
     private func bucket(_ d: Date, now: Date) -> String {
         let age = now.timeIntervalSince(d)
-        if age < 120 { return "Just now" }
-        if age < 900 { return "Last 15 minutes" }
-        if age < 3600 { return "Last hour" }
-        if Calendar.current.isDate(d, inSameDayAs: now) { return "Earlier today" }
+        if age < 120 { return "Just Now" }
+        if age < 900 { return "Last 15 Minutes" }
+        if age < 3600 { return "Last Hour" }
+        if Calendar.current.isDate(d, inSameDayAs: now) { return "Earlier Today" }
         if Calendar.current.isDateInYesterday(d) { return "Yesterday" }
         return d.formatted(date: .abbreviated, time: .omitted)
     }
@@ -354,7 +323,7 @@ struct HistoryList: View {
                     ForEach(order, id: \.self) { name in
                         Text(name)
                             .font(Typeface.font(12, .medium))
-                            .foregroundStyle(Theme.ink3)
+                            .foregroundStyle(.tertiary)
                             .padding(.horizontal, 24)
                             .padding(.top, name == order.first ? 4 : 18)
                             .padding(.bottom, 6)
@@ -367,10 +336,11 @@ struct HistoryList: View {
             }
         }
         .scrollIndicators(.never)
-        .overlay(alignment: .bottom) {
-            LinearGradient(colors: [Theme.panel.opacity(0), Theme.panel], startPoint: .top, endPoint: .bottom)
-                .frame(height: 28)
-                .allowsHitTesting(false)
+        .mask {
+            VStack(spacing: 0) {
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: 28)
+            }
         }
     }
 
@@ -379,21 +349,21 @@ struct HistoryList: View {
         let undone = item.indices.allSatisfy { $0 > doc.history.cursor }
         return HStack(alignment: .top, spacing: 16) {
             Circle()
-                .fill(current ? Theme.claude : undone ? Theme.panel : Theme.ink3)
+                .fill(current ? Theme.claude : undone ? Color.clear : Theme.ink3)
                 .overlay(Circle().strokeBorder(undone ? Theme.ink3 : .clear, lineWidth: 1))
                 .frame(width: current ? 10 : 7, height: current ? 10 : 7)
                 .frame(width: 10, height: 20)
             HStack(spacing: 6) {
                 Typeface.text(item.entry.label, 14, current ? .semibold : .regular)
-                    .foregroundStyle(undone ? Theme.ink3 : current ? Theme.ink : Theme.ink2)
+                    .foregroundStyle(undone ? .tertiary : current ? .primary : .secondary)
                     .strikethrough(undone, color: Theme.ink3)
                 if item.indices.count > 1 {
                     Text("×\(item.indices.count)")
                         .font(Typeface.font(12, .medium).monospacedDigit())
-                        .foregroundStyle(Theme.ink3)
+                        .foregroundStyle(.tertiary)
                 }
                 if undone {
-                    Text("Undone").font(Typeface.font(12)).foregroundStyle(Theme.ink3)
+                    Text("Undone").font(Typeface.font(12)).foregroundStyle(.tertiary)
                 }
             }
             .frame(minHeight: 20)
@@ -402,7 +372,7 @@ struct HistoryList: View {
         .padding(.vertical, 8)
         .background(alignment: .topLeading) {
             Rectangle()
-                .fill(Color.white.opacity(0.16))
+                .fill(Theme.rule)
                 .frame(width: 1)
                 .padding(.top, first ? 18 : 0)
                 .frame(maxHeight: last ? 18 : .infinity, alignment: .top)

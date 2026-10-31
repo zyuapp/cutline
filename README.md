@@ -14,10 +14,14 @@ Requires macOS 26 on Apple Silicon.
 
 ## Install
 
-Download `Cutline.dmg`, drag Cutline to Applications, then connect it to Claude Code:
+```sh
+curl -fsSL https://raw.githubusercontent.com/zyuapp/cutline/main/install.sh | sh
+```
+
+The script installs the notarized app in `/Applications` and, if [Claude Code](https://docs.claude.com/en/docs/claude-code) is installed, connects the `cutline` MCP server for every project. To install by hand, download `Cutline.dmg` from the [latest release](https://github.com/zyuapp/cutline/releases/latest), drag Cutline to Applications, then run:
 
 ```sh
-claude mcp add cutline -- /Applications/Cutline.app/Contents/MacOS/cutline-mcp
+claude mcp add -s user cutline -- /Applications/Cutline.app/Contents/MacOS/cutline-mcp
 ```
 
 Then ask Claude for a video:
@@ -76,6 +80,8 @@ scripts/build-app.sh                  # dist/Cutline.app
 scripts/create-dmg.sh                 # dist/Cutline.dmg
 ```
 
+Releases come from the **Release** workflow (Actions → Release → Run workflow). It bumps `VERSION`, runs the tests, signs and notarizes the app, then publishes `Cutline.zip` and `Cutline.dmg`, which `install.sh` downloads.
+
 The repo's `.mcp.json` points Claude Code at the development build, so opening Claude Code in this folder gives you the tools right away. `scripts/mcp-session.py` drives the server from a JSON list of tool calls and saves returned images.
 
 | Target | Role |
@@ -87,8 +93,10 @@ The repo's `.mcp.json` points Claude Code at the development build, so opening C
 
 ## Design
 
-Wax yellow marks your notes and periwinkle marks everything Claude does: note pins, replies, the live status dot and the outline on a clip Claude just changed. The interface is set in [Host Grotesk](https://github.com/HostGrotesk/Host-Grotesk) (SIL Open Font License, bundled in `Sources/Cutline/Fonts`).
+A native macOS 26 app: the system toolbar and inspector, Liquid Glass on the transport controls only, and San Francisco throughout, with a neutral background so the picture is judged correctly. Yellow marks your notes and lavender marks everything Claude does: note pins, replies, the live status dot and the outline on a clip Claude just changed.
 
 ## License
 
-MIT
+[MIT](LICENSE). Test fixtures from other projects are listed in [THIRD_PARTY_NOTICES.md](Tests/CutlineCoreTests/Fixtures/THIRD_PARTY_NOTICES.md).
+
+Unofficial project. Not affiliated with or endorsed by Anthropic.

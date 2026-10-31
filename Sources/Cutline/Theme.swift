@@ -1,45 +1,62 @@
 import AppKit
-import CoreText
 import SwiftUI
 
-/// A screening room: graphite surfaces that step down from the stage to the desk, so the
-/// picture is the brightest thing on screen. Two voices, two colors: wax for the human's
-/// notes, periwinkle for everything Claude does.
+/// A dark room lit by the picture. Controls float above it on Liquid Glass, so the
+/// current frame tints every panel. Two voices, two colors: wax for the human's notes,
+/// periwinkle for everything Claude does.
 enum Theme {
-    static let room = Color(hex: 0x1B1C1F)
-    static let desk = Color(hex: 0x141517)
-    static let panel = Color(hex: 0x1E1F22)
-    static let raised = Color(hex: 0x292A2E)
-    static let field = Color(hex: 0x151619)
-    static let rule = Color(hex: 0x2C2D32)
-    static let ink = Color(hex: 0xEEEDE9)
-    static let ink2 = Color(hex: 0xA6A6A1)
-    static let ink3 = Color(hex: 0x8F9094)
+    static let room = Color(nsColor: .windowBackgroundColor)
+    static let desk = Color(nsColor: NS.desk)
+    static let panel = Color(nsColor: .windowBackgroundColor)
+    static let raised = Color(nsColor: .quaternaryLabelColor)
+    static let field = Color(nsColor: .quaternarySystemFill)
+    static let rule = Color(nsColor: .separatorColor)
+    static let ink = Color(nsColor: .labelColor)
+    static let ink2 = Color(nsColor: .secondaryLabelColor)
+    static let ink3 = Color(nsColor: NS.ink3)
     /// Text that has been dealt with: resolved notes and their replies.
-    static let settled = Color(hex: 0x9D9D99)
-    static let wax = Color(hex: 0xF0CF6E)
-    static let claude = Color(hex: 0xA9B4F5)
-    static let tally = Color(hex: 0xE5493A)
+    static let settled = Color(nsColor: .secondaryLabelColor)
+    static let wax = Color(nsColor: NS.wax)
+    static let claude = Color(nsColor: NS.claude)
+    static let tally = Color(nsColor: .systemRed)
+    /// The selected segment of a segmented control: neutral, dark enough for its white label.
+    static let segment = Color(nsColor: .adaptive(dark: 0x48484D, light: 0x6E6E73, darkContrast: 0x2C2C2E, lightContrast: 0x3A3A3C))
+
+    /// Space between the window edge and inset content.
+    static let paneInset: CGFloat = 8
 
     enum NS {
-        static let room = NSColor(hex: 0x1B1C1F)
-        static let desk = NSColor(hex: 0x141517)
-        static let lane = NSColor(hex: 0x1A1B1E)
-        static let rule = NSColor(hex: 0x2C2D32)
-        static let ink = NSColor(hex: 0xEEEDE9)
-        static let ink2 = NSColor(hex: 0xA6A6A1)
-        static let ink3 = NSColor(hex: 0x8F9094)
-        static let numeral = NSColor(hex: 0x8E8F93)
-        static let overlay = NSColor(hex: 0x7F8A99)
-        static let wax = NSColor(hex: 0xF0CF6E)
-        static let claude = NSColor(hex: 0xA9B4F5)
-        static let video = NSColor(hex: 0x4D678A)
-        static let audio = NSColor(hex: 0x4C8A7C)
-        static let wave = NSColor(hex: 0x8FC6B8)
-        static let title = NSColor(hex: 0x8C8478)
-        static let caption = NSColor(hex: 0x7E77A0)
-        static let solid = NSColor(hex: 0x6B6F78)
-        static let adjustment = NSColor(hex: 0x9AA3B5)
+        /// Labels on ink and wax fills, such as the play button and the note button.
+        static let desk = NSColor.adaptive(dark: 0x111215, light: 0xFFFFFF, darkContrast: 0x000000, lightContrast: 0xFFFFFF)
+        static let lane = NSColor(name: nil) { a in
+            switch a.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua]) {
+            case .darkAqua: NSColor.white.withAlphaComponent(0.05)
+            case .accessibilityHighContrastDarkAqua: NSColor.white.withAlphaComponent(0.1)
+            case .accessibilityHighContrastAqua: NSColor.black.withAlphaComponent(0.08)
+            default: NSColor.black.withAlphaComponent(0.04)
+            }
+        }
+        static let rule = NSColor.separatorColor
+        static let ink = NSColor.labelColor
+        static let ink2 = NSColor.secondaryLabelColor
+        static let ink3 = NSColor(name: nil) { a in
+            let contrast = a.name.rawValue.contains("HighContrast")
+            return NSColor.labelColor.withAlphaComponent(contrast ? 0.62 : 0.44)
+        }
+        static let numeral = ink3
+        static let wax = NSColor.adaptive(dark: 0xF7CE5B, light: 0xA87800, darkContrast: 0xFFDF80, lightContrast: 0x7A5600)
+        static let claude = NSColor.adaptive(dark: 0xAEB6E6, light: 0x4D58B0, darkContrast: 0xCAD0F2, lightContrast: 0x313B88)
+        static let overlay = NSColor.adaptive(dark: 0x6F7F9C, light: 0x5A6A88, darkContrast: 0x8496B6, lightContrast: 0x46557A)
+        static let video = NSColor.adaptive(dark: 0x3F6EB5, light: 0x3366B0, darkContrast: 0x5A8AD6, lightContrast: 0x22508F)
+        static let audio = NSColor.adaptive(dark: 0x2F8F7A, light: 0x2A8370, darkContrast: 0x45AE96, lightContrast: 0x1C6656)
+        static let wave = NSColor.adaptive(dark: 0x8FE0CB, light: 0x2E8C76, darkContrast: 0xB0F0DF, lightContrast: 0x1F6B59)
+        static let title = NSColor.adaptive(dark: 0x9A7D57, light: 0x8A6C45, darkContrast: 0xB8976B, lightContrast: 0x6B522F)
+        static let caption = NSColor.adaptive(dark: 0x7E77C0, light: 0x6A62B0, darkContrast: 0x9C95DC, lightContrast: 0x4E4796)
+        static let solid = NSColor.adaptive(dark: 0x6B6F78, light: 0x6B6F78, darkContrast: 0x8A8E97, lightContrast: 0x4E525A)
+        static let adjustment = NSColor.adaptive(dark: 0x8E9AB8, light: 0x6E7A98, darkContrast: 0xABB6D2, lightContrast: 0x525D7A)
+        /// Fills behind a note's text on the frame and the timeline.
+        static let humanBubble = NSColor.adaptive(dark: 0x29261E, light: 0xFFF6DD, darkContrast: 0x1C1A14, lightContrast: 0xFFFFFF)
+        static let claudeBubble = NSColor.adaptive(dark: 0x22242E, light: 0xEEF0FF, darkContrast: 0x16171E, lightContrast: 0xFFFFFF)
     }
 
     static func timecode(_ t: Double, fps: Double) -> String {
@@ -63,67 +80,22 @@ enum Theme {
     }
 }
 
-/// One grotesque for everything; hierarchy comes from size, weight and color.
+/// San Francisco throughout; hierarchy comes from size, weight and color.
 enum Typeface {
-    static let family = "Host Grotesk"
-
     static func font(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-        .custom(family, size: size).weight(weight)
+        .system(size: size, weight: weight)
     }
 
-    /// Host Grotesk's hyphen is half an em long; hyphens are drawn from the system font so
-    /// names like "b-roll" read naturally.
     static func text(_ s: String, _ size: CGFloat, _ weight: Font.Weight = .regular) -> Text {
-        var a = AttributedString(s)
-        a.font = font(size, weight)
-        var i = a.startIndex
-        while i < a.endIndex {
-            let next = a.index(afterCharacter: i)
-            if a.characters[i] == "-" { a[i..<next].font = .system(size: size, weight: weight) }
-            i = next
-        }
-        return Text(a)
+        Text(s).font(font(size, weight))
     }
 
     static func attributed(_ s: String, _ attrs: [NSAttributedString.Key: Any]) -> NSAttributedString {
-        let out = NSMutableAttributedString(string: s, attributes: attrs)
-        guard let f = attrs[.font] as? NSFont else { return out }
-        let weight = (f.fontDescriptor.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat ?? 0
-        let system = NSFont.systemFont(ofSize: f.pointSize, weight: NSFont.Weight(weight))
-        for (i, ch) in s.utf16.enumerated() where ch == 0x2D {
-            out.addAttribute(.font, value: system, range: NSRange(location: i, length: 1))
-        }
-        return out
+        NSAttributedString(string: s, attributes: attrs)
     }
 
     static func ns(_ size: CGFloat, _ weight: NSFont.Weight = .regular, tabular: Bool = false) -> NSFont {
-        let d = NSFontDescriptor(fontAttributes: [.family: family, .traits: [NSFontDescriptor.TraitKey.weight: weight.rawValue]])
-        var f = NSFont(descriptor: d, size: size) ?? .systemFont(ofSize: size, weight: weight)
-        if tabular {
-            let t = f.fontDescriptor.addingAttributes([.featureSettings: [[
-                NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType,
-                NSFontDescriptor.FeatureKey.selectorIdentifier: kMonospacedNumbersSelector,
-            ]]])
-            f = NSFont(descriptor: t, size: size) ?? f
-        }
-        return f
-    }
-
-    /// Registers the bundled fonts for this process. Looks in the app bundle first, then
-    /// next to the executable for SwiftPM development builds.
-    static func register() {
-        let exeDir = Bundle.main.executableURL?.deletingLastPathComponent()
-        let candidates: [URL?] = [
-            Bundle.main.resourceURL?.appendingPathComponent("Fonts"),
-            exeDir?.appendingPathComponent("Cutline_Cutline.bundle/Contents/Resources/Fonts"),
-            exeDir?.appendingPathComponent("Cutline_Cutline.bundle/Fonts"),
-        ]
-        guard let dir = candidates.compactMap({ $0 }).first(where: { FileManager.default.fileExists(atPath: $0.path) }),
-              let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-        else { return }
-        for f in files where f.pathExtension == "ttf" {
-            CTFontManagerRegisterFontsForURL(f as CFURL, .process, nil)
-        }
+        tabular ? .monospacedDigitSystemFont(ofSize: size, weight: weight) : .systemFont(ofSize: size, weight: weight)
     }
 }
 
@@ -136,6 +108,18 @@ extension Color {
 extension NSColor {
     convenience init(hex: UInt32) {
         self.init(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+    }
+
+    /// A color with light and dark variants, each with an Increase Contrast variant.
+    static func adaptive(dark: UInt32, light: UInt32, darkContrast: UInt32? = nil, lightContrast: UInt32? = nil) -> NSColor {
+        NSColor(name: nil) { a in
+            switch a.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua]) {
+            case .accessibilityHighContrastDarkAqua: NSColor(hex: darkContrast ?? dark)
+            case .accessibilityHighContrastAqua: NSColor(hex: lightContrast ?? light)
+            case .darkAqua: NSColor(hex: dark)
+            default: NSColor(hex: light)
+            }
+        }
     }
 }
 
@@ -174,42 +158,21 @@ struct Monogram: View {
     }
 }
 
-/// Text buttons: quiet by default, a solid ink fill when prominent.
-struct QuietButtonStyle: ButtonStyle {
+/// Text buttons: borderless by default, system glass when bordered, prominent glass in ink.
+/// Inside glass panels use `.bordered` styles instead, so glass never sits on glass.
+struct QuietButtonStyle: PrimitiveButtonStyle {
     var prominent = false
     var bordered = false
 
     func makeBody(configuration: Configuration) -> some View {
-        QuietLabel(configuration: configuration, prominent: prominent, bordered: bordered)
-    }
-
-    private struct QuietLabel: View {
-        let configuration: ButtonStyle.Configuration
-        let prominent: Bool
-        let bordered: Bool
-        @State private var hovering = false
-        @Environment(\.isEnabled) private var enabled
-
-        var body: some View {
-            configuration.label
-                .font(Typeface.font(13, .medium))
-                .foregroundStyle(prominent ? Theme.desk : Theme.ink)
-                .padding(.horizontal, 12)
-                .frame(height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(prominent
-                            ? Theme.ink.opacity(configuration.isPressed ? 0.82 : 1)
-                            : Theme.ink.opacity(configuration.isPressed ? 0.12 : hovering ? 0.07 : 0))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.white.opacity(bordered && !prominent ? 0.13 : 0), lineWidth: 1)
-                )
-                .opacity(enabled ? 1 : 0.4)
-                .contentShape(Rectangle())
-                .onHover { hovering = $0 }
-                .animation(.easeOut(duration: 0.12), value: hovering)
+        let button = Button(role: configuration.role, action: configuration.trigger) { configuration.label }
+            .buttonBorderShape(.capsule)
+        if prominent {
+            button.buttonStyle(.glassProminent).tint(Theme.ink).foregroundStyle(Theme.desk)
+        } else if bordered {
+            button.buttonStyle(.glass)
+        } else {
+            button.buttonStyle(.borderless)
         }
     }
 }

@@ -239,6 +239,14 @@ final class ProjectDocument {
 
     // MARK: Comments
 
+    /// Moves the playhead to the start of what the last edit changed.
+    func jumpToLastChange() {
+        let starts = project.tracks.flatMap(\.clips).filter { changedClips.contains($0.id) }.map(\.start)
+        guard let t = starts.min() else { return }
+        player.pause()
+        player.seek(t)
+    }
+
     func addComment(text: String, time: Double, x: Double?, y: Double?) {
         let c = Comment(time: time, x: x, y: y, text: text, author: .human, historyId: history.current?.id)
         try? bundle.updateComments { $0.comments.append(c) }

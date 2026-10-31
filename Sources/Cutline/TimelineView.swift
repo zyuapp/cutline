@@ -61,19 +61,20 @@ final class TimelineCanvas: NSView {
     private var hoverX: CGFloat?
     private var hoverY: CGFloat = 0
 
-    private let headerW: CGFloat = 132
+    private let headerW: CGFloat = 164
     private var rulerH: CGFloat { Self.rulerHeight }
     private let glowDuration = 1.6
     private let playheadLayer = CALayer()
     private let playheadHead = CAShapeLayer()
 
     override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
     override var acceptsFirstResponder: Bool { false }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = Theme.NS.desk.cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
         playheadLayer.backgroundColor = Theme.NS.ink.cgColor
         playheadLayer.zPosition = 10
         playheadHead.fillColor = Theme.NS.ink.cgColor
@@ -247,8 +248,6 @@ final class TimelineCanvas: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        Theme.NS.desk.setFill()
-        bounds.fill()
         let all = lanes()
         let glow = glowAlpha()
         ctx.saveGState()
@@ -257,7 +256,7 @@ final class TimelineCanvas: NSView {
         let laneEnd = min(bounds.width - 6, xFor(project.duration) + 6)
         for lane in all where laneEnd > laneStart {
             Theme.NS.lane.setFill()
-            NSBezierPath(roundedRect: CGRect(x: laneStart, y: lane.rect.minY, width: laneEnd - laneStart, height: lane.rect.height), xRadius: 7, yRadius: 7).fill()
+            NSBezierPath(roundedRect: CGRect(x: laneStart, y: lane.rect.minY, width: laneEnd - laneStart, height: lane.rect.height), xRadius: 8, yRadius: 8).fill()
         }
         let firstClipLane = all.first { if case .notes = $0.kind { return false }; return true }?.rect.minY ?? rulerH
         let bottom = all.last?.rect.maxY ?? rulerH
@@ -285,8 +284,6 @@ final class TimelineCanvas: NSView {
 
     /// Three bands: time labels, a strip for markers, and ticks.
     private func drawRuler() {
-        Theme.NS.desk.setFill()
-        CGRect(x: headerW, y: 0, width: bounds.width - headerW, height: rulerH).fill()
         let tickTop: CGFloat = rulerH - 7
         let steps: [Double] = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
         let step = steps.first { $0 * pxPerSec >= 84 } ?? 600
@@ -302,7 +299,7 @@ final class TimelineCanvas: NSView {
                 CGRect(x: x - 0.25, y: major ? tickTop : rulerH - 3, width: 0.5, height: major ? 7 : 3).fill()
                 if major, x < xFor(end) - 20 || abs(t - end) < minor / 10 {
                     let label = step < 1 ? String(format: "%.1f", t) : Theme.short(t).replacingOccurrences(of: ".0", with: "")
-                    NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: Theme.NS.numeral]).draw(at: CGPoint(x: x + 4, y: 2))
+                    NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: Theme.NS.numeral]).draw(at: CGPoint(x: x + 8, y: 2))
                 }
             }
             t += minor
@@ -348,8 +345,6 @@ final class TimelineCanvas: NSView {
     }
 
     private func drawHeaders(_ all: [Lane]) {
-        Theme.NS.desk.setFill()
-        CGRect(x: 0, y: 0, width: headerW, height: bounds.height).fill()
         let nameAttr: [NSAttributedString.Key: Any] = [.font: Typeface.ns(12.5, .medium), .foregroundColor: Theme.NS.ink2]
         let detailAttr: [NSAttributedString.Key: Any] = [.font: Typeface.ns(11, .regular), .foregroundColor: Theme.NS.ink3]
         for lane in all {
@@ -506,7 +501,7 @@ final class TimelineCanvas: NSView {
                 ring.stroke()
                 ctx.restoreGState()
             }
-            drawLabel(clip, media: media, rect: rect, onPicture: isPicture && isMain, audioOnly: clip.kind == .media && !isPicture, dim: dim)
+            drawLabel(clip, track: track, media: media, rect: rect, onPicture: isPicture && isMain, audioOnly: clip.kind == .media && !isPicture, dim: dim)
         }
         drawTransitions(track, in: lane, ctx: ctx, glow: glow)
     }
@@ -564,8 +559,8 @@ final class TimelineCanvas: NSView {
     }
 
     /// Clip names sit on a small dark pill over pictures, and directly on quiet fills elsewhere.
-    private func drawLabel(_ clip: Clip, media: MediaAsset?, rect: CGRect, onPicture: Bool, audioOnly: Bool, dim: CGFloat) {
-        guard rect.width >= 80 else { return }
+    private func drawLabel(_ clip: Clip, track: Track, media: MediaAsset?, rect: CGRect, onPicture: Bool, audioOnly: Bool, dim: CGFloat) {
+        guard rect.width >= 44 else { return }
         var label: String
         switch clip.kind {
         case .media:
@@ -595,7 +590,11 @@ final class TimelineCanvas: NSView {
         let size = s.size()
         let fadeIn = CGFloat(max(clip.fadeIn, clip.audioFadeIn) * pxPerSec)
         let afterFade = fadeIn > 3 && fadeIn < rect.width / 2 ? rect.minX + min(fadeIn + 8, 40) : rect.minX
-        let left = max(afterFade, headerW) + (onPicture ? 5 : 10)
+        // Start after a transition tab that covers the clip's head.
+        let afterTransition = project.transitionWindows
+            .filter { $0.trackId == track.id && xFor($0.start) <= rect.minX + 2 && xFor($0.end) > rect.minX }
+            .map { xFor($0.end) + 2 }.max() ?? rect.minX
+        let left = max(afterFade, afterTransition, headerW) + (onPicture ? 5 : 10)
         let avail = rect.maxX - left - (onPicture ? 5 : 8)
         guard avail > 24 else { return }
         if onPicture {
@@ -792,7 +791,7 @@ final class TimelineCanvas: NSView {
         shadow.shadowBlurRadius = 14
         shadow.shadowOffset = NSSize(width: 0, height: -5)
         shadow.set()
-        (human ? NSColor(hex: 0x29261E) : NSColor(hex: 0x22242E)).setFill()
+        (human ? Theme.NS.humanBubble : Theme.NS.claudeBubble).setFill()
         shape.fill()
         tail.fill()
         NSGraphicsContext.restoreGraphicsState()

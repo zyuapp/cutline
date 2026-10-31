@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import CoreImage
 import CutlineCore
 import SwiftUI
 
@@ -12,7 +13,7 @@ struct PlayerLayerView: NSViewRepresentable {
         let layer = AVPlayerLayer(player: player)
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = NSColor.black.cgColor
-        layer.cornerRadius = 10
+        layer.cornerRadius = 12
         layer.cornerCurve = .continuous
         layer.masksToBounds = true
         v.layer = layer
@@ -28,6 +29,9 @@ struct PlayerLayerView: NSViewRepresentable {
 /// scaled up behind the picture and faded out at the edges.
 struct AmbientGlow: NSViewRepresentable {
     let image: CGImage?
+    var strength: Float = 0.34
+    /// Fades out toward the edges; without it the light fills the whole view.
+    var radial = true
 
     func makeNSView(context: Context) -> NSView {
         let v = NSView()
@@ -35,7 +39,15 @@ struct AmbientGlow: NSViewRepresentable {
         let glow = CALayer()
         glow.contentsGravity = .resize
         glow.magnificationFilter = .linear
-        glow.opacity = 0.34
+        glow.opacity = strength
+        guard radial else {
+            glow.contentsGravity = .resizeAspectFill
+            v.layerUsesCoreImageFilters = true
+            glow.filters = [CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: 60]) as Any]
+            v.layer?.addSublayer(glow)
+            context.coordinator.glow = glow
+            return v
+        }
         let mask = CAGradientLayer()
         mask.type = .radial
         mask.colors = [NSColor.white.cgColor, NSColor.white.withAlphaComponent(0.55).cgColor, NSColor.white.withAlphaComponent(0).cgColor]
@@ -88,10 +100,10 @@ struct ViewerView: View {
                 PlayerLayerView(player: doc.player.player)
                     .frame(width: frame.width, height: frame.height)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(pinning ? Theme.wax.opacity(0.85) : Color.white.opacity(0.07), lineWidth: pinning ? 1.5 : 0.5)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(pinning ? Theme.wax.opacity(0.85) : Theme.rule, lineWidth: pinning ? 1.5 : 0.5)
                     )
-                    .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
+                    .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
                     .background(GeometryReader { p in
                         Color.clear.preference(key: PictureFrameKey.self, value: p.frame(in: .named("stage")))
                     })
@@ -127,7 +139,8 @@ struct ViewerView: View {
                     .font(Typeface.font(13, .medium))
                     .padding(.horizontal, 16)
                     .frame(height: 34)
-                    .glassEffect(.regular, in: Capsule())
+                    .background(Color.black.opacity(0.35), in: Capsule())
+                    .glassEffect(.clear, in: Capsule())
                     .position(x: frame.midX, y: frame.minY + 32)
                     .allowsHitTesting(false)
                 }
@@ -198,7 +211,7 @@ struct NoteMark: View {
                     .padding(.horizontal, 12).padding(.vertical, 10)
                     .background(
                         BubbleShape(trailing: flip)
-                            .fill(Color(hex: human ? 0x29261E : 0x22242E).opacity(0.96))
+                            .fill(Color(nsColor: human ? Theme.NS.humanBubble : Theme.NS.claudeBubble).opacity(0.96))
                             .overlay(BubbleShape(trailing: flip).stroke(color.opacity(0.38), lineWidth: 1))
                             .shadow(color: .black.opacity(0.4), radius: 12, y: 8)
                     )

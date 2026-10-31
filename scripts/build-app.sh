@@ -8,7 +8,7 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
-version=${CUTLINE_VERSION:-0.1.0}
+version=${CUTLINE_VERSION:-$(cat VERSION)}
 build=${CUTLINE_BUILD:-$(date +%Y%m%d%H%M)}
 release=${CUTLINE_RELEASE:-0}
 identity=${CUTLINE_SIGNING_IDENTITY:-}
@@ -33,7 +33,6 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/Cutline" "$app/Contents/MacOS/Cutline"
 cp "$bin/cutline-mcp" "$app/Contents/MacOS/cutline-mcp"
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
-cp -R Sources/Cutline/Fonts "$app/Contents/Resources/Fonts"
 sed -e "s/__VERSION__/$version/" -e "s/__BUILD__/$build/" Resources/Info.plist > "$app/Contents/Info.plist"
 
 options=""

@@ -127,7 +127,7 @@ struct RecordingPanel: View {
             if case .failed(let message) = rec.state.phase {
                 Text(message)
                     .font(Typeface.font(14))
-                    .foregroundStyle(Theme.ink)
+                    .foregroundStyle(.primary)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -138,10 +138,8 @@ struct RecordingPanel: View {
         }
         .padding(20)
         .frame(width: 520)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.panel.opacity(0.96)))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(isLive ? Theme.tally.opacity(0.7) : Theme.rule, lineWidth: 1))
-        .shadow(color: .black.opacity(0.45), radius: 30, y: 12)
         .animation(.easeOut(duration: 0.2), value: isLive)
+        .glassEffect(.regular.tint(isLive ? Theme.tally.opacity(0.18) : .clear), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var isLive: Bool { rec.state.phase == .recording }
@@ -154,21 +152,21 @@ struct RecordingPanel: View {
                     .frame(width: 9, height: 9)
                 Text(phaseLabel)
                     .font(Typeface.font(14, .semibold))
-                    .foregroundStyle(isLive ? Theme.ink : Theme.ink2)
+                    .foregroundStyle(isLive ? .primary : .secondary)
             }
             Text("Take \(rec.state.take) of \(rec.request.takes)")
                 .font(Typeface.font(13).monospacedDigit())
-                .foregroundStyle(Theme.ink3)
+                .foregroundStyle(.tertiary)
             Spacer()
             Text("\(Theme.compact(rec.request.start, fps: fps)) – \(Theme.compact(rec.request.end, fps: fps))")
                 .font(Typeface.font(13).monospacedDigit())
-                .foregroundStyle(Theme.ink2)
+                .foregroundStyle(.secondary)
         }
         .overlay {
             if case .countdown(let n) = rec.state.phase {
                 Text("\(n)")
                     .font(Typeface.font(44, .semibold).monospacedDigit())
-                    .foregroundStyle(Theme.ink)
+                    .foregroundStyle(.primary)
                     .contentTransition(.numericText(countsDown: true))
                     .animation(.snappy, value: n)
                     .offset(y: -2)
@@ -201,11 +199,11 @@ struct RecordingPanel: View {
             HStack {
                 Text(rec.state.timeline.map { Theme.timecode($0, fps: fps) } ?? " ")
                     .font(Typeface.font(12).monospacedDigit())
-                    .foregroundStyle(Theme.ink3)
+                    .foregroundStyle(.tertiary)
                 Spacer()
                 Text(rec.request.muteProgram ? "Program muted" : "Program on your headphones")
                     .font(Typeface.font(12))
-                    .foregroundStyle(Theme.ink3)
+                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -215,14 +213,14 @@ struct RecordingPanel: View {
             Spacer()
             if rec.finished {
                 Button("Close") { doc.closeRecording() }
-                    .buttonStyle(QuietButtonStyle(prominent: true))
+                    .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.cancelAction)
             } else {
                 Button("Retake") { rec.session?.retake() }
-                    .buttonStyle(QuietButtonStyle(bordered: true))
+                    .buttonStyle(.bordered)
                     .help("Throw this take away and record it again")
                 Button("Stop") { rec.session?.stop() }
-                    .buttonStyle(QuietButtonStyle(prominent: true))
+                    .buttonStyle(.borderedProminent)
                     .help("Stop recording; the takes so far are kept (Esc)")
             }
         }
@@ -241,7 +239,7 @@ struct Teleprompter: View {
         let overflows = contentHeight > height
         let travel = overflows ? contentHeight - height * 0.45 : 0
         Typeface.text(text, 22, .medium)
-            .foregroundStyle(live ? Theme.ink : Theme.ink2)
+            .foregroundStyle(live ? .primary : .secondary)
             .lineSpacing(6)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -285,7 +283,7 @@ struct LevelMeter: View {
                 ForEach([-48, -36, -24, -12, -6, 0], id: \.self) { db in
                     Text("\(db)")
                         .font(Typeface.font(10).monospacedDigit())
-                        .foregroundStyle(Theme.ink3)
+                        .foregroundStyle(.tertiary)
                         .fixedSize()
                         .position(x: min(geo.size.width - 6, geo.size.width * x(Double(db))), y: 6)
                 }

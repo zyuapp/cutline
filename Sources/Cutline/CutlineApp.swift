@@ -13,10 +13,16 @@ struct CutlineApp: App {
                 CommandGroup(replacing: .newItem) {
                     Button("Open Project…") { AppModel.shared.showOpenPanel() }.keyboardShortcut("o")
                 }
+                CommandGroup(after: .sidebar) {
+                    Button(AppModel.shared.showPanel ? "Hide Notes and History" : "Show Notes and History") { AppModel.shared.showPanel.toggle() }
+                        .keyboardShortcut("i", modifiers: [.command, .option])
+                        .disabled(AppModel.shared.doc == nil)
+                }
                 CommandMenu("Playback") {
                     Button("Play/Pause") { AppModel.shared.doc?.player.togglePlay() }
                     Button("Add Note") { AppModel.shared.startNote() }
                     Button("Zoom Timeline to Fit") { AppModel.shared.fitRequest += 1 }.keyboardShortcut("0")
+                    Button("Go to Last Change") { AppModel.shared.doc?.jumpToLastChange() }.keyboardShortcut("l", modifiers: [.command, .option])
                 }
             }
     }
@@ -28,7 +34,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        Typeface.register()
         showMainWindow()
         let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         if AppModel.shared.doc == nil, let path = args.first {
@@ -51,14 +56,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func showMainWindow() {
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+            w.toolbarStyle = .unified
             w.titlebarAppearsTransparent = true
-            w.titleVisibility = .hidden
+            w.titlebarSeparatorStyle = .none
             w.title = "Cutline"
             w.minSize = NSSize(width: 960, height: 620)
             w.isReleasedWhenClosed = false
-            w.backgroundColor = Theme.NS.room
             w.appearance = NSAppearance(named: .darkAqua)
-            w.contentView = NSHostingView(rootView: RootView(model: AppModel.shared).preferredColorScheme(.dark))
+            let host = NSHostingView(rootView: RootView(model: AppModel.shared).preferredColorScheme(.dark))
+            host.sceneBridgingOptions = [.toolbars, .title]
+            w.contentView = host
             w.setFrameAutosaveName("CutlineMain")
             if !w.setFrameUsingName("CutlineMain") { w.center() }
             window = w
@@ -80,6 +87,7 @@ final class AppModel {
     var pinning = false
     var draft: DraftNote?
     var tab: PanelTab = .notes
+    var showPanel = true
     var selectedComment: String?
     var fitRequest = 0
     @ObservationIgnored private var monitor: Any?
@@ -118,6 +126,7 @@ final class AppModel {
         guard let doc else { return }
         doc.player.pause()
         tab = .notes
+        showPanel = true
         draft = nil
         pinning = true
     }

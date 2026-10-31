@@ -13,9 +13,10 @@ struct RootView: View {
                 EditorView(model: model, doc: doc)
             } else {
                 WelcomeView(model: model)
+                    .navigationTitle("Cutline")
+                    .toolbar(removing: .title)
             }
         }
-        .ignoresSafeArea()
         .onOpenURL { model.open($0) }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             _ = providers.first?.loadObject(ofClass: URL.self) { url, _ in
@@ -31,66 +32,88 @@ struct RootView: View {
 struct EditorView: View {
     @Bindable var model: AppModel
     let doc: ProjectDocument
-    @State private var showPanel = true
     @State private var picture: CGRect = .zero
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var timelineHeight: CGFloat {
         min(max(TimelineTrackView.idealHeight(doc.project, hasNotes: !doc.comments.isEmpty), 140), 400)
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                GeometryReader { stage in
-                    ZStack(alignment: .topLeading) {
-                        Theme.room
-                        if picture.width > 0 {
-                            let glow = glowRect(in: stage.size)
-                            AmbientGlow(image: doc.player.ambient)
-                                .frame(width: glow.width, height: glow.height)
-                                .position(x: glow.midX, y: glow.midY)
-                                .allowsHitTesting(false)
-                        }
-                        VStack(spacing: 0) {
-                            HeaderBar(doc: doc, showPanel: $showPanel)
-                            ViewerView(doc: doc, pinning: $model.pinning, draft: $model.draft, selected: model.selectedComment)
-                                .padding(.horizontal, 32)
-                                .padding(.top, 2)
-                                .frame(minHeight: 240)
-                            TransportBar(doc: doc, picture: picture) { model.startNote() }
-                        }
+        VStack(spacing: 0) {
+            GeometryReader { stage in
+                ZStack(alignment: .topLeading) {
+                    if picture.width > 0, !reduceTransparency {
+                        let glow = glowRect(in: stage.size)
+                        AmbientGlow(image: doc.player.ambient, strength: 0.22)
+                            .frame(width: glow.width, height: glow.height)
+                            .position(x: glow.midX, y: glow.midY)
+                            .allowsHitTesting(false)
+                    }
+                    VStack(spacing: 0) {
+                        ViewerView(doc: doc, pinning: $model.pinning, draft: $model.draft, selected: model.selectedComment)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 12)
+                            .frame(minHeight: 240)
+                        TransportBar(doc: doc, picture: picture) { model.startNote() }
                     }
                 }
-                .coordinateSpace(.named("stage"))
-                .onPreferenceChange(PictureFrameKey.self) { picture = $0 }
-                .overlay(alignment: .bottom) {
-                    if let rec = doc.recording {
-                        RecordingPanel(doc: doc, rec: rec)
-                            .padding(.bottom, 92)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-                }
-                .animation(.smooth(duration: 0.3), value: doc.recording == nil)
-                .clipped()
-                TimelineTrackView(doc: doc, selectedComment: model.selectedComment) { id in
-                    model.selectedComment = id
-                    model.tab = .notes
-                    showPanel = true
-                }
-                .id(model.fitRequest)
-                .frame(height: timelineHeight)
-                .overlay(alignment: .top) { Rectangle().fill(Theme.rule).frame(height: 0.5) }
             }
-            .frame(minWidth: 680)
-            if showPanel {
-                Rectangle().fill(Theme.rule).frame(width: 0.5)
-                SidePanel(doc: doc, tab: $model.tab, selected: $model.selectedComment, draft: $model.draft) { model.startNote() }
-                    .frame(width: 340)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            .coordinateSpace(.named("stage"))
+            .onPreferenceChange(PictureFrameKey.self) { picture = $0 }
+            .overlay(alignment: .bottom) {
+                if let rec = doc.recording {
+                    RecordingPanel(doc: doc, rec: rec)
+                        .padding(.bottom, 92)
+                        .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.smooth(duration: 0.3), value: doc.recording == nil)
+            TimelineTrackView(doc: doc, selectedComment: model.selectedComment) { id in
+                model.selectedComment = id
+                model.tab = .notes
+                model.showPanel = true
+            }
+            .id(model.fitRequest)
+            .padding(.top, 6)
+            .frame(height: timelineHeight)
+            .background(Color(nsColor: .underPageBackgroundColor).ignoresSafeArea(edges: .bottom))
+            .overlay(alignment: .top) { Divider() }
+        }
+        .frame(minWidth: 680)
+        .background {
+            Theme.room
+                .backgroundExtensionEffect()
+                .ignoresSafeArea()
+        }
+        .inspector(isPresented: $model.showPanel) {
+            SidePanel(doc: doc, tab: $model.tab, selected: $model.selectedComment, draft: $model.draft) { model.startNote() }
+                .inspectorColumnWidth(min: 300, ideal: 340, max: 440)
+        }
+        .navigationTitle(doc.project.name)
+        .navigationSubtitle(subtitle)
+        .toolbar {
+            if let entry = doc.history.current {
+                ToolbarItem(placement: .principal) {
+                    Tally(doc: doc, entry: entry)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    model.showPanel.toggle()
+                } label: {
+                    Label(model.showPanel ? "Hide Notes and History" : "Show Notes and History", systemImage: "sidebar.trailing")
+                }
+                .help(model.showPanel ? "Hide notes and history (⌥⌘I)" : "Show notes and history (⌥⌘I)")
             }
         }
-        .background(Theme.room)
-        .onChange(of: model.draft) { _, d in if d != nil { withAnimation(.smooth(duration: 0.3)) { showPanel = true } } }
+        .onChange(of: model.draft) { _, d in if d != nil { model.showPanel = true } }
+    }
+
+    private var subtitle: String {
+        let c = doc.project.canvas
+        return "\(c.width) × \(c.height)   \(Int(c.fps.rounded())) fps   \(Theme.short(doc.project.duration))"
     }
 
     /// The glow fades out before the stage edges so it never meets them as a hard line.
@@ -104,106 +127,43 @@ struct EditorView: View {
     }
 }
 
-struct HeaderBar: View {
-    let doc: ProjectDocument
-    @Binding var showPanel: Bool
-    @State private var leading: CGFloat = 0
-
-    var body: some View {
-        let c = doc.project.canvas
-        GeometryReader { geo in
-            ZStack {
-                HStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Typeface.text(doc.project.name, 14, .semibold)
-                            .foregroundStyle(Theme.ink)
-                        HStack(spacing: 10) {
-                            Text(verbatim: "\(c.width) × \(c.height)")
-                            Text(verbatim: "\(Int(c.fps.rounded())) fps")
-                            Text(Theme.short(doc.project.duration))
-                        }
-                        .font(Typeface.font(11.5).monospacedDigit())
-                        .foregroundStyle(Theme.ink3)
-                    }
-                    .lineLimit(1)
-                    .padding(.leading, 84)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { leading = $0 }
-                    Spacer(minLength: 0)
-                    Button {
-                        withAnimation(.smooth(duration: 0.3)) { showPanel.toggle() }
-                    } label: {
-                        Image(systemName: "sidebar.trailing")
-                            .font(.system(size: 14, weight: .regular))
-                            .foregroundStyle(showPanel ? Theme.ink2 : Theme.ink3)
-                            .frame(width: 32, height: 30)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(showPanel ? "Hide notes and history" : "Show notes and history")
-                    .padding(.trailing, 16)
-                }
-                Tally(doc: doc)
-                    .frame(maxWidth: max(0, geo.size.width - 2 * (leading + 20)))
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
-        }
-        .frame(height: 54)
-    }
-}
-
 /// Lights up while Claude is changing the edit, like a camera's on-air tally.
 struct Tally: View {
     let doc: ProjectDocument
+    let entry: HistoryEntry
 
     var body: some View {
-        SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { ctx in
-            let age = doc.lastEditAt.map { ctx.date.timeIntervalSince($0) } ?? .infinity
-            let live = age < 8
-            if let entry = doc.history.current {
+        Button(action: doc.jumpToLastChange) {
+            SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                let age = doc.lastEditAt.map { ctx.date.timeIntervalSince($0) } ?? .infinity
+                let live = age < 8
                 HStack(spacing: 10) {
                     LiveDot(live: live)
                     Text(live ? "Claude is editing" : "Last edit")
-                        .font(Typeface.font(13))
-                        .foregroundStyle(live ? Theme.ink : Theme.ink2)
+                        .foregroundStyle(live ? .primary : .secondary)
                         .fixedSize()
-                    Typeface.text(entry.label, 13, .medium)
-                        .foregroundStyle(Theme.ink)
+                    Text(entry.label)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text(ctx.date.timeIntervalSince(entry.createdAt) < 10 ? "just now" : entry.createdAt.formatted(.relative(presentation: .named)))
-                        .font(Typeface.font(13))
-                        .foregroundStyle(Theme.ink3)
+                        .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .fixedSize()
                     if let status = doc.analysisStatus {
                         Text(status)
-                            .font(Typeface.font(13))
                             .foregroundStyle(Theme.claude)
                             .lineLimit(1)
                             .fixedSize()
                     }
                 }
-                .padding(.horizontal, 16)
-                .fixedSize()
-                .frame(minWidth: 380)
-                .frame(height: 32)
-                .glassEffect(.regular.interactive(), in: Capsule())
-                .contentShape(Capsule())
-                .onTapGesture { jumpToChange() }
-                .help("Show this change")
+                .padding(.horizontal, 6)
+                .frame(minWidth: 300)
                 .animation(.easeOut(duration: 0.5), value: live)
             }
         }
-    }
-}
-
-extension Tally {
-    /// Moves the playhead to the start of what the last edit changed.
-    func jumpToChange() {
-        let starts = doc.project.tracks.flatMap(\.clips).filter { doc.changedClips.contains($0.id) }.map(\.start)
-        guard let t = starts.min() else { return }
-        doc.player.pause()
-        doc.player.seek(t)
+        .help("Go to this change (⌥⌘L)")
     }
 }
 
@@ -268,44 +228,54 @@ struct TransportBar: View {
 
     private var controls: some View {
         let p = doc.player
-        return HStack(spacing: 2) {
-            TransportIcon(symbol: "backward.end.fill", size: 11, help: "Go to start (Home)") { p.pause(); p.seek(0) }
-            TransportIcon(symbol: "chevron.backward", size: 13, help: "Back one frame (←)") { p.step(frames: -1) }
-            Button(action: p.togglePlay) {
-                Image(systemName: p.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Theme.desk)
-                    .offset(x: p.isPlaying ? 0 : 1.5)
-                    .frame(width: 40, height: 40)
-                    .background(Circle().fill(Theme.ink))
-                    .contentShape(Circle())
+        return GlassEffectContainer(spacing: 4) {
+            HStack(spacing: 4) {
+                transportButton("Go to Start", symbol: "backward.end.fill", help: "Go to start (Home)") { p.pause(); p.seek(0) }
+                transportButton("Back One Frame", symbol: "backward.frame.fill", help: "Back one frame (←)") { p.step(frames: -1) }
+                Button(action: p.togglePlay) {
+                    Label(p.isPlaying ? "Pause" : "Play", systemImage: p.isPlaying ? "pause.fill" : "play.fill")
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(Theme.desk)
+                }
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.circle)
+                .tint(Theme.ink)
+                .padding(.horizontal, 6)
+                .help(p.isPlaying ? "Pause (Space)" : "Play (Space)")
+                transportButton("Forward One Frame", symbol: "forward.frame.fill", help: "Forward one frame (→)") { p.step(frames: 1) }
+                transportButton("Go to End", symbol: "forward.end.fill", help: "Go to end (End)") { p.pause(); p.seek(p.duration) }
+                Toggle(isOn: Binding(get: { p.loop }, set: { p.loop = $0 })) {
+                    Label("Loop Playback", systemImage: "repeat")
+                        .labelStyle(.iconOnly)
+                }
+                .toggleStyle(.button)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .padding(.leading, 6)
+                .help(p.loop ? "Loop is on" : "Loop playback")
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 6)
-            .help(p.isPlaying ? "Pause (Space)" : "Play (Space)")
-            TransportIcon(symbol: "chevron.forward", size: 13, help: "Forward one frame (→)") { p.step(frames: 1) }
-            TransportIcon(symbol: "forward.end.fill", size: 11, help: "Go to end (End)") { p.pause(); p.seek(p.duration) }
-            Rectangle().fill(Color.white.opacity(0.12)).frame(width: 1, height: 18).padding(.horizontal, 6)
-            TransportIcon(symbol: "repeat", size: 12, active: p.loop, help: p.loop ? "Loop is on" : "Loop playback") { p.loop.toggle() }
+            .controlSize(.extraLarge)
         }
-        .padding(5)
-        .glassEffect(.regular, in: Capsule())
+    }
+
+    private func transportButton(_ title: String, symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol).labelStyle(.iconOnly)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .help(help)
     }
 
     private var noteButton: some View {
         Button(action: addNote) {
-            HStack(spacing: 8) {
-                PencilMarkIcon(color: Theme.desk, size: 14)
-                Text("Add note")
-            }
-            .font(Typeface.font(13, .semibold))
-            .foregroundStyle(Theme.desk)
-            .padding(.horizontal, 15)
-            .frame(height: 34)
-            .background(Capsule().fill(Theme.wax))
-            .contentShape(Capsule())
+            Label("Add Note", systemImage: "mappin.and.ellipse")
+                .fontWeight(.semibold)
+                .foregroundStyle(Theme.desk)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.glassProminent)
+        .controlSize(.large)
+        .tint(Theme.wax)
         .help("Pin a note to this frame (C)")
     }
 }
@@ -320,36 +290,13 @@ struct Timecode: View {
         let hours = tc.hasPrefix("00:") ? tc.index(tc.startIndex, offsetBy: 3) : tc.startIndex
         let frames = tc.index(tc.endIndex, offsetBy: -3)
         HStack(spacing: 0) {
-            Text(tc[..<hours]).foregroundStyle(Theme.ink3)
-            Text(tc[hours..<frames]).foregroundStyle(Theme.ink)
-            Text(tc[frames...]).foregroundStyle(Theme.ink3)
+            Text(tc[..<hours]).foregroundStyle(.tertiary)
+            Text(tc[hours..<frames]).foregroundStyle(.primary)
+            Text(tc[frames...]).foregroundStyle(.tertiary)
         }
-        .font(Typeface.font(26, .regular).monospacedDigit())
-        .tracking(-0.3)
+        .font(.system(size: 26, weight: .light).monospacedDigit())
+        .tracking(-0.2)
         .fixedSize()
-    }
-}
-
-struct TransportIcon: View {
-    let symbol: String
-    var size: CGFloat = 13
-    var active = false
-    let help: String
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(active || hovering ? Theme.ink : Theme.ink2)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(Theme.ink.opacity(active ? 0.14 : hovering ? 0.08 : 0)))
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(help)
     }
 }
 
@@ -378,6 +325,11 @@ struct WelcomeView: View {
     }
 
     var body: some View {
+        content
+            .background(Theme.room.ignoresSafeArea())
+    }
+
+    private var content: some View {
         HStack(alignment: .top, spacing: 88) {
             VStack(alignment: .leading, spacing: 0) {
                 CutlineMark(size: 56)
@@ -385,10 +337,10 @@ struct WelcomeView: View {
                 Text("Cutline")
                     .font(Typeface.font(46, .medium))
                     .tracking(-0.9)
-                    .foregroundStyle(Theme.ink)
+                    .foregroundStyle(.primary)
                 Text("Claude edits your video. You watch, scrub, and leave notes on the frames you want changed.")
                     .font(Typeface.font(18))
-                    .foregroundStyle(Theme.ink2)
+                    .foregroundStyle(.secondary)
                     .lineSpacing(4)
                     .frame(maxWidth: 470, alignment: .leading)
                     .padding(.top, 12)
@@ -398,7 +350,7 @@ struct WelcomeView: View {
                         HStack(spacing: 10) {
                             Text(mcpCommand)
                                 .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(Theme.ink)
+                                .foregroundStyle(.primary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .textSelection(.enabled)
@@ -411,23 +363,22 @@ struct WelcomeView: View {
                             }
                             .buttonStyle(QuietButtonStyle(bordered: true))
                         }
-                        .padding(.leading, 16).padding(.trailing, 8)
+                        .padding(.leading, 18).padding(.trailing, 7)
                         .frame(maxWidth: 520)
-                        .frame(height: 46)
-                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.field))
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.rule, lineWidth: 0.5))
+                        .frame(height: 44)
+                        .background(.quaternary, in: Capsule())
                     }
                     step(2, "Ask Claude for a video") {
                         Text("“Make a 45-second vertical cut of ~/Movies/interview.mov with captions and no long pauses.”")
                             .font(Typeface.font(15))
-                            .foregroundStyle(Theme.ink2)
+                            .foregroundStyle(.secondary)
                             .lineSpacing(3)
                             .frame(maxWidth: 470, alignment: .leading)
                     }
                     step(3, "Watch and leave notes") {
                         Text("The project opens in this window. Press C on any frame to pin a note; Claude reads it and changes the edit.")
                             .font(Typeface.font(15))
-                            .foregroundStyle(Theme.ink2)
+                            .foregroundStyle(.secondary)
                             .lineSpacing(3)
                             .frame(maxWidth: 470, alignment: .leading)
                     }
@@ -438,12 +389,12 @@ struct WelcomeView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 14) {
-                Text("Recent projects")
+                Text("Recent Projects")
                     .font(Typeface.font(15, .semibold))
-                    .foregroundStyle(Theme.ink)
+                    .foregroundStyle(.primary)
                 if model.recent.isEmpty {
                     Text("Projects Claude creates appear here.")
-                        .font(Typeface.font(14)).foregroundStyle(Theme.ink3)
+                        .font(Typeface.font(14)).foregroundStyle(.tertiary)
                 }
                 VStack(spacing: 4) {
                     ForEach(model.recent.prefix(6), id: \.self) { path in
@@ -451,11 +402,13 @@ struct WelcomeView: View {
                     }
                 }
                 .padding(.horizontal, -10)
-                Button("Open a project…") { model.showOpenPanel() }
+                Button("Open a Project…") { model.showOpenPanel() }
                     .buttonStyle(QuietButtonStyle(bordered: true))
                     .padding(.top, 6)
             }
-            .frame(width: 380, alignment: .leading)
+            .padding(24)
+            .frame(width: 420, alignment: .leading)
+            .background(.quinary, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         }
         .padding(.horizontal, 72)
         .padding(.bottom, 24)
@@ -466,10 +419,10 @@ struct WelcomeView: View {
         HStack(alignment: .firstTextBaseline, spacing: 18) {
             Text("\(n)")
                 .font(Typeface.font(15, .medium).monospacedDigit())
-                .foregroundStyle(Theme.ink3)
+                .foregroundStyle(.tertiary)
                 .frame(width: 12, alignment: .leading)
             VStack(alignment: .leading, spacing: 10) {
-                Text(title).font(Typeface.font(16, .medium)).foregroundStyle(Theme.ink)
+                Text(title).font(Typeface.font(16, .medium)).foregroundStyle(.primary)
                 content()
             }
         }
@@ -520,6 +473,7 @@ struct RecentRow: View {
     @State private var name = ""
     @State private var info = ""
     @State private var edited = ""
+    @State private var folder = ""
     @State private var hovering = false
 
     var body: some View {
@@ -534,23 +488,26 @@ struct RecentRow: View {
                     }
                 }
                 .frame(width: 104, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.rule, lineWidth: 0.5))
                 VStack(alignment: .leading, spacing: 4) {
                     Typeface.text(name.isEmpty ? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent : name, 15, .medium)
-                        .foregroundStyle(Theme.ink)
+                        .foregroundStyle(.primary)
                     Text(info)
                         .font(Typeface.font(12.5).monospacedDigit())
-                        .foregroundStyle(Theme.ink3)
-                    Text(edited)
-                        .font(Typeface.font(12.5))
-                        .foregroundStyle(Theme.ink3)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 0) {
+                        Text(edited).fixedSize()
+                        Text(folder).truncationMode(.middle).foregroundStyle(.tertiary)
+                    }
+                    .font(Typeface.font(12.5))
+                    .foregroundStyle(.secondary)
                 }
                 .lineLimit(1)
                 Spacer(minLength: 0)
             }
             .padding(10)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.ink.opacity(hovering ? 0.05 : 0)))
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.ink.opacity(hovering ? 0.08 : 0)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -564,8 +521,11 @@ struct RecentRow: View {
  guard let p = try? bundle.loadProject() else { return }
         name = p.name
         info = "\(Theme.short(p.duration))     \(p.canvas.width) × \(p.canvas.height)"
+        let url = URL(fileURLWithPath: path)
+        folder = url.deletingLastPathComponent().lastPathComponent + "/" + url.lastPathComponent
+        edited = ""
         if let date = bundle.loadHistory().current?.createdAt {
-            edited = "Edited " + date.formatted(.relative(presentation: .named))
+            edited = "Edited \(date.formatted(.relative(presentation: .named)))   "
         }
         guard p.duration > 0,
               let built = try? await TimelineBuilder.build(p, transcripts: bundle.transcripts(for: p), library: MediaLibrary(), renderScale: 0.25),
