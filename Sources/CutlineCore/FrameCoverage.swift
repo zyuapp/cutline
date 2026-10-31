@@ -72,6 +72,31 @@ extension Project {
         return p
     }
 
+    /// The timeline reduced to one clip's picture, for sampling its color as the compositor renders it (camera log,
+    /// RAW and ACES input, input tone and exposure, crop and framing): every other clip, sound, captions,
+    /// transitions and track effects gone, the clip fully opaque with normal blending. `effectsBefore` keeps only
+    /// the clip's effects before that index (the picture an effect there receives); nil keeps all of them.
+    public func soloPicture(_ clipId: String, effectsBefore: Int? = nil) -> Project? {
+        guard let loc = locateClip(clipId) else { return nil }
+        var p = self
+        p.captions.enabled = false
+        p.transitions = []
+        for t in p.tracks.indices {
+            p.tracks[t].clips.removeAll { $0.id != clipId }
+            p.tracks[t].effects = []
+        }
+        p.tracks[loc.track].hidden = false
+        var c = p.tracks[loc.track].clips[0]
+        if let n = effectsBefore { c.effects = Array(c.effects.prefix(max(0, n))) }
+        c.transform.opacity = 1
+        c.anim["transform.opacity"] = nil
+        c.blend = .normal
+        c.fadeIn = 0
+        c.fadeOut = 0
+        p.tracks[loc.track].clips[0] = c
+        return p
+    }
+
     /// Timeline spans each showing one shot of one media clip as the main picture (`mainPicture`), split at clip
     /// edges and at `shots` (source spans per clip id), with that clip and the shot's index among its shots.
     public func mainPictureShots(shots: (Clip) -> [TimeRange], minLength: Seconds = 0.3) -> [(range: TimeRange, clip: Clip, shot: Int, shots: Int)] {

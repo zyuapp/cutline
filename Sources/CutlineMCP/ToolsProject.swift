@@ -202,7 +202,7 @@ extension Toolbox {
             let b = try session.requireBundle()
             let url = b.url.appendingPathComponent("preview.json")
             guard let data = try? Data(contentsOf: url), let j = try? JSONDecoder().decode(JSON.self, from: data) else {
-                return .text("The preview app has not reported a playhead yet. Is it open? Call preview_open.")
+                return .text("The preview app has not reported a playhead yet. Is it open? Open it with preview_seek open:true (project_open opens it too).")
             }
             return .text(j.encoded(pretty: true))
         })

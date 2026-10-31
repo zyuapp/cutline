@@ -4,17 +4,33 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    /// A shot's color statistics from source frames at `times` (default five across what it plays), inside its crop
-    /// and without letterbox bars, with its middle frame.
-    static func shotColor(_ c: Clip, _ p: Project, times: [Seconds]? = nil) async throws -> (stats: ColorMatch.Stats, middle: CGImage?) {
+    /// A shot's color statistics as timeline_measure compare reads them: the clip rendered alone by the engine
+    /// (camera log, ACES and RAW input, input tone and exposure, crop and framing) with its effects before
+    /// `effectsBefore` (all when nil), at timeline `times` (default five across the clip), without bars; with its
+    /// middle frame. `builds` keeps one render per clip and effect cut.
+    func shotColor(_ c: Clip, _ p: Project, times: [Seconds]? = nil, effectsBefore: Int? = nil, builds: inout [String: BuiltTimeline]) async throws -> (stats: ColorMatch.Stats, middle: CGImage?) {
         guard let m = c.mediaId.flatMap({ p.mediaAsset($0) }), m.hasVideo else { throw EditError("\(c.id) has no picture") }
-        let lo = min(c.sourceIn, c.sourceOut), span = abs(c.sourceOut - c.sourceIn)
-        let ts = m.isImage ? [0.0] : times ?? [0.1, 0.3, 0.5, 0.7, 0.9].map { lo + span * $0 }
-        let crop = c.transform.crop
-        let frames = try await Frames.media(m, times: ts, maxSize: CGSize(width: 240, height: 240))
-        var pixels: [SIMD3<Float>] = []
-        for f in frames { pixels += ShotColor.pictureSamples(f.image, crop: (crop.left, crop.top, crop.right, crop.bottom)) }
+        let key = "\(c.id)|\(effectsBefore.map(String.init) ?? "all")"
+        let built: BuiltTimeline
+        if let hit = builds[key] {
+            built = hit
+        } else {
+            guard let solo = p.soloPicture(c.id, effectsBefore: effectsBefore) else { throw EditError("No clip \(c.id)") }
+            built = try await session.timeline(for: solo, renderScale: min(1, 360 / Double(max(p.canvas.width, p.canvas.height))), shared: false)
+            builds[key] = built
+        }
+        let frame = 1 / max(1, p.canvas.fps)
+        let ts = (times ?? [0.1, 0.3, 0.5, 0.7, 0.9].map { c.start + c.duration * $0 }).map { min(max($0, c.start), max(c.start, c.end - frame)) }
+        let frames = try await Frames.timeline(built, times: ts, maxSize: CGSize(width: 320, height: 320))
+        let bg = SIMD3(Float(p.canvas.background.r), Float(p.canvas.background.g), Float(p.canvas.background.b))
+        let pixels = frames.flatMap { ShotColor.pictureSamples($0.image, background: bg) }
+        guard !pixels.isEmpty else { throw EditError("\(c.id) shows no picture to sample") }
         return (ColorMatch.stats(pixels), frames.isEmpty ? nil : frames[frames.count / 2].image)
+    }
+
+    /// Index of the first match LUT on a clip, where a new one goes (the front of the stack) when it has none.
+    static func matchSlot(_ c: Clip) -> Int {
+        c.effects.firstIndex { $0.type == "color.lut" && ($0.id == "match" || $0.id.hasPrefix("match_s")) } ?? 0
     }
 
     /// The topmost visible media clip at timeline time `t`.
@@ -26,6 +42,8 @@ extension Toolbox {
         var ref: Clip
         var refAt: Seconds?
         var refTimes: [Seconds]?
+        /// reference was a time: refAt picks the clip and its shot, not one exact frame.
+        var refByTime = false
         var ids: [String]
         var strength: Double
         var cap: Double?
@@ -46,18 +64,26 @@ extension Toolbox {
     }
 
     static func matchPlan(_ a: Args, _ current: Project) throws -> MatchPlan {
-        let refAt = try a.optTime("reference_at")
+        var refAt = try a.optTime("reference_at")
         var refId = a.optString("reference")
+        var refName = "reference_at", byTime = false
+        // A time or anchor ("start", "marker:Hero", 12.5) as reference names the clip showing there.
+        if let r = a.value("reference"), refAt == nil, current.clip(refId ?? "") == nil, let t = try? Args.parseTime(r, name: "reference") {
+            refAt = min(max(0, t), max(0, current.duration - 0.01))
+            refId = nil
+            refName = "reference \(r.string ?? fmt2(t))"
+            byTime = true
+        }
         if refId == nil, let t = refAt {
-            guard let c = pictureClip(at: t, current) else { throw EditError("No media clip at reference_at \(fmt2(t))s") }
+            guard let c = pictureClip(at: t, current) else { throw EditError("No media clip at \(refName) \(fmt2(t))s") }
             refId = c.id
         }
         guard let refId else { throw EditError("Pass reference (the clip whose look the others match) or reference_at (a timeline time)") }
-        guard let ref = current.clip(refId), ref.kind == .media else { throw EditError("reference must be a media clip") }
+        guard let ref = current.clip(refId), ref.kind == .media else { throw EditError(current.clip(refId) == nil ? "No clip \(refId); reference is a media clip id or a timeline time or anchor" : "reference must be a media clip; \(refId) is \(current.clip(refId)!.kind.rawValue)") }
         var refTimes: [Seconds]?
         if let t = refAt {
             guard t >= ref.start - 1e-6, t <= ref.end + 1e-6 else { throw EditError("reference_at \(fmt2(t))s is outside \(refId) (\(fmt2(ref.start))–\(fmt2(ref.end))s)") }
-            refTimes = [ref.sourceTime(atTimeline: min(t, ref.end - 0.01))]
+            if !byTime { refTimes = [min(t, ref.end - 0.01)] }
         }
         var ids = a.strings("clips") ?? []
         if let tid = a.optString("track") {
@@ -75,7 +101,7 @@ extension Toolbox {
         }
         let strength = a.optDouble("strength") ?? 0.8
         guard (0...1).contains(strength) else { throw EditError("strength is 0…1") }
-        return MatchPlan(ref: ref, refAt: refAt, refTimes: refTimes, ids: ids, strength: strength, cap: a.bool("allow_large", default: false) ? nil : ColorMatch.maxLightnessShift)
+        return MatchPlan(ref: ref, refAt: refAt, refTimes: refTimes, refByTime: byTime, ids: ids, strength: strength, cap: a.bool("allow_large", default: false) ? nil : ColorMatch.maxLightnessShift)
     }
 
     /// Splits the plan into shots: each clip that plays several shots (scope shot, the default) gets one LUT per shot,
@@ -88,7 +114,10 @@ extension Toolbox {
             let t = plan.refAt ?? (plan.ref.start + plan.ref.duration / 2)
             let i = Toolbox.shotIndex(refShots, clip: plan.ref, at: t)
             let r = refShots[i]
-            if plan.refTimes == nil { plan.refTimes = [0.1, 0.3, 0.5, 0.7, 0.9].map { r.start + (r.end - r.start) * $0 } }
+            if plan.refTimes == nil {
+                let span = plan.ref.timelineSpan(ofSource: r)
+                plan.refTimes = [0.1, 0.3, 0.5, 0.7, 0.9].map { span.start + (span.end - span.start) * $0 }
+            }
             plan.refShot = Toolbox.shotLabel(refShots, i, clip: plan.ref)
             if a.bool("include_reference_shots", default: false) {
                 for j in refShots.indices where j != i { plan.units.append(MatchUnit(clip: plan.ref.id, shot: refShots[j], index: j, count: refShots.count)) }
@@ -113,29 +142,33 @@ extension Toolbox {
         try matchUnits(&plan, a, current)
         let dir = b.cacheURL.appendingPathComponent("looks", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let made = try await Toolbox.matchShots(plan, current, dir: dir)
+        let made = try await matchShots(plan, current, dir: dir)
         return try applyMatch(made.files, report: made.report, warnings: made.warnings, plan: plan, current: current, dry: dry)
     }
 
     /// Each shot's match LUT against the reference, in its own async frame: the debug build's task allocator
     /// aborted when this loop shared match_color's.
-    static func matchShots(_ plan: MatchPlan, _ current: Project, dir: URL) async throws -> (files: [(MatchUnit, URL)], report: [String], warnings: [String]) {
-        let reference = try await shotColor(plan.ref, current, times: plan.refTimes)
+    func matchShots(_ plan: MatchPlan, _ current: Project, dir: URL) async throws -> (files: [(MatchUnit, URL)], report: [String], warnings: [String]) {
+        var builds: [String: BuiltTimeline] = [:]
+        let reference = try await shotColor(plan.ref, current, times: plan.refTimes, builds: &builds)
         let refPrint = await ShotColor.featurePrintOffPool(reference.middle)
         var files: [(MatchUnit, URL)] = []
         var report: [String] = [], warnings: [String] = []
         for u in plan.units {
             guard let c = current.clip(u.clip) else { throw EditError("No clip \(u.clip)") }
             guard c.kind == .media, c.mediaId.flatMap({ current.mediaAsset($0) })?.hasVideo == true else { report.append("\(u.clip): skipped (no picture)"); continue }
-            let times = u.shot.map { r in [0.1, 0.3, 0.5, 0.7, 0.9].map { r.start + (r.end - r.start) * $0 } }
-            let shot = try await shotColor(c, current, times: times)
+            let times = u.shot.map { r in
+                let span = c.timelineSpan(ofSource: r)
+                return [0.1, 0.3, 0.5, 0.7, 0.9].map { span.start + (span.end - span.start) * $0 }
+            }
+            let shot = try await shotColor(c, current, times: times, effectsBefore: Toolbox.matchSlot(c), builds: &builds)
             let shotPrint = await ShotColor.featurePrintOffPool(shot.middle)
             let content = ShotColor.contentDistance(shotPrint, refPrint)
             let label = u.shot.map { r in
                 let t = c.timelineSpan(ofSource: r)
                 return "\(u.clip) shot \(u.index + 1)/\(u.count) (\(fmt2(t.start))–\(fmt2(t.end))s)"
             } ?? u.clip
-            let made = try matchShot(label, file: u.file, to: plan.ref.id, shot.stats, reference.stats, content: content, strength: plan.strength, cap: plan.cap, dir: dir)
+            let made = try Toolbox.matchShot(label, file: u.file, to: plan.ref.id, shot.stats, reference.stats, content: content, strength: plan.strength, cap: plan.cap, dir: dir)
             files.append((u, made.url))
             report.append(made.line)
             if let w = made.warning { warnings.append(w) }
@@ -147,15 +180,18 @@ extension Toolbox {
     /// aborted when the edit ran inline there.
     func applyMatch(_ made: [(MatchUnit, URL)], report: [String], warnings: [String], plan: MatchPlan, current: Project, dry: Bool) throws -> ToolResult {
         let refId = plan.ref.id, strength = plan.strength
-        let refText = (plan.refAt.map { "\(refId) at \(fmt2($0))s" } ?? refId) + (plan.refShot.map { " (\($0))" } ?? "")
+        let refText = (plan.refAt.map { plan.refByTime ? "\(refId) (the clip at \(fmt2($0))s)" : "\(refId) at \(fmt2($0))s" } ?? refId) + (plan.refShot.map { " (\($0))" } ?? "")
         return try runEdit("Match \(made.count) shot(s) to \(Toolbox.clipName(refId, current))", dry: dry) { p in
+            var slots: [String: Int] = [:]
             for id in Set(made.map(\.0.clip)) {
                 guard let loc = p.locateClip(id) else { continue }
+                slots[id] = Toolbox.matchSlot(p.tracks[loc.track].clips[loc.clip])
                 p.tracks[loc.track].clips[loc.clip].effects.removeAll { $0.type == "color.lut" && ($0.id == "match" || $0.id.hasPrefix("match_s")) }
             }
             for (u, url) in made.reversed() {
                 guard let loc = p.locateClip(u.clip) else { continue }
-                p.tracks[loc.track].clips[loc.clip].effects.insert(Effect(id: u.effectId, type: "color.lut", params: ["file": .string(url.path)], sourceRange: u.shot), at: 0)
+                let at = min(slots[u.clip] ?? 0, p.tracks[loc.track].clips[loc.clip].effects.count)
+                p.tracks[loc.track].clips[loc.clip].effects.insert(Effect(id: u.effectId, type: "color.lut", params: ["file": .string(url.path)], sourceRange: u.shot), at: at)
             }
             let perShot = made.contains { $0.0.shot != nil }
             return (["Matched to \(refText) at strength \(fmt2(strength)):"] + report.map { "  " + $0 } + warnings).joined(separator: "\n")

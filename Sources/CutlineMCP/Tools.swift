@@ -344,6 +344,9 @@ enum Describe {
         }
         var extra: [String] = []
         if c.speed != 1 { extra.append("speed \(fmt2(c.speed))") }
+        if c.reverse { extra.append("reversed (plays backwards)") }
+        if let ramp = c.anim["time.speed"] { extra.append("retimed: speed ramp, \(ramp.keys.count) keys") }
+        if let i = c.interpolate { extra.append("\(i) frames") }
         if let link = c.link { extra.append("linked with " + p.linked(c.id).joined(separator: ",").ifEmptyText(link)) }
         if c.volume != 1 { extra.append("vol \(fmt2(c.volume))") }
         if c.fadeIn > 0 || c.fadeOut > 0 { extra.append("fade \(fmt2(c.fadeIn))/\(fmt2(c.fadeOut))") }
@@ -430,7 +433,7 @@ enum Describe {
 extension Toolbox {
     /// Issues an edit introduced, for the edit's response.
     func newIssues(_ p: Project, _ before: Project) -> String {
-        guard let b = session.bundle else { return "" }
+        guard let b = session.bundle, p.currentTimelineName == before.currentTimelineName else { return "" }
         let tr = b.transcripts(for: p)
         let fresh = Set(p.qualityIssues(transcripts: tr)).subtracting(before.qualityIssues(transcripts: b.transcripts(for: before)))
         guard !fresh.isEmpty else { return "" }

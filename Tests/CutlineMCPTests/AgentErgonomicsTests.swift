@@ -187,9 +187,9 @@ private func openProject() async throws -> (Toolbox, ProjectBundle, URL) {
     let half = await box.call("recipe", ["name": "room_tone", "args": ["start": 6, "end": 9, "source_start": 3]])
     #expect(half.isError && half.plainText.contains("both source_start and source_end"), "\(half.plainText)")
 
-    // qualify face:true looks across the clip before giving up.
+    // qualify face:true looks across the clip, then falls back to the skin preset.
     let face = await box.call("recipe", ["name": "qualify", "args": ["clip": "mov", "face": true]])
-    #expect(face.isError && face.plainText.contains("No face found in mov at 5.00s nor at 8 frames across 4.00–6.00s"), "\(face.plainText)")
+    #expect(!face.isError && face.plainText.contains("No face or person found in mov at 5.00s nor at 8 frames across 4.00–6.00s") && face.plainText.contains("from the skin preset"), "\(face.plainText)")
 
     p = try box.session.project()
     #expect(try Toolbox.musicClips(["A1"], p).map(\.id) == ["d1", "d2"])

@@ -120,10 +120,46 @@ public struct Qualifier: Equatable, Sendable {
         return 1 - t * t * (3 - 2 * t)
     }
 
-    /// The eyedropper: ranges that cover the sampled colors (sRGB-encoded) with a little margin, ignoring the
-    /// most extreme 10% on each side. Nil when the samples are too neutral to give a hue.
-    public static func pick(_ samples: [SIMD3<Float>]) -> Qualifier? {
+    /// The samples near their median color: luma, saturation and (for colored samples) hue within three median
+    /// absolute deviations of the median (at least 0.04, 0.06 and 8°), dropping specular highlights, shadows, hair or
+    /// background caught in a patch. All of them when fewer than half would remain.
+    public static func inliers(_ samples: [SIMD3<Float>]) -> [SIMD3<Float>] {
+        guard samples.count >= 8 else { return samples }
         let parts = samples.map(components)
+        func median(_ v: [Double]) -> Double { let s = v.sorted(); return s[s.count / 2] }
+        let luma = median(parts.map(\.luma)), sat = median(parts.map(\.sat))
+        let lumaDev = max(0.04, 3 * median(parts.map { abs($0.luma - luma) }))
+        let satDev = max(0.06, 3 * median(parts.map { abs($0.sat - sat) }))
+        let colored = parts.filter { $0.chroma > 0.02 }
+        var hue: Double?
+        var hueDev = 180.0
+        if colored.count >= parts.count / 2 {
+            var x = 0.0, y = 0.0
+            for p in colored { x += cos(p.hue * .pi / 180); y += sin(p.hue * .pi / 180) }
+            let center = (atan2(y, x) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+            let h = (center + median(colored.map { offset($0.hue, from: center) }) + 360).truncatingRemainder(dividingBy: 360)
+            hue = h
+            hueDev = max(8, 3 * median(colored.map { abs(offset($0.hue, from: h)) }))
+        }
+        let kept = zip(samples, parts).filter { _, p in
+            abs(p.luma - luma) <= lumaDev && abs(p.sat - sat) <= satDev && (hue.map { p.chroma <= 0.02 || abs(offset(p.hue, from: $0)) <= hueDev } ?? true)
+        }.map(\.0)
+        return kept.count * 2 >= samples.count ? kept : samples
+    }
+
+    /// Signed hue difference `h` − `center` in −180…180.
+    static func offset(_ h: Double, from center: Double) -> Double {
+        var d = h - center
+        if d > 180 { d -= 360 }
+        if d < -180 { d += 360 }
+        return d
+    }
+
+    /// The eyedropper: ranges that cover the sampled colors (sRGB-encoded) with a little margin, after dropping
+    /// outliers (`inliers`) and the most extreme 5% on each side, with matte cleanup that clears specks and
+    /// pinholes. Nil when the samples are too neutral to give a hue.
+    public static func pick(_ samples: [SIMD3<Float>]) -> Qualifier? {
+        let parts = inliers(samples).map(components)
         guard parts.count >= 4 else { return nil }
         func at(_ s: [Double], _ q: Double) -> Double { s[min(s.count - 1, max(0, Int(q * Double(s.count - 1) + 0.5)))] }
         let colored = parts.filter { $0.chroma > 0.02 }
@@ -148,10 +184,10 @@ public struct Qualifier: Equatable, Sendable {
         let width = max(16, hi - lo + 8)
         let sats = parts.map(\.sat).sorted(), lumas = parts.map(\.luma).sorted()
         return Qualifier(
-            hue: mid.truncatingRemainder(dividingBy: 360), hueWidth: min(width, 180), hueSoft: max(8, width * 0.35),
+            hue: mid.truncatingRemainder(dividingBy: 360), hueWidth: min(width, 180), hueSoft: max(10, width * 0.4),
             satLow: max(0, at(sats, 0.05) - 0.05), satHigh: min(1, at(sats, 0.95) + 0.08), satSoft: 0.08,
             lumaLow: max(0, at(lumas, 0.05) - 0.1), lumaHigh: min(1, at(lumas, 0.95) + 0.1), lumaSoft: 0.1,
-            cleanBlack: 0.1, cleanWhite: 0.2, blur: 0.003, denoise: 0.003
+            cleanBlack: 0.15, cleanWhite: 0.2, blur: 0.004, denoise: 0.005
         )
     }
 

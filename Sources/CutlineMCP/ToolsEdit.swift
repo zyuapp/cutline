@@ -255,6 +255,7 @@ extension Toolbox {
             "attach_audio": Schema.bool("Fold a detached sound clip back into its linked picture (pass either clip): it must play the same media in sync; where they start or end apart it becomes a split edit"),
             "audio_track": Schema.string("With detach_audio: the audio track for the sound"),
             "resync": Schema.bool("Slip this clip's out-of-sync linked clips (or this clip, when it is the one off) back into sync with their picture; project_status lists linked clips out of sync"),
+            "reverse": Schema.bool("Play the source range backwards (param_set time.reverse)"),
         ], required: ["clip_id"]), label: { a, p in Toolbox.describeUpdate(a, p) }) { p, args in
             let id = try args.string("clip_id")
             guard var c = p.clip(id) else { throw EditError("No clip \(id)") }
@@ -317,6 +318,7 @@ extension Toolbox {
             if let s = try args.optTime("start") { c.start = s }
             if let e = try args.optTime("end") { c.duration = e - c.start }
             if let v = args.optString("name") { c.name = v }
+            if let r = args.optBool("reverse") { try c.set("time.reverse", .bool(r)) }
             if let t = args.optString("text") {
                 guard c.kind == .text else { throw EditError("\(id) is not a title") }
                 c.text?.text = t

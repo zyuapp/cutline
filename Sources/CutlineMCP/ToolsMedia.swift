@@ -204,7 +204,7 @@ extension Toolbox {
             "start": Schema.time("Range start for count"),
             "end": Schema.time("Range end for count"),
             "size": Schema.string("small (default) or large for detail checks such as text legibility", values: ["small", "large"]),
-            "view": Schema.string("picture (default); matte: white where one clip effect acts and black where it doesn't (its limit window and/or qualifier, mask, chroma key or person/subject/object mask), to check a key or secondary; needs clip, and effect unless the clip has one masked effect; compare (before_after): each frame side by side without and with effect (on clip, a track or the master), without every effect of clip (its grade), or as history entry version rendered it, with how much the picture changed", values: ["picture", "matte", "compare"]),
+            "view": Schema.string("picture (default); matte: white where one clip effect acts and black where it doesn't (its limit window and/or qualifier, mask, chroma key or person/subject/object mask), to check a key or secondary; clip defaults to the one clip with a masked effect at times, effect to its one masked effect; compare (before_after): each frame side by side without and with effect (on clip, a track or the master), without every effect of clip (its grade), or as history entry version rendered it, with how much the picture changed", values: ["picture", "matte", "compare"]),
             "clip": Schema.string("For view matte or compare: the clip whose effect to show (compare samples its range); for multicam: the multicam clip"),
             "effect": Schema.string("For view matte: the effect id on that clip; for compare: the effect to show off and on"),
             "version": Schema.string("For view compare: a history entry id (history lists them) shown beside the current edit"),
@@ -293,22 +293,47 @@ extension Toolbox {
         return ids
     }
 
+    /// Whether an effect acts through a matte view can show: a mask, a limit window or a qualifier.
+    static func isMasked(_ e: Effect, in clip: Clip) -> Bool {
+        let limit = e.params["limit"]?.string ?? "none"
+        return (EffectCatalog.type(e.type)?.category == "mask" && e.type != "mask.matte") || limit != "none" || clip.anim["fx.\(e.id).limit"] != nil
+    }
+
+    /// view matte without clip: the one clip playing at the requested times (or anywhere, without times or a range)
+    /// that has a masked effect, or the effect named.
+    static func matteClip(_ args: Args, _ p: Project) throws -> String {
+        let effect = args.optString("effect")
+        var spans: [TimeRange] = []
+        if let raw = args.raw["times"]?.array, !raw.isEmpty {
+            spans = try raw.map { let t = try Args.parseTime($0, name: "times"); return TimeRange(t, t) }
+        } else if args.has("start") || args.has("end") {
+            spans = [TimeRange(try args.optTime("start") ?? 0, try args.optTime("end") ?? p.duration)]
+        }
+        let all = p.tracks.filter { $0.kind == .video }.flatMap(\.clips).filter { c in
+            c.effects.contains { e in effect.map { e.id == $0 } ?? isMasked(e, in: c) }
+        }
+        let playing = spans.isEmpty ? all : all.filter { c in spans.contains { $0.start < c.end && $0.end >= c.start } }
+        guard playing.count == 1 else {
+            let what = effect.map { "effect \($0)" } ?? "a masked effect (mask, window or qualifier)"
+            let place = spans.isEmpty ? "" : " at those times"
+            if playing.isEmpty { throw EditError("view matte needs clip: no clip with \(what)\(place)" + (all.isEmpty ? "" : "; clips with one: " + all.map(\.id).joined(separator: ", "))) }
+            throw EditError("view matte needs clip: several clips have \(what)\(place): " + playing.map(\.id).joined(separator: ", "))
+        }
+        return playing[0].id
+    }
+
     /// timeline_frames view:"matte": renders where one clip effect acts, white on black.
     func matteFrames(_ args: Args) async throws -> ToolResult {
         let b = try session.requireBundle()
         let p = try session.project()
-        let clipId = try args.string("clip")
+        let clipId = try args.optString("clip") ?? Toolbox.matteClip(args, p)
         guard let clip = p.clip(clipId) else { throw EditError("No clip \(clipId)") }
-        func masked(_ e: Effect) -> Bool {
-            let limit = e.params["limit"]?.string ?? "none"
-            return (EffectCatalog.type(e.type)?.category == "mask" && e.type != "mask.matte") || limit != "none" || clip.anim["fx.\(e.id).limit"] != nil
-        }
         let list = clip.effects.map { "\($0.id) (\($0.type))" }.joined(separator: ", ").ifEmptyText("none")
         let effectId: String
         if let id = args.optString("effect") {
             effectId = id
         } else {
-            let candidates = clip.effects.filter(masked)
+            let candidates = clip.effects.filter { Toolbox.isMasked($0, in: clip) }
             guard candidates.count == 1 else { throw EditError("Pass effect: \(clipId) has \(candidates.isEmpty ? "no masked effects" : "several masked effects"). Effects: \(list)") }
             effectId = candidates[0].id
         }

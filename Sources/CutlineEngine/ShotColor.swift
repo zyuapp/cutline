@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreImage
+import CoreVideo
 import CutlineCore
 import Foundation
 import Vision
@@ -69,12 +70,67 @@ public enum ShotColor {
     }
 
     /// Face boxes in frame fractions from the top left, largest first.
-    public static func faces(_ img: CGImage) -> [CGRect] {
+    public static func faces(_ img: CGImage, minConfidence: Float = 0.5) -> [CGRect] {
         let req = VNDetectFaceRectanglesRequest()
         try? VNImageRequestHandler(cgImage: img).perform([req])
-        return (req.results ?? []).filter { $0.confidence > 0.5 }
+        return (req.results ?? []).filter { $0.confidence > minConfidence }
             .map { CGRect(x: $0.boundingBox.minX, y: 1 - $0.boundingBox.maxY, width: $0.boundingBox.width, height: $0.boundingBox.height) }
             .sorted { $0.width * $0.height > $1.width * $1.height }
+    }
+
+    /// The head of the largest person in frame, from person segmentation, for faces too soft or turned for face
+    /// detection: from the top of that person's mask down to the neck, as wide as the widest row above it. People side by
+    /// side are told apart by the empty columns between them. Frame fractions from the top left; nil when no person
+    /// covers at least 1% of the frame.
+    public static func personHead(_ img: CGImage) -> CGRect? {
+        let req = VNGeneratePersonSegmentationRequest()
+        req.qualityLevel = .balanced
+        req.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        guard (try? VNImageRequestHandler(cgImage: img).perform([req])) != nil, let pb = req.results?.first?.pixelBuffer else { return nil }
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb), stride = CVPixelBufferGetBytesPerRow(pb)
+        let px = base.assumingMemoryBound(to: UInt8.self)
+        func on(_ x: Int, _ y: Int) -> Bool { px[y * stride + x] > 127 }
+        var columns = [Int](repeating: 0, count: w)
+        for y in 0..<h { for x in 0..<w where on(x, y) { columns[x] += 1 } }
+        guard Double(columns.reduce(0, +)) >= 0.01 * Double(w * h) else { return nil }
+        // Runs of occupied columns, bridging gaps narrower than 1% of the width; the fullest run is the person.
+        var runs: [(lo: Int, hi: Int, total: Int)] = []
+        let bridge = max(1, w / 100)
+        for x in 0..<w where columns[x] > 0 {
+            if let last = runs.last, x - last.hi <= bridge { runs[runs.count - 1] = (last.lo, x, last.total + columns[x]) } else { runs.append((x, x, columns[x])) }
+        }
+        guard let person = runs.max(by: { $0.total < $1.total }) else { return nil }
+        var rows: [(lo: Int, hi: Int, count: Int)?] = []
+        for y in 0..<h {
+            var lo = w, hi = -1, n = 0
+            for x in person.lo...person.hi where on(x, y) {
+                lo = min(lo, x)
+                hi = max(hi, x)
+                n += 1
+            }
+            rows.append(n > 0 ? (lo, hi, n) : nil)
+        }
+        guard let top = rows.firstIndex(where: { ($0?.count ?? 0) >= max(2, w / 200) }) else { return nil }
+        // Down from the crown the mask widens to the ears, narrows at the neck, then widens into the shoulders; the
+        // head ends at the neck, or 1.5 head widths down when the neck doesn't show. Sizes in picture pixels.
+        let sx = Double(img.width) / Double(w), sy = Double(img.height) / Double(h)
+        var widest = 0.0, bottom = top, center = 0.0
+        for y in top..<h {
+            let width = Double(rows[y]?.count ?? 0) * sx
+            if Double(y - top) * sy > 1.5 * max(widest, 1) && widest > 0 { break }
+            if widest > 0, Double(y - top) * sy > 0.6 * widest, width < 0.85 * widest { break }
+            if width > widest, Double(y - top) * sy < 1.2 * max(widest, width) {
+                widest = width
+                center = Double(rows[y]!.lo + rows[y]!.hi) / 2
+            }
+            bottom = y
+        }
+        guard widest > 0 else { return nil }
+        let headWidth = widest / sx
+        return CGRect(x: (center - headWidth / 2) / Double(w), y: Double(top) / Double(h), width: headWidth / Double(w), height: Double(bottom + 1 - top) / Double(h))
     }
 
     /// Skin-bearing middle of a face box: cheeks, nose and mouth, clear of hair, brows and background.
