@@ -11,6 +11,10 @@ struct CutlineApp: App {
     var body: some Scene {
         Settings { EmptyView() }
             .commands {
+                CommandGroup(after: .appInfo) {
+                    Button("Check for Updates…") { Task { await AppModel.shared.updater.check(interactive: true) } }
+                        .disabled(!AppModel.shared.updater.enabled)
+                }
                 CommandGroup(replacing: .newItem) {
                     Button("Open Project…") { AppModel.shared.showOpenPanel() }.keyboardShortcut("o")
                 }
@@ -41,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppModel.shared.open(URL(fileURLWithPath: path))
         }
         AppModel.shared.installKeyMonitor()
+        AppModel.shared.updater.start()
         NSApp.activate()
     }
 
@@ -89,6 +94,7 @@ final class AppModel {
     var draft: DraftNote?
     var tab: PanelTab = .notes
     var showPanel = true
+    let updater = Updater()
     var selectedComment: String?
     var fitRequest = 0
     @ObservationIgnored private var monitor: Any?

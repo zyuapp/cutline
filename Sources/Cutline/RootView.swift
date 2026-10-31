@@ -99,6 +99,12 @@ struct EditorView: View {
                     Tally(doc: doc, entry: entry)
                 }
             }
+            if let version = model.updater.available {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Update to \(version)") { model.updater.promptInstall(version) }
+                        .help("Cutline \(version) is available. You have \(model.updater.current).")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     model.showPanel.toggle()
@@ -406,6 +412,7 @@ struct WelcomeView: View {
                 Button("Open a Project…") { model.showOpenPanel() }
                     .buttonStyle(QuietButtonStyle(bordered: true))
                     .padding(.top, 6)
+                UpdateRow(updater: model.updater)
             }
             .padding(24)
             .frame(width: 420, alignment: .leading)
@@ -427,6 +434,30 @@ struct WelcomeView: View {
                 content()
             }
         }
+    }
+}
+
+/// The installed version, and an update when one is out.
+struct UpdateRow: View {
+    let updater: Updater
+
+    var body: some View {
+        HStack(spacing: 10) {
+            switch updater.state {
+            case .available(let v):
+                Text("Cutline \(v) is available").foregroundStyle(.primary)
+                Spacer(minLength: 8)
+                Button("Update and Relaunch") { Task { await updater.install(v) } }
+                    .buttonStyle(QuietButtonStyle(bordered: true))
+            case .installing(let v):
+                ProgressView().controlSize(.small)
+                Text("Updating to \(v)…").foregroundStyle(.secondary)
+            default:
+                if updater.enabled { Text("Version \(updater.current)").foregroundStyle(.tertiary) }
+            }
+        }
+        .font(Typeface.font(12.5))
+        .padding(.top, 10)
     }
 }
 

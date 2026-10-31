@@ -24,6 +24,8 @@ The script installs the notarized app in `/Applications` and, if [Claude Code](h
 claude mcp add -s user cutline -- /Applications/Cutline.app/Contents/MacOS/cutline-mcp
 ```
 
+Cutline checks for new releases when it opens and every few hours. When one is out, an **Update** button appears in the toolbar and on the welcome screen; it downloads the release, checks its checksum and signature, and relaunches. **Cutline → Check for Updates…** checks right away.
+
 Then ask Claude for a video:
 
 > Make a 45-second vertical cut of ~/Movies/interview.mov with bold captions, no pauses, and the logo in the corner.
