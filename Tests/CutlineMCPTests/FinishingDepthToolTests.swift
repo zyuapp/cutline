@@ -96,6 +96,16 @@ private func area(_ q: [SIMD2<Double>]) -> Double {
     #expect(!snapped.isError && snapped.plainText.contains("(points + subject edges)") && snapped.plainText.contains("to the subject matte's edge"), "\(snapped.plainText)")
     #expect(try bundle.loadProject().clip("c1")?.anim["fx.\(fx.id).points"] == curve)
 
+    // A correction holds exactly at its frame; tracking re-anchors there from both sides.
+    let fixed = corners(30).map { String(format: "%.5f,%.5f", ($0.x + 4) / 640, $0.y / 360) }.joined(separator: " ")
+    let corrected = await box.call("recipe", ["name": "track_mask", "args": ["clip": "c1", "mode": "planar", "correct": [["at": 1.2, "points": .string(fixed)]]]])
+    #expect(!corrected.isError && corrected.plainText.contains("1 correction(s)"), "\(corrected.plainText)")
+    let at12 = try #require(try bundle.loadProject().clip("c1")?.anim["fx.\(fx.id).points"]?.value(at: 1.2)?.string.flatMap(Curve.points))
+    #expect(zip(at12, corners(30)).allSatisfy { abs($0.0 * 640 - $1.x - 4) < 0.5 && abs($0.1 * 360 - $1.y) < 0.5 }, "\(at12)")
+    let miscounted = await box.call("recipe", ["name": "track_mask", "args": ["clip": "c1", "correct": [["at": 1, "points": "0.1,0.1 0.2,0.1 0.2,0.2"]]], "dry_run": true])
+    #expect(miscounted.isError && miscounted.plainText.contains("same order"), "\(miscounted.plainText)")
+    _ = await box.call("history", ["action": "undo"])
+
     // The matte view shows the tracked card: its share of the frame matches the card's area there.
     let matte = await box.call("timeline_frames", ["view": "matte", "clip": "c1", "effect": .string(fx.id), "times": [1.2]])
     #expect(!matte.isError, "\(matte.plainText)")

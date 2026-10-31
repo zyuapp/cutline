@@ -190,6 +190,7 @@ extension Toolbox {
             "track": Schema.string("Track id; default picks or creates a text layer"),
             "subtitles": Schema.string("Instead of one title, import an .srt or .vtt file as titles on a new track, styled by the other arguments (default: bottom, boxed); offset shifts them"),
             "offset": Schema.number("Seconds added to imported subtitle times"),
+            "preset": Schema.string("A ready style: lower_third, title_card or caption_box (a styled title the other arguments adjust), or an animated title graphic: lower_third_modern, lower_third_box, lower_third_pill, lower_third_line, card, quote, end_card, data_callout (title.* generators; text's first line is the name or title, the next lines the role or subtitle; change it later with param_set fx.gen.<param>)"),
         ]) { a, _ in a }.merging(Toolbox.setProp) { a, _ in a }), label: { a, _ in a.has("subtitles") ? "Import subtitles" : "Add title “\(Toolbox.excerpt(a.optString("text") ?? "", 34))”" }) { p, args in
             if let file = args.optString("subtitles") {
                 let url = URL(fileURLWithPath: (file as NSString).expandingTildeInPath)
@@ -205,25 +206,32 @@ extension Toolbox {
                 }
                 return "Imported \(cues.count) subtitles from \(url.lastPathComponent) onto \(track.id)."
             }
-            var spec = TextSpec(text: try args.string("text"))
+            let words = try args.string("text")
+            var spec = try Toolbox.textPreset(args.optString("preset"), words) ?? TextSpec(text: words)
             try Toolbox.applyText(&spec, args)
             guard args.has("start") else { throw EditError("Pass start") }
             let start = p.canvas.snap(try args.time("start"))
             let duration = try args.optTime("end").map { $0 - start } ?? args.optTime("duration") ?? 3
-            var clip = Clip(id: Project.newClipId(), kind: .text, name: String(spec.text.prefix(30)), start: start, duration: duration, text: spec)
+            let graphic = try args.optString("preset").flatMap { try Toolbox.titleGraphic($0, words, args) }
+            var clip = graphic.map { Clip(id: Project.newClipId(), kind: .generator, name: String(words.replacingOccurrences(of: "\n", with: " ").prefix(30)), start: start, duration: duration, effects: [$0]) }
+                ?? Clip(id: Project.newClipId(), kind: .text, name: String(spec.text.prefix(30)), start: start, duration: duration, text: spec)
             try Toolbox.applySet(&clip, args)
             let range = TimeRange(start, start + duration)
             let trackId: String
             if let t = args.optString("track") {
                 trackId = t
             } else if let free = p.tracks.last(where: { t in
-                t.kind == .video && !t.clips.isEmpty && t.clips.allSatisfy { $0.kind == .text } && !t.clips.contains { TimeRange($0.start, $0.end).intersection(range) != nil }
+                t.kind == .video && !t.clips.isEmpty && t.clips.allSatisfy { $0.kind == .text || ($0.kind == .generator && $0.effects.first?.type.hasPrefix("title.") == true) } && !t.clips.contains { TimeRange($0.start, $0.end).intersection(range) != nil }
             }) {
                 trackId = free.id
             } else {
                 trackId = p.addTrack(kind: .video, name: "Text", index: p.tracks.lastIndex { $0.kind == .video }.map { $0 + 1 } ?? 0).id
             }
             let placed = try p.addClip(clip, trackId: trackId, mode: .place)
+            if let g = graphic {
+                let shown = g.params.filter { $0.value.string?.isEmpty == false }.sorted { $0.key < $1.key }.map { "\($0.key) \"\($0.value.string!)\"" }.joined(separator: ", ")
+                return "Added \(g.type) graphic \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end)) (\(shown)); restyle with param_set fx.gen.<param> (catalog type:\(g.type))."
+            }
             return "Added text \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))" + spec.spanWarnings.map { "\nWarning: " + $0 }.joined()
         })
 
@@ -651,7 +659,7 @@ extension Toolbox {
 
     func registerBatchTool() {
         let batchable = edits.keys.sorted()
-        add(Tool(name: "batch", description: "Run several edit tools in order as ONE history entry (one undo step). If any fails, nothing is applied. Name an operation's result with as:\"x\" (the clip, effect, track or media it created) and use \"$x\" in later arguments, e.g. add an adjustment layer as \"adj\" then effect_add target \"$adj\"; \"$last\", \"$last_clip\", \"$last_effect\", \"$last_track\" and \"$last_media\" name the latest creations, here and in any tool. dry_run:true reports the combined changes without applying them.", schema: Schema.object([
+        add(Tool(name: "batch", description: "Run several edit tools in order as ONE history entry (one undo step). If any fails, nothing is applied. Name an operation's result with as:\"x\" (the clip, effect, track or media it created) and use \"$x\" in later arguments (names last the session, and as works on any tool call too), e.g. add an adjustment layer as \"adj\" then effect_add target \"$adj\"; \"$last\", \"$last_clip\", \"$last_effect\", \"$last_track\" and \"$last_media\" name the latest creations, here and in any tool. dry_run:true reports the combined changes without applying them.", schema: Schema.object([
             "label": Schema.string("History label for the whole change"),
             "operations": Schema.array(Schema.object([
                 "tool": Schema.string("Edit tool name", values: batchable),
@@ -667,7 +675,7 @@ extension Toolbox {
                 throw EditError("The project changed since \(expected) (now at \(current)); call history diff id:\"\(expected)\" and retry")
             }
             var lines: [String] = []
-            var vars: [String: String] = [:]
+            var vars = session.names
             var last = session.lastRefs
             let label = args.optString("label") ?? "Batch of \(ops.count) edits"
             let before = try session.project()
@@ -703,6 +711,7 @@ extension Toolbox {
                 return .text("Dry run, nothing changed.\n" + lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before))
             }
             let p = try session.edit(label, run)
+            session.names.merge(vars) { _, new in new }
             let queued = session.queuePictures(p).map { "\n" + $0 }.joined()
             var result = ToolResult.text(lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n") + Toolbox.changesText(p, before) + newIssues(p, before) + queued + "\n" + footer(p))
             if let times = args.raw["verify"]?.array?.compactMap(\.double), !times.isEmpty {
@@ -715,20 +724,38 @@ extension Toolbox {
         })
     }
 
-    /// Replaces "$name" in every string (and object key) with the id bound by an earlier operation.
-    static func substitute(_ j: JSON, _ vars: [String: String]) -> JSON {
+    /// Replaces "$name" in every string (and object key) with the id bound by an earlier operation; with
+    /// `skippingText`, free-text arguments (`literalKeys`) keep their words.
+    static func substitute(_ j: JSON, _ vars: [String: String], skippingText: Bool = false, key: String? = nil) -> JSON {
         guard !vars.isEmpty else { return j }
         func sub(_ s: String) -> String {
+            guard s.contains("$") else { return s }
             var out = s
             for (k, v) in vars.sorted(by: { $0.key.count > $1.key.count }) { out = out.replacingOccurrences(of: "$" + k, with: v) }
             return out
         }
         switch j {
-        case .string(let s): return .string(sub(s))
-        case .array(let a): return .array(a.map { substitute($0, vars) })
-        case .object(let o): return .object(Dictionary(o.map { (sub($0.key), substitute($0.value, vars)) }, uniquingKeysWith: { a, _ in a }))
+        case .string(let s): return skippingText && literalKeys.contains(key ?? "") ? j : .string(sub(s))
+        case .array(let a): return .array(a.map { substitute($0, vars, skippingText: skippingText, key: key) })
+        case .object(let o): return .object(Dictionary(o.map { (sub($0.key), substitute($0.value, vars, skippingText: skippingText, key: $0.key)) }, uniquingKeysWith: { a, _ in a }))
         default: return j
         }
+    }
+
+    static func isName(_ s: String) -> Bool {
+        s.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil
+    }
+
+    /// Batch operations with as given inside their args, moved beside them.
+    static func liftingBatchNames(_ args: JSON?) -> JSON? {
+        guard case .object(var o)? = args, let ops = o["operations"]?.array else { return args }
+        o["operations"] = .array(ops.map { op in
+            guard case .object(var m) = op, case .object(var inner)? = m["args"], let v = inner.removeValue(forKey: "as") else { return op }
+            if m["as"] == nil { m["as"] = v }
+            m["args"] = .object(inner)
+            return .object(m)
+        })
+        return .object(o)
     }
 
     /// Shortens text at a word boundary, with an ellipsis.
@@ -812,6 +839,61 @@ extension Toolbox {
         case .array, .object: return .string(j.encoded())
         default: throw EditError("Parameter values are numbers, booleans or strings; got \(j.encoded())")
         }
+    }
+
+    static let textPresets = ["lower_third", "title_card", "caption_box"]
+
+    /// The starting style of a text_add preset; nil without one or for a title graphic.
+    static func textPreset(_ name: String?, _ text: String) throws -> TextSpec? {
+        guard let name else { return nil }
+        switch name.lowercased().replacingOccurrences(of: "-", with: "_").replacingOccurrences(of: " ", with: "_") {
+        case "lower_third", "lowerthird", "name_title", "chyron":
+            return TextSpec(text: text, size: 0.045, weight: 650, background: RGBA(hex: "#000000A6"), shadow: false, align: .left, x: 0.27, y: 0.82, maxWidth: 0.45, animationIn: .slideUp)
+        case "title_card", "title", "headline", "card_title":
+            return TextSpec(text: text, size: 0.1, weight: 800, shadow: true, y: 0.5, maxWidth: 0.8, letterSpacing: 0.02, animationIn: .pop)
+        case "caption_box", "caption", "subtitle", "boxed":
+            return TextSpec(text: text, size: 0.045, weight: 600, background: RGBA(hex: "#000000B3"), shadow: false, y: 0.88, maxWidth: 0.8, animationIn: .none, animationOut: .none)
+        default:
+            guard titleGraphicType(name) != nil else {
+                let graphics = GeneratorCatalog.all.map(\.id).filter { $0.hasPrefix("title.") }.map { String($0.dropFirst(6)) }
+                throw EditError("No text preset \(name). Styles: \(textPresets.joined(separator: ", ")); title graphics: \(graphics.joined(separator: ", "))")
+            }
+            return nil
+        }
+    }
+
+    static func titleGraphicType(_ name: String) -> String? {
+        let key = name.lowercased().replacingOccurrences(of: "-", with: "_")
+        return [key, "title." + key].first { $0.hasPrefix("title.") && GeneratorCatalog.type($0) != nil }
+    }
+
+    /// A title.* generator for preset `name` with `text` split into its fields: the first line is the name or
+    /// title, the rest the role or subtitle (a quote's last line starting with a dash is its author).
+    static func titleGraphic(_ name: String, _ text: String, _ args: Args) throws -> Effect? {
+        guard try textPreset(name, text) == nil, let type = titleGraphicType(name), let spec = GeneratorCatalog.type(type) else { return nil }
+        let lines = text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        var params: [String: ParamValue] = [:]
+        func set(_ k: String, _ v: String) { if spec.spec(k) != nil, !v.isEmpty { params[k] = .string(v) } }
+        switch type {
+        case "title.quote":
+            var body = lines
+            if body.count > 1, let last = body.last, last.hasPrefix("—") || last.hasPrefix("-") || last.hasPrefix("–") {
+                set("author", last.trimmingCharacters(in: CharacterSet(charactersIn: "—–- ")))
+                body.removeLast()
+            }
+            set("quote", body.joined(separator: " "))
+        case "title.data_callout":
+            set("label", lines.joined(separator: " "))
+        default:
+            set("title", lines.first ?? text)
+            set("subtitle", lines.dropFirst().joined(separator: " "))
+        }
+        if let v = try args.color("color"), spec.spec("text_color") != nil { params["text_color"] = .string(v.hex) }
+        if let v = args.optString("font"), spec.spec("font") != nil { params["font"] = .string(v) }
+        if let v = args.optDouble("size"), spec.spec("size") != nil { params["size"] = .number(v) }
+        if let v = args.optDouble("text_x"), spec.spec("x") != nil { params["x"] = .number(v) }
+        if let v = args.optDouble("text_y"), spec.spec("y") != nil { params["y"] = .number(v) }
+        return Effect(id: "gen", type: type, params: params)
     }
 
     static func applyText(_ s: inout TextSpec, _ args: Args) throws {

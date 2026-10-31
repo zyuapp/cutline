@@ -212,4 +212,30 @@ extension Clip {
             return nil
         }
     }
+
+    /// `generatorText`, plus the words of credits, path and extruded text and burn-ins, for legibility checks.
+    public func onScreenText(at local: Seconds) -> GeneratorText? {
+        if let words = generatorText(at: local) { return words }
+        guard let type = effects.first(where: { GeneratorCatalog.type($0.type) != nil })?.type else { return nil }
+        func str(_ k: String) -> String { generatorValue(k, at: local)?.string ?? "" }
+        func num(_ k: String) -> Double { generatorValue(k, at: local)?.number ?? 0 }
+        func color(_ k: String) -> RGBA { generatorValue(k, at: local)?.color ?? RGBA(r: 1, g: 1, b: 1, a: 1) }
+        switch type {
+        case "credits":
+            let lines = str("text").components(separatedBy: "\n").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "#| ").union(.whitespaces)) }.filter { !$0.isEmpty }
+            guard !lines.isEmpty else { return nil }
+            let bg = color("background")
+            return GeneratorText(text: lines.prefix(3).joined(separator: " — "), y: str("mode") == "crawl" ? num("y") : 0.5, size: num("size"), color: color("color"), background: bg.a > 0.05 ? bg : nil)
+        case "timecode_burn":
+            let text = [str("label"), str("show"), str("watermark")].filter { !$0.isEmpty }.joined(separator: " ")
+            guard !text.isEmpty else { return nil }
+            let box = color("box")
+            return GeneratorText(text: text, y: str("position").hasPrefix("top") ? num("margin") : 1 - num("margin"), size: num("size"), color: color("color"), background: box.a > 0.05 ? box : nil)
+        case "text.path", "text.extruded":
+            guard !str("text").isEmpty else { return nil }
+            return GeneratorText(text: str("text"), y: num("y"), size: num("size"), color: color("color"), background: nil)
+        default:
+            return nil
+        }
+    }
 }

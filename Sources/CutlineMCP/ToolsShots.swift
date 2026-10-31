@@ -68,7 +68,6 @@ extension Toolbox {
         var region: CGRect
         var faceBox: CGRect?
         var hit: Double
-        var coverage: Double
         /// Why the sample is from another time than asked.
         var note: String?
     }
@@ -148,10 +147,8 @@ extension Toolbox {
         }
         let samples = ShotColor.samples(picture, in: region)
         guard let q = Qualifier.pick(samples) else { throw EditError("The sampled pixels at \(fmt2(at))s are nearly gray, so there is no hue to key; sample a colored area, or set q_hue_width 360 for a luma-only key") }
-        let frameSamples = ShotColor.pictureSamples(picture, step: 4)
-        let coverage = Double(frameSamples.filter { q.clean(Double(q.weight($0))) > 0.5 }.count) / Double(max(1, frameSamples.count))
         let hit = Double(samples.filter { q.clean(Double(q.weight($0))) > 0.9 }.count) / Double(max(1, samples.count))
-        return QualifySample(at: at, q: q, sampled: samples.count, region: region, faceBox: faceBox, hit: hit, coverage: coverage)
+        return QualifySample(at: at, q: q, sampled: samples.count, region: region, faceBox: faceBox, hit: hit)
     }
 
     /// Clip-local window keys (limit_x, limit_y, limit_width, limit_height) following the analyzed face track that
@@ -233,12 +230,13 @@ extension Toolbox {
             plans.append(QualifyPlan(sample: s, range: range, shotText: text, keys: keys(s, shot: i)))
         }
         let defaulted = !a.has("scope") && scope == .shot && existing == nil
-        return try runEdit("Qualify \(Toolbox.clipName(clipId, current))", dry: dry) { p in
+        /// Applies the plans; `matte` gives each plan's measured (full, partial) matte share of the frame.
+        func apply(_ p: inout Project, matte: [Int: (Double, Double)]) throws -> (text: String, ids: [String]) {
             guard let loc = p.locateClip(clipId) else { throw EditError("No clip \(clipId)") }
             var clip = p.tracks[loc.track].clips[loc.clip]
             var lines: [String] = []
-            var last = ""
-            for plan in plans {
+            var ids: [String] = []
+            for (index, plan) in plans.enumerated() {
                 let s = plan.sample
                 var e = existing ?? Effect(id: effectId ?? clip.nextEffectId(type), type: type)
                 let limit = e.params["limit"]?.string ?? "none"
@@ -264,18 +262,32 @@ extension Toolbox {
                 if let i = clip.effects.firstIndex(where: { $0.id == e.id }) { clip.effects[i] = e } else { clip.effects.append(e) }
                 let place = s.faceBox.map { String(format: "face %d (%.2f, %.2f, %.2f×%.2f)", a.optInt("n") ?? 0, $0.minX, $0.minY, $0.width, $0.height) } ?? String(format: "(%.2f, %.2f)", s.region.midX, s.region.midY)
                 var text = (s.note.map { $0 + "\n" } ?? "") + "Qualifier on \(clipId) effect \(e.id) (\(e.type), limit \(e.params["limit"]!.string!))" + (plan.shotText.map { ", only in \($0)" } ?? "") + " sampled from \(s.sampled) pixels at \(place), \(fmt2(s.at))s: \(s.q.summary). "
-                text += String(format: "%.0f%% of the sampled area keys fully; the colors cover %.0f%% of the whole frame.", s.hit * 100, s.coverage * 100)
+                text += String(format: "%.0f%% of the sampled area keys fully", s.hit * 100)
+                let cover = matte[index]
+                if let (full, partial) = cover { text += String(format: "; its matte (window, softness and cleanup included) is %.0f%% of the frame white, %.0f%% partial at %@s, as timeline_frames view:\"matte\" shows.", full * 100, partial * 100, fmt2(s.at)) } else { text += "." }
                 if let n = plan.keys?["limit_x"]?.count { text += " The ellipse window follows the face through the shot (\(n) keys)." }
                 else if shape != nil && window && s.faceBox != nil { text += " An ellipse window on the face keeps the key there" + (faces == nil ? "; run media_analyze features:[\"shots\"] for face tracks and qualify again to make it follow the face." : ".") }
-                else if shape == nil && s.coverage > 0.35 { text += " That is a lot of the frame: narrow it with q_hue_width or q_sat_max, or add a window (limit ellipse+qualifier)." }
+                else if shape == nil, let (full, partial) = cover, full + partial / 2 > 0.35 { text += " That is a lot of the frame: narrow it with q_hue_width or q_sat_max, or add a window (limit ellipse+qualifier)." }
                 lines.append(text)
-                last = e.id
+                ids.append(e.id)
             }
             p.tracks[loc.track].clips[loc.clip] = clip
             if defaulted { lines.append("\(clipId) plays \(shots.count) shots, so the grade acts only in the shot at \(fmt2(plans.first?.sample.at ?? at))s; scope:\"each_shot\" keys every shot, scope:\"clip\" the whole clip.") }
             lines += skipped
-            return lines.joined(separator: "\n") + "\nCheck it with timeline_frames view:\"matte\" clip:\(clipId) effect:\(last); refine with q_clean_black, q_clean_white, q_denoise and q_blur."
+            return (lines.joined(separator: "\n") + "\nCheck it with timeline_frames view:\"matte\" clip:\(clipId) effect:\(ids.last ?? ""); refine with q_clean_black, q_clean_white, q_denoise and q_blur.", ids)
         }
+        // Measure the matte the effect renders, on a trial copy.
+        var trial = current
+        let ids = try apply(&trial, matte: [:]).ids
+        var matte: [Int: (Double, Double)] = [:]
+        if let built = try? await session.timeline(for: trial, shared: false) {
+            for (i, plan) in plans.enumerated() where ids.indices.contains(i) {
+                built.scene.matteView = RenderScene.MatteView(clip: clipId, effect: ids[i])
+                let t = min(max(plan.sample.at, c.start), c.end - 1 / max(1, current.canvas.fps))
+                if let f = try? await Frames.timeline(built, times: [t], maxSize: CGSize(width: 480, height: 480)).first { matte[i] = Toolbox.matteCoverage(f.image) }
+            }
+        }
+        return try runEdit("Qualify \(Toolbox.clipName(clipId, current))", dry: dry) { p in try apply(&p, matte: matte).text }
     }
 
     // MARK: split_at_shots

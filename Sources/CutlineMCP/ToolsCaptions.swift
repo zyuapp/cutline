@@ -113,13 +113,14 @@ extension Toolbox {
             return "Caption edit on \(media).w\(first)–w\(last) (\"\(old)\")"
         })
 
-        add(Tool(name: "captions_translate", description: "Translate the caption cues into other languages for subtitles. With only language (or languages: [..] for several at once), Apple's on-device Translation framework translates every cue (each language must be installed in System Settings › General › Language & Region › Translation Languages; a server can't download one); with several languages, one that can't be translated is reported and the rest are stored. cues [{id, text}] stores your own translation per cue (ids from captions_list), and file imports an .srt or .vtt, matching its cues to these by time; both take one language. Translations are keyed by each cue's source words, so they follow later edits; subtitles are rewrapped to each language's line limits and re-timed to its reading speed (into the pauses around a cue and spare time of its neighbours), and the result lists cues still too fast to read. Export them with export subtitle_languages; captions_set language burns one in; captions_list language shows them. clear:true removes the language(s).", schema: Schema.object([
+        add(Tool(name: "captions_translate", description: "Translate the caption cues into other languages for subtitles. With only language (or languages: [..] for several at once), Apple's on-device Translation framework translates every cue in context (runs of consecutive cues as one document, so pronouns and tu/vous-style register stay consistent; register formal|informal picks one) (each language must be installed in System Settings › General › Language & Region › Translation Languages; a server can't download one); with several languages, one that can't be translated is reported and the rest are stored. cues [{id, text}] stores your own translation per cue (ids from captions_list), and file imports an .srt or .vtt, matching its cues to these by time; both take one language. Translations are keyed by each cue's source words, so they follow later edits; subtitles are rewrapped to each language's line limits and re-timed to its reading speed (into the pauses around a cue and spare time of its neighbours), and the result lists cues still too fast to read. Export them with export subtitle_languages; captions_set language burns one in; captions_list language shows them. clear:true removes the language(s).", schema: Schema.object([
             "language": Schema.string("Target language tag, e.g. fr, de, pt-BR"),
             "languages": Schema.strings("Several target languages translated in one call, e.g. [\"fr\", \"de\", \"ja\"]"),
             "cues": Schema.array(Schema.object(["id": Schema.integer("Cue number from captions_list"), "text": Schema.string("Translated text; \"\" removes")], required: ["id", "text"]), "Your translation of these cues"),
             "file": Schema.string("An .srt or .vtt in that language to import"),
             "clear": Schema.bool("Remove these languages' translations"),
             "condense": Schema.bool("On-device: cues still too fast to read after re-timing are translated again from a condensed source (fillers, hedges and repeats dropped) and the shorter text kept; default true"),
+            "register": Schema.string("On-device: how the listener is addressed where the language distinguishes (French tu/vous, German du/Sie); default follows the dialogue, consistently across cues", values: Translator.Register.allCases.map(\.rawValue)),
         ])) { [unowned self] args in
             let b = try session.requireBundle()
             var langs: [String] = []
@@ -128,6 +129,10 @@ extension Toolbox {
                 if !tag.isEmpty, !langs.contains(tag) { langs.append(tag) }
             }
             guard !langs.isEmpty else { throw EditError("Pass language (e.g. \"fr\") or languages: [\"fr\", \"de\"]") }
+            let register = try args.optString("register").map { v -> Translator.Register in
+                guard let r = Translator.Register(rawValue: v.lowercased()) else { throw EditError("register is formal or informal") }
+                return r
+            }
             let p0 = try session.project()
             let transcripts = b.transcripts(for: p0)
             let cues = p0.captionCues(transcripts: transcripts)
@@ -166,7 +171,7 @@ extension Toolbox {
                 let source = p0.spokenLanguage(transcripts: transcripts)
                 for lang in langs {
                     do {
-                        let out = try await Translator.translate(cues.map(\.text), from: source, to: lang)
+                        let out = try await Translator.translate(cues.map(\.text), from: source, to: lang, context: true, register: register)
                         texts[lang] = Dictionary(uniqueKeysWithValues: out.enumerated().map { ($0.offset, $0.element) })
                         how[lang] = "on-device (\(source)→\(lang))"
                     } catch {
@@ -185,7 +190,7 @@ extension Toolbox {
                     var q = p0
                     try q.setCaptionTranslations(lang, texts: texts[lang]!, transcripts: transcripts)
                     let sources = q.tooFastCaptionCues(language: lang, transcripts: transcripts).compactMap { i in Project.condensedForSubtitles(cues[i].text).map { (i, $0) } }
-                    guard !sources.isEmpty, let out = try? await Translator.translate(sources.map(\.1), from: source, to: lang) else { continue }
+                    guard !sources.isEmpty, let out = try? await Translator.translate(sources.map(\.1), from: source, to: lang, register: register) else { continue }
                     let now = q.cueTranslations(lang, cues: cues).texts
                     for ((i, _), t) in zip(sources, out) where !t.isEmpty && t.count < (now[i]?.count ?? 0) {
                         texts[lang]![i] = t

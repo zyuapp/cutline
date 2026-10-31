@@ -116,3 +116,82 @@ private func worstError(_ keys: [RotoTracker.Key], frame i: Int) throws -> Doubl
     #expect(p != nil && abs(p!.x - 0.6) < 0.003 && abs(p!.y - 0.5) < 1e-6, "\(String(describing: p))")
     #expect(RotoTracker.snap(SIMD2(0.2, 0.5), prev: SIMD2(0.2, 0.3), next: SIMD2(0.2, 0.7), mask: mask, radius: 0.05, aspect: 2) == nil)
 }
+
+/// A 0/1 mask with a disk of radius `r` (frame heights) at `c` and a smaller blob far away.
+private func disks(_ c: SIMD2<Double>, _ r: Double, width mw: Int = 320, height mh: Int = 180) -> MaskBuffer {
+    let aspect = Double(mw) / Double(mh)
+    let values = (0..<(mw * mh)).map { i -> Float in
+        let p = SIMD2((Double(i % mw) + 0.5) / Double(mw), (Double(i / mw) + 0.5) / Double(mh))
+        let main = simd_length((p - c) * SIMD2(aspect, 1)) < r
+        let other = simd_length((p - SIMD2(0.9, 0.2)) * SIMD2(aspect, 1)) < 0.06
+        return main || other ? 1 : 0
+    }
+    return MaskBuffer(width: mw, height: mh, values: values)
+}
+
+@Test func outlinesFollowTheCoveredMatteRegion() throws {
+    let mask = disks(SIMD2(0.35, 0.5), 0.3)
+    // A rough square over the disk picks it, not the small blob.
+    let seed = [SIMD2(0.25, 0.35), SIMD2(0.45, 0.35), SIMD2(0.45, 0.65), SIMD2(0.25, 0.65)]
+    let region = try #require(Contour.region(mask, seed: seed))
+    #expect(region.values.reduce(0, +) > 5000)
+    let outline = try #require(Contour.outline(region, count: 24, aspect: 16.0 / 9, after: nil))
+    #expect(outline.count == 24)
+    for p in outline {
+        let r = simd_length((p - SIMD2(0.35, 0.5)) * SIMD2(16.0 / 9, 1))
+        #expect(abs(r - 0.3) < 0.015, "outline point \(p) at radius \(r)")
+    }
+    // Seeded on the blob, the blob's outline; the next frame's outline starts where this one does.
+    let blob = try #require(Contour.region(mask, seed: [SIMD2(0.88, 0.18), SIMD2(0.92, 0.18), SIMD2(0.92, 0.22)]))
+    #expect(blob.values.reduce(0, +) < 1000)
+    let next = try #require(Contour.region(disks(SIMD2(0.37, 0.5), 0.3), seed: outline))
+    let moved = try #require(Contour.outline(next, count: 24, aspect: 16.0 / 9, after: outline))
+    #expect(zip(moved, outline).allSatisfy { simd_distance($0, $1) < 0.05 }, "outlines line up from frame to frame")
+    // Rotated by a quarter turn, an outline lines up with the one before again.
+    let turned = Array(outline[6...] + outline[..<6])
+    #expect(Contour.aligned(turned, to: outline) == outline)
+}
+
+@Test func groupMotionIgnoresOutliers() throws {
+    var pairs: [(SIMD2<Double>, SIMD2<Double>)] = []
+    let a = 2.0 * .pi / 180
+    func moved(_ p: SIMD2<Double>) -> SIMD2<Double> { SIMD2(cos(a) * p.x - sin(a) * p.y + 6, sin(a) * p.x + cos(a) * p.y - 3) }
+    for i in 0..<40 {
+        let p = SIMD2(Double(i % 8) * 20 + 100, Double(i / 8) * 25 + 80)
+        // Rotated 2° and shifted; every fifth pair is a background point that stayed put.
+        pairs.append((p, i % 5 == 0 ? p : moved(p)))
+    }
+    let fit = try #require(ShapeTracker.groupMotion(pairs, threshold: 1.5))
+    #expect(fit.inliers.count >= 32 && (0..<40).filter { $0 % 5 != 0 }.allSatisfy(fit.inliers.contains))
+    #expect(simd_distance(fit.map(SIMD2(130, 90)), moved(SIMD2(130, 90))) < 0.05)
+}
+
+@Test func correctionsReanchorTrackingFromBothSides() async throws {
+    // A fake tracker that drifts right 0.01 per second from wherever it starts.
+    let shape = [SIMD2(0.2, 0.2), SIMD2(0.4, 0.2), SIMD2(0.3, 0.4)]
+    func run(_ from: Seconds, _ to: Seconds, _ pts: [SIMD2<Double>]) -> RotoTracker.Result? {
+        guard abs(to - from) > 0.02 else { return nil }
+        let n = Int((abs(to - from) / 0.1).rounded())
+        let keys = (0...n).map { k -> RotoTracker.Key in
+            let t = from + (to > from ? 1 : -1) * Double(k) * 0.1
+            return RotoTracker.Key(t: t, points: pts.map { $0 + SIMD2(0.01 * abs(t - from), 0) }, confidence: 1)
+        }
+        return RotoTracker.Result(keys: keys, cut: nil)
+    }
+    let fixed = shape.map { $0 + SIMD2(0, 0.1) }
+    let (keys, cuts) = try await RotoTracker.anchored([.init(t: 1, points: shape), .init(t: 3, points: fixed)], lo: 0, hi: 4) { run($0, $1, $2) }
+    #expect(cuts.isEmpty)
+    func at(_ t: Seconds) throws -> RotoTracker.Key { try #require(keys.min { abs($0.t - t) < abs($1.t - t) }) }
+    #expect(try at(1).points == shape && at(3).points == fixed, "exact at each anchor")
+    // Midway the forward and backward runs are blended half and half.
+    let mid = try at(2).points[0]
+    #expect(abs(mid.y - 0.25) < 1e-6 && abs(mid.x - 0.21) < 1e-6, "\(mid)")
+    #expect(keys.first!.t == 0 && keys.last!.t == 4 && zip(keys, keys.dropFirst()).allSatisfy { $0.t < $1.t })
+
+    // Blended into a main track, a correction's re-anchored track rules at its time and is gone a second away.
+    let main = (0...40).map { RotoTracker.Key(t: Double($0) * 0.1, points: shape, confidence: 1) }
+    let blended = RotoTracker.blended(base: main, overlay: keys, near: [3], radius: 1)
+    func near(_ t: Seconds) throws -> RotoTracker.Key { try #require(blended.min { abs($0.t - t) < abs($1.t - t) }) }
+    #expect(try near(3).points == fixed && near(1.5).points == shape && near(4).points == shape)
+    #expect(try abs(near(2.5).points[0].y - 0.2) > 0.01 && near(2.5).points[0].y < 0.3)
+}

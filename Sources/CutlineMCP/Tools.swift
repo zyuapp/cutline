@@ -135,16 +135,33 @@ final class Toolbox {
             return r
         }
         do {
-            let given = name == "batch" ? args : try args.map { try Toolbox.resolveLast($0, session.lastRefs) }
+            var given = name == "batch" ? Toolbox.liftingBatchNames(args) : try args.map { try Toolbox.resolveLast(Toolbox.substitute($0, session.names, skippingText: true), session.lastRefs) }
+            var alias: String?
+            if name != "batch", case .object(var o)? = given, let v = o.removeValue(forKey: "as") {
+                guard let s = v.string, Toolbox.isName(s) else { throw EditError("as names what this call creates for \"$name\" in later calls: letters, digits and _, e.g. as:\"intro\"") }
+                alias = s
+                given = .object(o)
+            }
             let args = try resolvingAliases(name, given, schema: tool.schema)
             try checkArguments(name, args, schema: tool.schema)
             let project = try? session.project()
             installResolvers(project)
             let resolved = try args.map { try Toolbox.resolveMediaAliases($0, media: project?.media ?? []) }
             var result = try await tool.run(Args(resolved))
-            if !result.isError, let note = recordCreated(name, before: project, after: try? session.project()),
-               let i = result.content.firstIndex(where: { $0["text"]?.string != nil }), let text = result.content[i]["text"]?.string {
-                result.content[i] = ["type": "text", "text": .string(text + "\n" + note)]
+            let after = try? session.project()
+            var notes: [String] = []
+            if !result.isError, let note = recordCreated(name, before: project, after: after) { notes.append(note) }
+            if !result.isError, let alias {
+                let dry = resolved?["dry_run"]?.bool == true
+                if !dry, let made = after.flatMap({ Toolbox.created(project, $0).first?.ids.first }) {
+                    session.names[alias] = made
+                    notes.append("$\(alias) = \(made)")
+                } else {
+                    notes.append("as:\"\(alias)\" named nothing: this call \(dry ? "was a dry run" : "created no clip, effect, track or media")")
+                }
+            }
+            if !notes.isEmpty, let i = result.content.firstIndex(where: { $0["text"]?.string != nil }), let text = result.content[i]["text"]?.string {
+                result.content[i] = ["type": "text", "text": .string(text + "\n" + notes.joined(separator: "; "))]
             }
             return result
         } catch {

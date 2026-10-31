@@ -65,7 +65,7 @@ extension Toolbox {
             guard s.contains("$"), !literalKeys.contains(key ?? "") else { return j }
             let out = try replacingLast(s, refs)
             if strict, out == s, s.range(of: #"^\$[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_.+-]*)?$"#, options: .regularExpression) != nil {
-                throw EditError("\"\(s)\" is a batch variable, bound only inside one batch call (as:\"name\"). Outside batch use $last, $last_clip, $last_track, $last_media or $last_effect for the ids the latest calls created")
+                throw EditError("\"\(s)\" names nothing yet: add as:\"\(s.dropFirst().split(separator: ".").first ?? "")\" to the call that creates it (any tool, or a batch operation), or use $last, $last_clip, $last_track, $last_media or $last_effect for the ids the latest calls created")
             }
             return .string(out)
         case .array(let a): return .array(try a.map { try resolveLast($0, refs, key: key, strict: strict) })

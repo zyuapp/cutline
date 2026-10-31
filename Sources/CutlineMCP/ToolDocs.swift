@@ -96,7 +96,7 @@ extension Toolbox {
             "allow_stretch": "Allow audio below 0.25×",
         ]),
         "text_add": ToolBrief(text: "Add a title, lower third or label on a text layer (or import .srt/.vtt as titles).", args: [
-            "text": "\\n breaks lines", "start": "", "end": "", "duration": "Default 3", "track": "",
+            "text": "\\n breaks lines", "start": "", "end": "", "duration": "Default 3", "track": "", "preset": "lower_third, title_card, caption_box, or a title.* graphic",
             "size": "Fraction of the short side, e.g. 0.07", "text_x": "Center, fraction of width", "text_y": "Center, fraction of height",
             "font": "system, rounded, serif, mono or a family", "weight": "100–900", "color": "Hex", "background": "Hex box or none",
             "stroke": "Hex or none", "stroke_width": "Fraction of size", "shadow": "Default true", "letter_spacing": "Fraction of size",
@@ -218,7 +218,7 @@ extension Toolbox {
             "tracks": "Each track's sound too", "platform": "Text against its UI-free area", "reference": "For compare: clip id or time",
         ]),
         "recipe": ToolBrief(text: recipeDescription, args: ["name": "", "args": "", "wait": "Seconds for analysis"]),
-        "batch": ToolBrief(text: "Edit tools in order as ONE undo step, all or nothing. as:\"x\" names a result \"$x\"; $last, $last_clip… work anywhere.", args: [
+        "batch": ToolBrief(text: "Edit tools in order as ONE undo step, all or nothing. as:\"x\" (here or on any call) names a result \"$x\" for the session; $last, $last_clip… work anywhere.", args: [
             "operations": "[{tool, args, as}]", "operations[].tool": "Edit tool", "operations[].args": "", "operations[].as": "",
             "label": "History label", "if_history": "Only if the current entry is this id", "verify": "Timeline times to render after",
         ]),
@@ -232,7 +232,7 @@ extension Toolbox {
         ]),
         "captions_translate": ToolBrief(text: "Translate caption cues (on-device, or your cues/.srt) for subtitles in other languages; follows edits.", args: [
             "language": "e.g. fr", "languages": "", "cues": "[{id, text}] your own", "cues[].id": "", "cues[].text": "", "file": ".srt/.vtt to import", "clear": "",
-        ], hide: ["condense"]),
+        ], hide: ["condense", "register"]),
         "caption_edit": ToolBrief(text: "Fix one caption cue (by at or from/to words): text, timing, hide, break_before, merge with the next, or clear edits.", args: [
             "at": "Time inside the cue", "from": "\"<media>.wN\"", "to": "Default from", "text": "", "start_offset": "", "end_offset": "",
             "hidden": "", "break_before": "New cue at the first word", "merge": "Join with the next cue", "clear": "Remove edits on those words",

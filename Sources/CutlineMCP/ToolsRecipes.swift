@@ -167,6 +167,7 @@ extension Toolbox {
             let lo = try a.optTime("start") ?? 0, hi = try a.optTime("end") ?? current.duration
             let chosen = try a.strings("music").map { try Toolbox.musicClips($0, current) }
             let beats = (chosen.map { Toolbox.beats(of: $0, index) } ?? current.timelineBeats(index)).filter { $0 >= lo - 1e-3 && $0 <= hi + 1e-3 }
+            let downbeats = (chosen.map { Toolbox.beats(of: $0, index, downbeats: true) } ?? current.timelineBeats(index, downbeats: true)).filter { $0 >= lo - 1e-3 && $0 <= hi + 1e-3 }
             if let chosen, beats.count < 2 {
                 let unanalyzed = Set(chosen.compactMap(\.mediaId).filter { index.beats[$0] == nil })
                 throw EditError("No beats in \(chosen.map(\.id).joined(separator: ", ")) between \(fmt2(lo)) and \(fmt2(hi))" + (unanalyzed.isEmpty ? "" : "; run media_analyze media_id:\(unanalyzed.sorted().joined(separator: ",")) features:[\"beats\"]"))
@@ -208,7 +209,7 @@ extension Toolbox {
                 var trackId = a.optString("track") ?? "new"
                 if trackId == "new" { trackId = p.addTrack(kind: .video, name: "Beat cut").id }
                 let before = p
-                return try p.beatCut(footage: footage, beats: beats, every: a.optInt("every") ?? 2, trackId: trackId, from: lo, align: align, music: music, energy: energy) { c in
+                return try p.beatCut(footage: footage, beats: beats, every: a.optInt("every") ?? 2, trackId: trackId, from: lo, align: align, music: music, downbeats: downbeats, energy: energy) { c in
                     Toolbox.fillFraming(c, before, shots)
                 } + notes.map { "\n" + $0 }.joined()
             }
