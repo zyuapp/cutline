@@ -225,6 +225,7 @@ extension Toolbox {
         "comments_list": ToolBrief(text: "The human's notes pinned to frames. Read at the start of every turn; resolve with comment_reply.", args: [
             "status": "Default open", "frames": "Attach frames, default true",
         ]),
+        "comments_wait": ToolBrief(text: "Wait for the human's next preview note. Call after each round; repeat until done.", args: ["timeout": "Default 90 s"]),
         "comment_reply": ToolBrief(text: "Reply to a comment and resolve it.", args: ["comment_id": "", "text": "", "resolve": "Default true"]),
         "comment_add": ToolBrief(text: "Leave the human a note at a timeline time.", args: ["text": "", "at": ""]),
         "captions_list": ToolBrief(text: "Caption cues with times, text ([word?] unsure) and source words (\"<media>.wN\" for caption_edit), captioned tracks, overlapping speech, translations.", args: [

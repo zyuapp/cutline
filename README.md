@@ -2,10 +2,10 @@
 
 A macOS video editor that Claude drives through MCP. You don't edit: you watch the preview, scrub, and pin notes on frames. Claude reads the notes and changes the edit.
 
-- **Agent-native editing**: 58 MCP tools cover what Premiere or Final Cut can do: effects, color grading, transitions, speed ramps, masks, keying, nesting, multicam, motion graphics, pro audio finishing and delivery.
+- **Agent-native editing**: 59 MCP tools cover what Premiere or Final Cut can do: effects, color grading, transitions, speed ramps, masks, keying, nesting, multicam, motion graphics, pro audio finishing and delivery.
 - **The agent can see and hear**: on-device transcripts with speakers and emphasis, beats, shot descriptions, faces, sound events, and rendered frames. Picture, loudness and legibility come back as numbers.
 - **Same pixels everywhere**: the preview and the export both use one Metal compositor built on AVFoundation.
-- **Notes on frames**: press C in the preview, click the spot, and type. Claude replies in the same thread.
+- **Notes on frames**: press C in the preview, click the spot, and type. While Claude is watching, it picks up each note, changes the edit and replies in the same thread; you never switch back to the terminal.
 - **Every edit is undoable**: each tool call is a history entry, and `batch` groups several.
 
 ![Cutline showing a note pinned on a frame, Claude's reply, and the timeline](docs/screenshots/editor.png)
@@ -18,19 +18,25 @@ Requires macOS 26 on Apple Silicon.
 curl -fsSL https://raw.githubusercontent.com/zyuapp/cutline/main/install.sh | sh
 ```
 
-The script installs the notarized app in `/Applications` and, if [Claude Code](https://docs.claude.com/en/docs/claude-code) is installed, connects the `cutline` MCP server for every project. To install by hand, download `Cutline.dmg` from the [latest release](https://github.com/zyuapp/cutline/releases/latest), drag Cutline to Applications, then run:
+The script installs the notarized app in `/Applications` and, if [Claude Code](https://docs.claude.com/en/docs/claude-code) is installed, connects the `cutline` MCP server for every project. Otherwise the **Connect** button in Cutline does it. To install by hand, download `Cutline.dmg` from the [latest release](https://github.com/zyuapp/cutline/releases/latest), drag Cutline to Applications, then run:
 
 ```sh
 claude mcp add -s user cutline -- /Applications/Cutline.app/Contents/MacOS/cutline-mcp
 ```
 
-Cutline checks for new releases when it opens and every few hours. When one is out, an **Update** button appears in the toolbar and on the welcome screen; it downloads the release, checks its checksum and signature, and relaunches. **Cutline → Check for Updates…** checks right away.
+Cutline updates itself. The app and the MCP server check for new releases, download them in the background and verify the checksum and signature. The update installs when Cutline quits, before Claude next opens the preview, or by a quiet relaunch onto the same project and playhead after the app has sat in the background for 10 minutes. **Cutline → Check for Updates…** checks right away and offers to restart.
 
 Then ask Claude for a video:
 
 > Make a 45-second vertical cut of ~/Movies/interview.mov with bold captions, no pauses, and the logo in the corner.
 
-Claude creates a `.cutline` project and opens it in the preview window.
+Claude creates a `.cutline` project and opens it in the preview window without taking focus from your terminal. After each round of changes Claude waits for your notes (`comments_wait`). The status row above the picture says what Claude is doing (**watching for notes**, **working on your note**, **editing**, **exporting**) and a note Claude picked up shows **Claude is on it**. When you're happy, click **Export**: Claude exports without asking and the file appears there with **Play** and **Show in Finder**. **Done** ends the review without exporting.
+
+To have Claude also react to notes you leave while it's idle, start Claude Code with Cutline as a [channel](https://code.claude.com/docs/en/channels) (research preview):
+
+```sh
+claude --dangerously-load-development-channels server:cutline
+```
 
 ## What Claude can do
 
@@ -41,7 +47,7 @@ Claude creates a `.cutline` project and opens it in the preview window.
 | Structure | `assemble` (word handles), `cut_silences` (pauses from speech or level), `source_cut`, `range_delete`, `clip_add` (media, color, adjustment layer, generated graphics), `text_add` (per-word animation), `clip_update`, `clip_split`, `clip_delete`, `trim` (ripple, roll, slip, slide, J/L), `sequence_nest`, `multicam_create` (synced angles in one multicam clip), `multicam_cut` (switch the live angle at a time or for a range), `multicam_angles`, `track_add`, `track_update`, `markers` |
 | Look and sound | `param_set` (set, animate or bind any parameter), `effect_add` (video, color, mask, key and audio effects on clips, tracks, adjustment layers and the master; lens distortion, chromatic aberration, vignette and rolling shutter repair), `audio_bus` (submix buses with effects, fader automation, mute/solo and sends; DME stems), `voiceover_record` (record voice-over or ADR takes in the preview app), `transition_set`, `captions_set`, `captions_list`, `caption_edit` (rewrite, retime, hide, split or join cues), `captions_translate` (subtitles in several languages at once, on-device or supplied) |
 | Reuse | `catalog`, `recipe` (duck, loudness, J/L cuts, speed ramps, freeze frames, punch-ins, PiP, split screens, reframing, beat cuts, looks, glitches, whip pans, kinetic text, multicam, follow, tracked roto, templates), `template_save` (templates shared as files), `batch` |
-| Review | `timeline_frames` (multicam:true shows every angle side by side), `timeline_transcript`, `timeline_measure` (loudness, true peak, exposure, color cast, flashes, text contrast, safe areas), `comments_list`, `comment_reply`, `comment_add`, `preview_seek`, `preview_state` |
+| Review | `timeline_frames` (multicam:true shows every angle side by side), `timeline_transcript`, `timeline_measure` (loudness, true peak, exposure, color cast, flashes, text contrast, safe areas), `comments_list`, `comments_wait` (wait for the human's next note), `comment_reply`, `comment_add`, `preview_seek`, `preview_state` |
 | Output | `export` (HEVC, H.264, ProRes 422 HQ/LT/Proxy and 4444/XQ, DNxHR and XDCAM with ffmpeg; QuickTime timecode track, bars, tone, slate and 2-pop leader; platform checks including EBU R128 and ATSC A/85 broadcast, embedded subtitles and chapters, SRT/VTT/TTML, OTIO, FCPXML, EDL, FCP7 XML, AAF with linked media and handles for Pro Tools/Media Composer, stems, the base version plus variants per call) |
 
 Every parameter has a path, such as `transform.scale`, `audio.volume`, `text.color` or `fx.blur1.radius`, and any number or color can be animated with eased keyframes. Times can be anchors that survive later edits, such as a transcript word (`interview.w42`), a beat (`music.b16`, `beat:16`), a shot (`broll.s3`), a clip edge (`clip_ab12cd.end-0.5`) or a marker (`marker:Intro`). Every edit takes `dry_run` to preview its changes.
@@ -54,6 +60,9 @@ A project is a `.cutline` folder of plain JSON:
 project.json    canvas, media, tracks, clips, captions, markers
 history.json    edit history; snapshots in history/
 comments.json   notes from the preview and replies from Claude
+preview.json    the preview's playhead, while it has the project open
+agent.json      whether Claude is watching for notes or working on one
+export.json     the latest export, for the preview's status row
 analysis/       transcripts, audio levels, scenes, beats, speakers, shots, faces, sounds per media file
 cache/          rendered audio stems
 exports/        rendered videos
@@ -70,6 +79,7 @@ Media is referenced in place, not copied.
 | J K L | Shuttle back, stop, forward |
 | C | Pin a note to the current frame |
 | Home, End | Go to start or end |
+| ⇧⌘L | Back to the library |
 | ⌘-scroll, pinch | Zoom the timeline |
 
 ## Develop
@@ -95,7 +105,7 @@ The repo's `.mcp.json` points Claude Code at the development build, so opening C
 
 ## Design
 
-A native macOS 26 app: the system toolbar and inspector, Liquid Glass on the transport controls only, and San Francisco throughout, with a neutral background so the picture is judged correctly. Yellow marks your notes and lavender marks everything Claude does: note pins, replies, the live status dot and the outline on a clip Claude just changed.
+A native macOS 26 app: a project grid with poster frames, the editor with the system toolbar and inspector, and a small Settings window for the Claude Code connection and updates. Floating controls (the status pill above the picture, the transport, Done and Export) sit on Liquid Glass, San Francisco throughout, with a neutral background so the picture is judged correctly. Yellow marks your notes and lavender marks everything Claude does: note pins, replies, the live status dot and the outline on a clip Claude just changed.
 
 ## License
 

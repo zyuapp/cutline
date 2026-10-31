@@ -187,14 +187,16 @@ extension Toolbox {
             "end": Schema.time("Stop playback here; implies play"),
         ])) { [unowned self] args in
             var lines: [String] = []
-            if args.bool("open", default: false) { lines.append(try session.openPreview()) }
+            if args.bool("open", default: false) || args.has("time"), let opened = try await session.ensurePreview() { lines.append(opened) }
+            if args.bool("open", default: false), lines.isEmpty { try session.sendPreview(["action": "reveal"]) }
             if let t = try args.optTime("time") {
                 var info: [String: Any] = ["action": "seek", "time": t, "play": args.bool("play", default: false) || args.has("end")]
                 if let end = try args.optTime("end") { info["end"] = end }
                 try session.sendPreview(info)
                 lines.append("Preview at \(Frames.timecode(t))" + (args.has("end") ? ", playing to \(Frames.timecode(try args.time("end")))" : ""))
             }
-            guard !lines.isEmpty else { throw EditError("Pass open:true and/or time") }
+            guard args.bool("open", default: false) || args.has("time") else { throw EditError("Pass open:true and/or time") }
+            if lines.isEmpty { lines.append("Preview is showing the project.") }
             return .text(lines.joined(separator: "\n"))
         })
 

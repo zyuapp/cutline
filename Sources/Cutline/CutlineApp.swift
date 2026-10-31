@@ -9,7 +9,7 @@ struct CutlineApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        Settings { EmptyView() }
+        Settings { SettingsView(model: AppModel.shared).preferredColorScheme(.dark) }
             .commands {
                 CommandGroup(after: .appInfo) {
                     Button("Check for Updates…") { Task { await AppModel.shared.updater.check(interactive: true) } }
@@ -17,6 +17,7 @@ struct CutlineApp: App {
                 }
                 CommandGroup(replacing: .newItem) {
                     Button("Open Project…") { AppModel.shared.showOpenPanel() }.keyboardShortcut("o")
+                    Button("Show Library") { AppModel.shared.closeProject() }.keyboardShortcut("l", modifiers: [.command, .shift])
                 }
                 CommandGroup(after: .sidebar) {
                     Button(AppModel.shared.showPanel ? "Hide Notes and History" : "Show Notes and History") { AppModel.shared.showPanel.toggle() }
@@ -36,30 +37,52 @@ struct CutlineApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
+    /// An update relaunch: open behind other windows until the human brings the app forward.
+    private var quiet = CommandLine.arguments.contains("--quiet")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        showMainWindow()
+        AppModel.shared.reveal = { [weak self] in self?.showMainWindow() }
+        showMainWindow(behind: quiet)
+        // A document passed at launch arrived through application(_:open:) before this; later opens show normally.
+        quiet = false
         let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         if AppModel.shared.doc == nil, let path = args.first {
             AppModel.shared.open(URL(fileURLWithPath: path))
         }
         AppModel.shared.installKeyMonitor()
+        AppModel.shared.updater.isIdle = { AppModel.shared.isIdle }
+        if !NSApp.isActive { AppModel.shared.inactiveSince = Date() }
         AppModel.shared.updater.start()
-        NSApp.activate()
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { AppModel.shared.inactiveSince = Date() }
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                AppModel.shared.inactiveSince = nil
+                self.quiet = false
+            }
+        }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         if let url = urls.first { AppModel.shared.open(url) }
-        showMainWindow()
+        showMainWindow(behind: quiet)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppModel.shared.doc?.close()
+        AppModel.shared.updater.installOnQuit()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if let window, window.isMiniaturized { window.deminiaturize(nil) }
         showMainWindow()
         return true
     }
 
-    func showMainWindow() {
+    /// Shows the window without activating the app; `behind` keeps it under other apps' windows.
+    func showMainWindow(behind: Bool = false) {
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             w.toolbarStyle = .unified
@@ -76,8 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !w.setFrameUsingName("CutlineMain") { w.center() }
             window = w
         }
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        guard let window else { return }
+        if behind { window.orderBack(nil); return }
+        // Agent launches (open -g) and seeks show the window without taking focus from the terminal.
+        if NSApp.isActive { window.makeKeyAndOrderFront(nil) } else if !window.isMiniaturized { window.orderFrontRegardless() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -95,24 +120,39 @@ final class AppModel {
     var tab: PanelTab = .notes
     var showPanel = true
     let updater = Updater()
+    /// Brings the window in front without activating the app.
+    @ObservationIgnored var reveal: () -> Void = {}
+    @ObservationIgnored var inactiveSince: Date?
+
+    /// Nobody would notice a restart: the app has been in the background for 10 minutes and nothing is in flight.
+    var isIdle: Bool {
+        guard let since = inactiveSince, Date().timeIntervalSince(since) > 600, draft == nil, !pinning else { return false }
+        guard let doc else { return true }
+        let exporting = doc.exportState.map { $0.finishedPath == nil && $0.progress < 1 } ?? false
+        return !doc.player.isPlaying && doc.recording == nil && !exporting
+            && doc.presence?.isLive != true && doc.presence?.workingNotes().isEmpty != false
+    }
     var selectedComment: String?
     var fitRequest = 0
     @ObservationIgnored private var monitor: Any?
 
-    var recent: [String] {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Cutline/recent.json")
-        let paths = (try? JSONDecoder().decode([String].self, from: Data(contentsOf: url))) ?? []
-        return paths.filter { ProjectBundle.isBundle(URL(fileURLWithPath: $0)) }
+    /// Closes the project and shows the library in its place.
+    func closeProject() {
+        doc?.close()
+        doc = nil
+        draft = nil
+        pinning = false
+        selectedComment = nil
+        reveal()
     }
 
     func open(_ url: URL) {
         guard doc?.url.standardizedFileURL != url.standardizedFileURL else { return }
         guard ProjectBundle.isBundle(url) else {
-            let path = (url.path as NSString).abbreviatingWithTildeInPath
             let media = UTType(filenameExtension: url.pathExtension)?.conforms(to: .audiovisualContent) == true
             error = media
-                ? "\(url.lastPathComponent) is a video, not a Cutline project. Ask Claude to edit it, for example: “Make a 60-second cut of \(path) with captions.”"
-                : "\(url.lastPathComponent) is not a Cutline project. Open a .cutline folder that Claude created."
+                ? "\(url.lastPathComponent) is a video. Ask Claude to edit it, and the project opens here."
+                : "\(url.lastPathComponent) isn’t a Cutline project."
             return
         }
         do {
@@ -123,6 +163,8 @@ final class AppModel {
             pinning = false
             selectedComment = nil
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
+            ProjectLibrary.shared.noteOpened(url)
+            ProjectLibrary.shared.refresh()
         } catch {
             self.error = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
         }

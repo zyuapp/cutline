@@ -51,6 +51,7 @@ extension Toolbox {
             let request = VoiceOverRequest(id: id, start: start, end: end, countdown: countdown, preroll: preroll, muteProgram: args.bool("mute_program", default: false),
                                            takes: takes, script: args.optString("script"), testInput: test)
             try VoiceOver.write(request, to: VoiceOver.requestURL(dir))
+            try await session.ensurePreview()
             try session.sendPreview(["action": "record", "request": VoiceOver.requestURL(dir).path])
             let ack = Date().addingTimeInterval(Toolbox.voiceOverAckTimeout)
             while VoiceOver.read(VoiceOverResult.self, from: VoiceOver.resultURL(dir)) == nil {

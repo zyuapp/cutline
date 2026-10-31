@@ -157,6 +157,11 @@ final class PlayerController {
         seek(time + Double(frames) / fps)
     }
 
+    /// Sets where playback starts once the first item loads.
+    func restore(_ t: Double) {
+        time = max(0, t)
+    }
+
     /// Chases the latest requested time so dragging stays responsive.
     func seek(_ t: Double) {
         let clamped = min(max(0, t), max(0, duration - 1 / fps))

@@ -11,7 +11,6 @@ struct SidePanel: View {
     @Binding var tab: PanelTab
     @Binding var selected: String?
     @Binding var draft: DraftNote?
-    var startNote: () -> Void
 
     var body: some View {
         Group {
@@ -82,26 +81,8 @@ struct SidePanel: View {
     }
 
     private var emptyNotes: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("No notes yet")
-                .font(Typeface.font(16, .medium))
-                .foregroundStyle(.primary)
-            Text("Pause where something should change, press C, and click the spot on the frame. Claude reads every open note.")
-                .font(Typeface.font(14))
-                .foregroundStyle(.secondary)
-                .lineSpacing(3)
-            Button(action: startNote) {
-                HStack(spacing: 6) {
-                    Text("Add Note at")
-                    Text(Theme.compact(doc.player.time, fps: doc.project.canvas.fps)).monospacedDigit()
-                }
-            }
-            .buttonStyle(QuietButtonStyle(bordered: true))
-            .padding(.top, 8)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 24)
-        .padding(.top, 18)
+        ContentUnavailableView("No Notes", systemImage: "mappin.and.ellipse", description: Text("Press C to pin a note on the frame."))
+            .padding(.top, 24)
     }
 }
 
@@ -131,7 +112,12 @@ struct NoteEntry: View {
                     .font(Typeface.font(12).monospacedDigit())
                     .foregroundStyle(human && !resolved ? Theme.wax : Theme.ink3)
                 Spacer(minLength: 4)
-                if hovering || selected {
+                if !resolved, doc.presence?.workingNotes().contains(comment.id) == true, !(hovering || selected) {
+                    Label("Claude is on it", systemImage: "sparkle")
+                        .labelStyle(.titleAndIcon)
+                        .font(Typeface.font(12))
+                        .foregroundStyle(Theme.claude)
+                } else if hovering || selected {
                     actions(resolved: resolved)
                         .transition(.opacity)
                 } else if resolved {

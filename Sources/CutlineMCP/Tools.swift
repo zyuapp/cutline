@@ -128,6 +128,22 @@ final class Toolbox {
         await Args.$resolvers.withValue(Args.resolvers ?? resolverBox) { await callResolved(name, args) }
     }
 
+    /// The human's notes and replies the agent hasn't seen yet, once each, so they reach it without the human
+    /// going back to Claude Code.
+    func noteInbox() -> String? {
+        guard let b = session.bundle else { return nil }
+        let file = b.loadComments()
+        let fresh = file.unseenHuman(session.seenNotes)
+        session.seenNotes.formUnion(file.humanMarks.map(\.key))
+        guard !fresh.isEmpty else { return nil }
+        let items = fresh.prefix(5).map { c -> String in
+            let said = c.replies.last(where: { $0.author == .human })?.text ?? c.text
+            return "\(c.id) @ \(fmt2(c.time))s “\(said)”"
+        }
+        return "\nNew from the human in the preview (\(fresh.count)): " + items.joined(separator: "; ")
+            + (fresh.count > 5 ? "; …" : "") + ". Read them with comments_list (frames), address each, then comment_reply."
+    }
+
     private func callResolved(_ name: String, _ args: JSON?) async -> ToolResult {
         guard let tool = tools[name] else {
             var r = ToolResult.text("Unknown tool \(name)")
@@ -160,6 +176,7 @@ final class Toolbox {
                     notes.append("as:\"\(alias)\" named nothing: this call \(dry ? "was a dry run" : "created no clip, effect, track or media")")
                 }
             }
+            if name != "comments_list", name != "comments_wait", let inbox = noteInbox() { notes.append(inbox) }
             if !notes.isEmpty, let i = result.content.firstIndex(where: { $0["text"]?.string != nil }), let text = result.content[i]["text"]?.string {
                 result.content[i] = ["type": "text", "text": .string(text + "\n" + notes.joined(separator: "; "))]
             }

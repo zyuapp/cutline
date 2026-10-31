@@ -12,9 +12,7 @@ struct RootView: View {
             if let doc = model.doc {
                 EditorView(model: model, doc: doc)
             } else {
-                WelcomeView(model: model)
-                    .navigationTitle("Cutline")
-                    .toolbar(removing: .title)
+                LibraryView(model: model)
             }
         }
         .onOpenURL { model.open($0) }
@@ -37,7 +35,7 @@ struct EditorView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var timelineHeight: CGFloat {
-        min(max(TimelineTrackView.idealHeight(doc.project, hasNotes: !doc.comments.isEmpty), 140), 400)
+        min(max(TimelineTrackView.idealHeight(doc.project), 140), 400)
     }
 
     var body: some View {
@@ -52,14 +50,12 @@ struct EditorView: View {
                             .allowsHitTesting(false)
                     }
                     VStack(spacing: 0) {
-                        if let entry = doc.history.current {
-                            Tally(doc: doc, entry: entry)
-                                .modifier(PictureWidth(picture: picture))
-                                .frame(height: 36)
-                        }
+                        Tally(doc: doc, entry: doc.history.current)
+                            .modifier(PictureWidth(picture: picture))
+                            .frame(height: 36)
                         ViewerView(doc: doc, pinning: $model.pinning, draft: $model.draft, selected: model.selectedComment)
                             .padding(.horizontal, 24)
-                            .padding(.top, doc.history.current == nil ? 12 : 4)
+                            .padding(.top, 4)
                             .frame(minHeight: 240)
                         TransportBar(doc: doc, picture: picture) { model.startNote() }
                     }
@@ -93,17 +89,17 @@ struct EditorView: View {
                 .ignoresSafeArea()
         }
         .inspector(isPresented: $model.showPanel) {
-            SidePanel(doc: doc, tab: $model.tab, selected: $model.selectedComment, draft: $model.draft) { model.startNote() }
+            SidePanel(doc: doc, tab: $model.tab, selected: $model.selectedComment, draft: $model.draft)
                 .inspectorColumnWidth(min: 300, ideal: 340, max: 440)
         }
         .navigationTitle(doc.project.name)
         .navigationSubtitle(subtitle)
         .toolbar {
-            if let version = model.updater.available {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Update to \(version)") { model.updater.promptInstall(version) }
-                        .help("Cutline \(version) is available. You have \(model.updater.current).")
+            ToolbarItem(placement: .navigation) {
+                Button { model.closeProject() } label: {
+                    Label("Library", systemImage: "square.grid.2x2")
                 }
+                .help("Back to the library (⇧⌘L)")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -133,51 +129,118 @@ struct EditorView: View {
     }
 }
 
-/// Lights up while Claude is changing the edit, like a camera's on-air tally.
+/// Lights up while Claude is changing the edit, like a camera's on-air tally, and says what Claude is doing
+/// about your notes and the export.
 struct Tally: View {
     let doc: ProjectDocument
-    let entry: HistoryEntry
-    @State private var hovering = false
+    let entry: HistoryEntry?
 
     var body: some View {
-        Button(action: doc.jumpToLastChange) {
-            SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                let age = doc.lastEditAt.map { ctx.date.timeIntervalSince($0) } ?? .infinity
-                let live = age < 8
-                HStack(spacing: 8) {
-                    LiveDot(live: live)
-                    Text(live ? "Claude is editing" : "Last edit")
-                        .foregroundStyle(live ? .primary : .secondary)
-                        .fixedSize()
-                    Text(entry.label)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(ctx.date.timeIntervalSince(entry.createdAt) < 10 ? "just now" : entry.createdAt.formatted(.relative(presentation: .named)))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .fixedSize()
-                    if let status = doc.analysisStatus {
-                        Text(status)
-                            .foregroundStyle(Theme.claude)
-                            .lineLimit(1)
+        SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            let age = doc.lastEditAt.map { ctx.date.timeIntervalSince($0) } ?? .infinity
+            let working = doc.presence?.workingNotes(now: ctx.date).count ?? 0
+            let live = age < 8 || working > 0
+            let listening = !live && doc.presence?.isLive == true
+            HStack(spacing: 12) {
+                Button(action: doc.jumpToLastChange) {
+                    HStack(spacing: 8) {
+                        LiveDot(live: live, listening: listening)
+                        Text(age < 8 ? "Claude is editing" : working > 0 ? (working == 1 ? "Claude is working on your note" : "Claude is working on \(working) notes") : listening ? "Claude is watching for notes" : entry == nil ? "No edits yet" : "Last edit")
+                            .foregroundStyle(live || listening ? .primary : .secondary)
                             .fixedSize()
-                            .padding(.leading, 4)
+                        if let entry, age < 8 || (working == 0 && !listening) {
+                            Text(entry.label)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(ctx.date.timeIntervalSince(entry.createdAt) < 10 ? "just now" : entry.createdAt.formatted(.relative(presentation: .named)))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        if let status = doc.analysisStatus {
+                            Text(status)
+                                .foregroundStyle(Theme.claude)
+                                .lineLimit(1)
+                                .fixedSize()
+                                .padding(.leading, 4)
+                        }
+                    }
+                    .padding(.leading, 6)
+                    .padding(.trailing, 14)
+                    .frame(height: 32)
+                    .contentShape(.capsule)
+                    .glassEffect(.regular.tint(live || listening ? Theme.claude.opacity(0.12) : .clear).interactive(), in: .capsule)
+                    .animation(.easeOut(duration: 0.5), value: live)
+                }
+                .buttonStyle(.plain)
+                .help("Go to this change (⌥⌘L)")
+                .disabled(entry == nil)
+                if !live, !listening, !doc.awaitingReply.isEmpty {
+                    Label("Claude reads new notes the next time you message it.", systemImage: "moon.zzz")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                GlassEffectContainer(spacing: 8) {
+                    HStack(spacing: 8) {
+                        ExportStatus(doc: doc)
+                        if listening || working > 0 {
+                            Button("Done") { doc.finishReview(export: false) }
+                                .buttonStyle(.glass)
+                                .help("Tell Claude you're done for now")
+                            if doc.exportState?.finishedPath == nil {
+                                Button("Export") { doc.finishReview(export: true) }
+                                    .buttonStyle(.glassProminent)
+                                    .tint(Theme.claudeFill)
+                                    .help("Tell Claude to export the video")
+                            }
+                        }
                     }
                 }
-                .font(Typeface.font(13))
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.ink.opacity(hovering ? 0.06 : 0)))
-                .animation(.easeOut(duration: 0.5), value: live)
+                .controlSize(.large)
+            }
+            .font(Typeface.font(13))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Export progress, then the finished file.
+struct ExportStatus: View {
+    let doc: ProjectDocument
+
+    var body: some View {
+        if let e = doc.exportState {
+            if let path = e.finishedPath {
+                let url = URL(fileURLWithPath: path)
+                HStack(spacing: 10) {
+                    Label(url.lastPathComponent, systemImage: "checkmark.circle.fill")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 220)
+                    Divider().frame(height: 14)
+                    Button("Play", systemImage: "play.fill") { NSWorkspace.shared.open(url) }
+                        .labelStyle(.iconOnly).buttonStyle(.plain).help("Play the export")
+                    Button("Show in Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                        .labelStyle(.iconOnly).buttonStyle(.plain).help("Show in Finder")
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+                .glassEffect(.regular, in: .capsule)
+            } else if e.failed {
+                Label("Export failed", systemImage: "exclamationmark.triangle.fill").foregroundStyle(Theme.tally)
+                    .padding(.horizontal, 14).frame(height: 32).glassEffect(.regular, in: .capsule)
+            } else {
+                HStack(spacing: 8) {
+                    Text("Exporting").foregroundStyle(.secondary)
+                    ProgressView(value: e.progress).frame(width: 90)
+                    Text("\(Int(e.progress * 100))%").monospacedDigit().foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 14).frame(height: 32).glassEffect(.regular, in: .capsule)
             }
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help("Go to this change (⌥⌘L)")
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, -14)
     }
 }
 
@@ -194,9 +257,10 @@ struct PictureWidth: ViewModifier {
     }
 }
 
-/// Breathes while Claude is editing; rests as a small grey dot otherwise.
+/// Breathes while Claude is editing, glows steadily while it waits for notes, and rests as a small grey dot otherwise.
 struct LiveDot: View {
     let live: Bool
+    var listening = false
     @State private var pulse = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -206,7 +270,7 @@ struct LiveDot: View {
                 .stroke(Theme.claude.opacity(live ? (pulse ? 0 : 0.7) : 0), lineWidth: 1.2)
                 .frame(width: pulse ? 16 : 7, height: pulse ? 16 : 7)
             Circle()
-                .fill(live ? Theme.claude : Theme.ink3)
+                .fill(live || listening ? Theme.claude : Theme.ink3)
                 .frame(width: 7, height: 7)
         }
         .frame(width: 16, height: 16)
@@ -313,7 +377,7 @@ struct Timecode: View {
     }
 }
 
-// MARK: Welcome
+// MARK: Mark
 
 extension VerticalAlignment {
     private enum CapTop: AlignmentID {
@@ -322,150 +386,6 @@ extension VerticalAlignment {
 
     /// The top of capital letters, so headings of different sizes line up.
     static let capTop = VerticalAlignment(CapTop.self)
-}
-
-struct WelcomeView: View {
-    let model: AppModel
-    @State private var copied = false
-
-    /// The helper inside this app bundle, or where an installed copy lives when running a development build.
-    private var mcpCommand: String {
-        let inBundle = Bundle.main.bundleURL.pathExtension == "app"
-        let helper = inBundle
-            ? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/cutline-mcp").path
-            : "/Applications/Cutline.app/Contents/MacOS/cutline-mcp"
-        return "claude mcp add -s user cutline -- \"\(helper)\""
-    }
-
-    var body: some View {
-        content
-            .background(Theme.room.ignoresSafeArea())
-    }
-
-    private var content: some View {
-        HStack(alignment: .top, spacing: 88) {
-            VStack(alignment: .leading, spacing: 0) {
-                CutlineMark(size: 56)
-                    .padding(.bottom, 22)
-                Text("Cutline")
-                    .font(Typeface.font(46, .medium))
-                    .tracking(-0.9)
-                    .foregroundStyle(.primary)
-                Text("Claude edits your video. You watch, scrub, and leave notes on the frames you want changed.")
-                    .font(Typeface.font(18))
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(4)
-                    .frame(maxWidth: 470, alignment: .leading)
-                    .padding(.top, 12)
-
-                VStack(alignment: .leading, spacing: 30) {
-                    step(1, "Connect Cutline to Claude Code") {
-                        HStack(spacing: 10) {
-                            Text(mcpCommand)
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .help(mcpCommand)
-                            Button(copied ? "Copied" : "Copy") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(mcpCommand, forType: .string)
-                                copied = true
-                                Task { try? await Task.sleep(for: .seconds(2)); copied = false }
-                            }
-                            .buttonStyle(QuietButtonStyle(bordered: true))
-                        }
-                        .padding(.leading, 18).padding(.trailing, 7)
-                        .frame(maxWidth: 520)
-                        .frame(height: 44)
-                        .background(.quaternary, in: Capsule())
-                    }
-                    step(2, "Ask Claude for a video") {
-                        Text("“Make a 45-second vertical cut of ~/Movies/interview.mov with captions and no long pauses.”")
-                            .font(Typeface.font(15))
-                            .foregroundStyle(.secondary)
-                            .lineSpacing(3)
-                            .frame(maxWidth: 470, alignment: .leading)
-                    }
-                    step(3, "Watch and leave notes") {
-                        Text("The project opens in this window. Press C on any frame to pin a note; Claude reads it and changes the edit.")
-                            .font(Typeface.font(15))
-                            .foregroundStyle(.secondary)
-                            .lineSpacing(3)
-                            .frame(maxWidth: 470, alignment: .leading)
-                    }
-                }
-                .padding(.top, 52)
-                if let e = model.error {
-                    Text(e).font(Typeface.font(13)).foregroundStyle(Theme.tally).padding(.top, 24)
-                }
-            }
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Recent Projects")
-                    .font(Typeface.font(15, .semibold))
-                    .foregroundStyle(.primary)
-                if model.recent.isEmpty {
-                    Text("Projects Claude creates appear here.")
-                        .font(Typeface.font(14)).foregroundStyle(.tertiary)
-                }
-                VStack(spacing: 4) {
-                    ForEach(model.recent.prefix(6), id: \.self) { path in
-                        RecentRow(path: path) { model.open(URL(fileURLWithPath: path)) }
-                    }
-                }
-                .padding(.horizontal, -10)
-                Button("Open a Project…") { model.showOpenPanel() }
-                    .buttonStyle(QuietButtonStyle(bordered: true))
-                    .padding(.top, 6)
-                UpdateRow(updater: model.updater)
-            }
-            .padding(24)
-            .frame(width: 420, alignment: .leading)
-            .background(.quinary, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        }
-        .padding(.horizontal, 72)
-        .padding(.bottom, 24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func step<C: View>(_ n: Int, _ title: String, @ViewBuilder content: () -> C) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 18) {
-            Text("\(n)")
-                .font(Typeface.font(15, .medium).monospacedDigit())
-                .foregroundStyle(.tertiary)
-                .frame(width: 12, alignment: .leading)
-            VStack(alignment: .leading, spacing: 10) {
-                Text(title).font(Typeface.font(16, .medium)).foregroundStyle(.primary)
-                content()
-            }
-        }
-    }
-}
-
-/// The installed version, and an update when one is out.
-struct UpdateRow: View {
-    let updater: Updater
-
-    var body: some View {
-        HStack(spacing: 10) {
-            switch updater.state {
-            case .available(let v):
-                Text("Cutline \(v) is available").foregroundStyle(.primary)
-                Spacer(minLength: 8)
-                Button("Update and Relaunch") { Task { await updater.install(v) } }
-                    .buttonStyle(QuietButtonStyle(bordered: true))
-            case .installing(let v):
-                ProgressView().controlSize(.small)
-                Text("Updating to \(v)…").foregroundStyle(.secondary)
-            default:
-                if updater.enabled { Text("Version \(updater.current)").foregroundStyle(.tertiary) }
-            }
-        }
-        .font(Typeface.font(12.5))
-        .padding(.top, 10)
-    }
 }
 
 /// The app mark: a frame split by a cut, with Claude's light in the corner.
@@ -504,72 +424,3 @@ struct CutlineMark: View {
     }
 }
 
-/// A recent project with a frame rendered from its current edit.
-struct RecentRow: View {
-    let path: String
-    let open: () -> Void
-    @State private var poster: CGImage?
-    @State private var name = ""
-    @State private var info = ""
-    @State private var edited = ""
-    @State private var folder = ""
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: open) {
-            HStack(spacing: 16) {
-                ZStack {
-                    Theme.field
-                    if let poster {
-                        Image(decorative: poster, scale: 1)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    }
-                }
-                .frame(width: 104, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.rule, lineWidth: 0.5))
-                VStack(alignment: .leading, spacing: 4) {
-                    Typeface.text(name.isEmpty ? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent : name, 15, .medium)
-                        .foregroundStyle(.primary)
-                    Text(info)
-                        .font(Typeface.font(12.5).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 0) {
-                        Text(edited).fixedSize()
-                        Text(folder).truncationMode(.middle).foregroundStyle(.tertiary)
-                    }
-                    .font(Typeface.font(12.5))
-                    .foregroundStyle(.secondary)
-                }
-                .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.ink.opacity(hovering ? 0.08 : 0)))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help((path as NSString).abbreviatingWithTildeInPath)
-        .task { await load() }
-    }
-
-    private func load() async {
-        let bundle = ProjectBundle(url: URL(fileURLWithPath: path))
- guard let p = try? bundle.loadProject() else { return }
-        name = p.name
-        info = "\(Theme.short(p.duration))     \(p.canvas.width) × \(p.canvas.height)"
-        let url = URL(fileURLWithPath: path)
-        folder = url.deletingLastPathComponent().lastPathComponent + "/" + url.lastPathComponent
-        edited = ""
-        if let date = bundle.loadHistory().current?.createdAt {
-            edited = "Edited \(date.formatted(.relative(presentation: .named)))   "
-        }
-        guard p.duration > 0,
-              let built = try? await TimelineBuilder.build(p, transcripts: bundle.transcripts(for: p), library: MediaLibrary(), renderScale: 0.25),
-              let frame = try? await Frames.timeline(built, times: [min(1.5, p.duration / 2)], maxSize: CGSize(width: 300, height: 300)).first
-        else { return }
-        poster = frame.image
-    }
-}

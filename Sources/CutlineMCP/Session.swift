@@ -1,11 +1,27 @@
 import AppKit
 import CutlineCore
 import CutlineEngine
+import CutlineUpdate
 import Foundation
 
 public enum PreviewControl {
     public static let notification = Notification.Name("com.zyuapp.cutline.control")
     public static let bundleIdentifier = "com.zyuapp.cutline"
+}
+
+/// Lets one tool call at a time touch the session while a comments_wait polls alongside them.
+actor ToolGate {
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        guard busy else { busy = true; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
+    }
 }
 
 /// State shared by tool calls within one MCP connection.
@@ -25,6 +41,13 @@ final class Session {
     var lastRefs: [String: String] = [:]
     /// Ids named with as:"x" on any call, for "$x" in later calls of this session.
     var names: [String: String] = [:]
+    /// The human's notes and replies already shown to the agent, by `CommentsFile.humanMarks` key.
+    var seenNotes: Set<String> = []
+    /// The subset shown in full by comments_list or comments_wait, which channel pushes skip.
+    var deliveredNotes: Set<String> = []
+    let gate = ToolGate()
+    /// Set by the server, which holds `gate` around every call so comments_wait can let others run while it polls.
+    var callerHoldsGate = false
 
     init() {
         jobs.factory = { [weak self] in self?.work(for: $0) }
@@ -47,7 +70,11 @@ final class Session {
         built = nil
         lastRefs = [:]
         names = [:]
+        seenNotes = []
+        deliveredNotes = []
         resumed = resumeJobs(b)
+        // In-process toolboxes (tests, scripts) stay out of the user's library.
+        guard Session.opensPreviewOnDemand else { return b }
         var recent = Session.recentProjects.filter { $0 != url.path }
         recent.insert(url.path, at: 0)
         try? JSONEncoder().encode(Array(recent.prefix(10))).write(to: Session.stateURL)
@@ -148,9 +175,14 @@ final class Session {
         let b = try requireBundle()
         guard let app = appURL() else { return "Cutline.app was not found; install it to /Applications or set CUTLINE_APP." }
         let p = Process()
+        var note = ""
         if app.pathExtension == "app" {
+            if !Session.previewRunning, !ReleaseUpdate.othersRunning(from: app), let installed = try? ReleaseUpdate.install(into: app) {
+                note = " (updated to \(installed))"
+            }
+            // -g leaves focus in the terminal; the app shows its window without activating.
             p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            p.arguments = ["-a", app.path, b.url.path]
+            p.arguments = ["-g", "-a", app.path, b.url.path]
         } else {
             // A bare development build of the preview executable.
             p.executableURL = app
@@ -163,11 +195,45 @@ final class Session {
             p.waitUntilExit()
             guard p.terminationStatus == 0 else { throw EditError("Could not open \(app.path); macOS refused to launch it. Run Cutline.app once from Finder, or set CUTLINE_APP.") }
         }
-        return "Preview opened in \(app.lastPathComponent)."
+        return "Preview opened in \(app.lastPathComponent)\(note)."
+    }
+
+    /// Off for in-process toolboxes (tests, scripts), which must not launch the app behind the caller's back.
+    nonisolated(unsafe) static var opensPreviewOnDemand = false
+
+    static var previewRunning: Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: PreviewControl.bundleIdentifier).isEmpty
+    }
+
+    /// True when a live preview app has this project open; it keeps `preview.json` with its pid while it does.
+    func previewShowsProject() -> Bool {
+        bundle.map { Session.previewShows($0.url) } ?? false
+    }
+
+    static func previewShows(_ project: URL) -> Bool {
+        guard let data = try? Data(contentsOf: project.appendingPathComponent("preview.json")),
+              let j = try? JSONDecoder().decode(JSON.self, from: data), let pid = j["pid"]?.double
+        else { return false }
+        return kill(Int32(pid), 0) == 0
+    }
+
+    /// Opens the preview on this project unless it already shows it, and waits for it to load.
+    /// Returns what it did, or nil when the preview was already up.
+    @discardableResult
+    func ensurePreview() async throws -> String? {
+        if !Session.opensPreviewOnDemand || previewShowsProject() { return nil }
+        let msg = try openPreview()
+        let deadline = Date().addingTimeInterval(20)
+        while !previewShowsProject(), Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
+        guard previewShowsProject() else { throw EditError(msg + " It hasn't loaded the project after 20 s; try again in a moment.") }
+        return msg
     }
 
     func sendPreview(_ info: [String: Any]) throws {
         let b = try requireBundle()
+        if info["action"] as? String == "export", let state = (info["state"] as? String).flatMap(ExportRecord.State.init), let path = info["path"] as? String {
+            b.writeExportRecord(ExportRecord(state: state, path: path, pid: ProcessInfo.processInfo.processIdentifier, historyId: b.loadHistory().current?.id))
+        }
         var payload = info
         payload["project"] = b.url.path
         DistributedNotificationCenter.default().postNotificationName(PreviewControl.notification, object: nil, userInfo: payload, deliverImmediately: true)

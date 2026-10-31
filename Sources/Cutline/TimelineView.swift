@@ -24,9 +24,9 @@ struct TimelineTrackView: NSViewRepresentable {
     }
 
     /// Height that fits every lane, matching `TimelineCanvas.lanes()`.
-    static func idealHeight(_ p: Project, hasNotes: Bool) -> CGFloat {
-        var h = TimelineCanvas.rulerHeight + TimelineCanvas.lanesTop + 14
-        for lane in TimelineCanvas.laneKinds(p, hasNotes: hasNotes) { h += lane.height + TimelineCanvas.laneGap }
+    static func idealHeight(_ p: Project) -> CGFloat {
+        var h = TimelineCanvas.rulerHeight + TimelineCanvas.lanesTop + 10
+        for lane in TimelineCanvas.laneKinds(p) { h += lane.height + TimelineCanvas.laneGap }
         return h
     }
 }
@@ -36,9 +36,9 @@ final class TimelineCanvas: NSView {
     var onSeek: ((Double) -> Void)?
     var onSelectComment: ((String) -> Void)?
 
-    static let rulerHeight: CGFloat = 34
-    static let lanesTop: CGFloat = 8
-    static let laneGap: CGFloat = 4
+    static let rulerHeight: CGFloat = 36
+    static let lanesTop: CGFloat = 4
+    static let laneGap: CGFloat = 3
 
     private var project = Project(name: "")
     private var captions: [CaptionSegment] = []
@@ -61,7 +61,8 @@ final class TimelineCanvas: NSView {
     private var hoverX: CGFloat?
     private var hoverY: CGFloat = 0
 
-    private let headerW: CGFloat = 164
+    /// A narrow gutter for track ids (V1, A1) that Claude's tools use.
+    private let headerW: CGFloat = 34
     private var rulerH: CGFloat { Self.rulerHeight }
     private let glowDuration = 1.6
     private let playheadLayer = CALayer()
@@ -187,14 +188,13 @@ final class TimelineCanvas: NSView {
     }
 
     /// Where time zero sits when scrolled to the start; leaves room for the lane's rounded edge.
-    private var originX: CGFloat { headerW + 14 }
+    private var originX: CGFloat { headerW + 8 }
     private func xFor(_ t: Double) -> CGFloat { originX + CGFloat((t - viewStart) * pxPerSec) }
     private func timeFor(_ x: CGFloat) -> Double { viewStart + Double(x - originX) / pxPerSec }
 
     // MARK: Lanes
 
     enum LaneKind {
-        case notes
         case titles(Track)
         case overlay(Track)
         case main(Track)
@@ -203,12 +203,11 @@ final class TimelineCanvas: NSView {
 
         var height: CGFloat {
             switch self {
-            case .notes: 22
-            case .titles: 30
-            case .overlay: 40
-            case .main: 54
-            case .captions: 26
-            case .audio: 40
+            case .titles: 24
+            case .overlay: 32
+            case .main: 46
+            case .captions: 22
+            case .audio: 38
             }
         }
     }
@@ -218,9 +217,9 @@ final class TimelineCanvas: NSView {
         var rect: CGRect
     }
 
-    /// Top to bottom: notes, video layers (top layer first), captions, audio.
-    static func laneKinds(_ p: Project, hasNotes: Bool) -> [LaneKind] {
-        var out: [LaneKind] = hasNotes ? [.notes] : []
+    /// Top to bottom: video layers (top layer first), captions, audio.
+    static func laneKinds(_ p: Project) -> [LaneKind] {
+        var out: [LaneKind] = []
         let mainId = p.tracks.first { $0.kind == .video && $0.clips.contains { $0.kind == .media } }?.id
         for t in p.tracks.reversed() where t.kind == .video {
             let titlesOnly = !t.clips.isEmpty && t.clips.allSatisfy { $0.kind != .media }
@@ -232,7 +231,7 @@ final class TimelineCanvas: NSView {
     }
 
     private func lanes() -> [Lane] {
-        let kinds = Self.laneKinds(project, hasNotes: !comments.isEmpty)
+        let kinds = Self.laneKinds(project)
         let total = kinds.map(\.height).reduce(0, +) + CGFloat(kinds.count) * Self.laneGap
         let available = bounds.height - rulerH - Self.lanesTop - 8
         let scale = total > available ? max(0.5, available / total) : 1
@@ -258,12 +257,11 @@ final class TimelineCanvas: NSView {
             Theme.NS.lane.setFill()
             NSBezierPath(roundedRect: CGRect(x: laneStart, y: lane.rect.minY, width: laneEnd - laneStart, height: lane.rect.height), xRadius: 8, yRadius: 8).fill()
         }
-        let firstClipLane = all.first { if case .notes = $0.kind { return false }; return true }?.rect.minY ?? rulerH
+        let firstClipLane = all.first?.rect.minY ?? rulerH
         let bottom = all.last?.rect.maxY ?? rulerH
-        drawNoteLines(top: firstClipLane, bottom: bottom)
+        drawNoteLines(top: min(firstClipLane, noteStrip.maxY), bottom: bottom)
         for lane in all {
             switch lane.kind {
-            case .notes: drawNotePins(lane.rect)
             case .captions: drawCaptions(lane.rect)
             case .titles(let t), .overlay(let t), .main(let t), .audio(let t): drawClips(t, kind: lane.kind, in: lane.rect, ctx: ctx, glow: glow)
             }
@@ -271,7 +269,11 @@ final class TimelineCanvas: NSView {
         drawHover(top: rulerH - 10, bottom: bottom)
         ctx.restoreGState()
         drawRuler()
-        drawHeaders(all)
+        ctx.saveGState()
+        ctx.clip(to: CGRect(x: headerW, y: 0, width: bounds.width - headerW, height: rulerH))
+        drawNotePins(noteStrip)
+        ctx.restoreGState()
+        drawTrackIds(all)
         drawNoteBubble()
     }
 
@@ -344,55 +346,25 @@ final class TimelineCanvas: NSView {
         return c.author == .human ? Theme.NS.wax : Theme.NS.claude
     }
 
-    private func drawHeaders(_ all: [Lane]) {
-        let nameAttr: [NSAttributedString.Key: Any] = [.font: Typeface.ns(12.5, .medium), .foregroundColor: Theme.NS.ink2]
-        let detailAttr: [NSAttributedString.Key: Any] = [.font: Typeface.ns(11, .regular), .foregroundColor: Theme.NS.ink3]
+    /// Note pins ride in the ruler, under the time labels.
+    private var noteStrip: CGRect { CGRect(x: 0, y: rulerH - 19, width: bounds.width, height: 12) }
+
+    private func drawTrackIds(_ all: [Lane]) {
         for lane in all {
-            var name: String
-            var detail = ""
-            var symbol: String
+            let id: String
+            var off = false
             switch lane.kind {
-            case .notes:
-                name = "Notes"
-                symbol = "pencil.tip"
-            case .captions:
-                name = "Captions"
-                symbol = "captions.bubble"
-            case .audio(let t):
-                name = t.name
-                detail = t.muted ? "Muted" : t.id
-                symbol = t.muted ? "speaker.slash" : "waveform"
-            case .titles(let t), .overlay(let t), .main(let t):
-                name = t.name
-                detail = t.hidden ? "Hidden" : t.id
-                if case .titles = lane.kind {
-                    symbol = t.clips.allSatisfy { $0.kind == .adjustment } ? "slider.horizontal.3" : "textformat"
-                } else { symbol = "film" }
-                if t.hidden { symbol = "eye.slash" }
+            case .captions: id = "CC"
+            case .audio(let t): id = t.id; off = t.muted
+            case .titles(let t), .overlay(let t), .main(let t): id = t.id; off = t.hidden
             }
-            let iconX: CGFloat = 24
-            if case .notes = lane.kind {
-                let mark = NSBezierPath(ovalIn: CGRect(x: iconX + 1.5, y: lane.rect.midY - 5, width: 11, height: 10))
-                Theme.NS.ink3.setStroke()
-                mark.lineWidth = 1.3
-                mark.stroke()
-            } else if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 10.5, weight: .medium)) {
-                let tinted = img.tinted(Theme.NS.ink3)
-                let s = tinted.size
-                tinted.draw(in: CGRect(x: iconX + (14 - s.width) / 2, y: (lane.rect.midY - s.height / 2).rounded(), width: s.width, height: s.height), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-            }
-            let line = NSMutableAttributedString(attributedString: Typeface.attributed(name, nameAttr))
-            if !detail.isEmpty { line.append(NSAttributedString(string: "  " + detail, attributes: detailAttr)) }
-            let size = line.size()
-            var maxW = headerW - iconX - 22 - 8
-            if case .audio(let t) = lane.kind, !t.muted, t.volume != 1 {
-                let vol = NSAttributedString(string: String(format: "%.0f%%", t.volume * 100), attributes: [.font: Typeface.ns(11, .regular, tabular: true), .foregroundColor: Theme.NS.ink3])
-                let vs = vol.size()
-                vol.draw(at: CGPoint(x: headerW - 10 - vs.width, y: (lane.rect.midY - vs.height / 2).rounded()))
-                maxW -= vs.width + 6
-            }
-            line.draw(with: CGRect(x: iconX + 22, y: (lane.rect.midY - size.height / 2).rounded(), width: maxW, height: size.height), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            let s = NSAttributedString(string: id, attributes: [
+                .font: Typeface.ns(10, .semibold, tabular: true),
+                .foregroundColor: Theme.NS.ink3.withAlphaComponent(off ? 0.4 : 1),
+                .strikethroughStyle: off ? NSUnderlineStyle.single.rawValue : 0,
+            ])
+            let size = s.size()
+            s.draw(at: CGPoint(x: headerW - 6 - size.width, y: (lane.rect.midY - size.height / 2).rounded()))
         }
     }
 
@@ -755,12 +727,12 @@ final class TimelineCanvas: NSView {
     }
 
     private func hoveredNote() -> (Comment, CGRect)? {
-        guard let hx = hoverX, let notes = lanes().first(where: { if case .notes = $0.kind { return true }; return false }),
-              hoverY >= notes.rect.minY - 4, hoverY <= notes.rect.maxY + 4,
+        let strip = noteStrip
+        guard let hx = hoverX, hoverY >= strip.minY - 4, hoverY <= strip.maxY + 4,
               let hit = comments.min(by: { abs(xFor($0.time) - hx) < abs(xFor($1.time) - hx) }),
               abs(xFor(hit.time) - hx) < 9
         else { return nil }
-        return (hit, notes.rect)
+        return (hit, strip)
     }
 
     /// A preview of the note under the pointer, hanging from its pin.
@@ -832,8 +804,8 @@ final class TimelineCanvas: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        if let notes = lanes().first(where: { if case .notes = $0.kind { return true }; return false }),
-           p.y >= notes.rect.minY - 2, p.y <= notes.rect.maxY + 2,
+        let strip = noteStrip
+        if p.y >= strip.minY - 3, p.y <= strip.maxY + 3,
            let hit = comments.min(by: { abs(xFor($0.time) - p.x) < abs(xFor($1.time) - p.x) }), abs(xFor(hit.time) - p.x) < 9 {
             onSelectComment?(hit.id)
             onSeek?(hit.time)

@@ -28,6 +28,8 @@ final class ProjectDocument {
     /// Analysis the MCP server is running in the background, e.g. "Analyzing shots of lake-tahoe 40%".
     private(set) var analysisStatus: String?
     private(set) var exportState: ExportState?
+    /// The MCP server's note on whether Claude is waiting for the human's notes.
+    private(set) var presence: AgentPresence?
     /// Clips added or changed by the latest edit, for a brief highlight on the timeline.
     private(set) var changedClips: Set<String> = []
     private(set) var changedAt: Date?
@@ -37,6 +39,7 @@ final class ProjectDocument {
     struct ExportState: Equatable {
         var progress: Double
         var finishedPath: String?
+        var failed = false
     }
 
     @ObservationIgnored private let library = MediaLibrary(proxyQuality: .half)
@@ -48,18 +51,34 @@ final class ProjectDocument {
     @ObservationIgnored private var buildTask: Task<Void, Never>?
     @ObservationIgnored private var controlObserver: NSObjectProtocol?
     @ObservationIgnored private var stateWrite: DispatchWorkItem?
+    @ObservationIgnored private var presenceBeat: Timer?
 
     init(url: URL) throws {
         self.url = url
         bundle = ProjectBundle(url: url)
         project = try bundle.loadProject()
+        player.restore(UserDefaults.standard.double(forKey: Self.playheadKey(url)))
         player.onPause = { [weak self] in self?.writePreviewState() }
         reload(force: true)
         watch()
         listen()
+        writePreviewState()
+        // While the human looks at the app or plays the cut, keep preview.json fresh so Claude knows they're there.
+        presenceBeat = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, NSApp.isActive || self.player.isPlaying else { return }
+                self.writePreviewState()
+            }
+        }
     }
 
+    static func playheadKey(_ url: URL) -> String { "playhead:" + url.standardizedFileURL.path }
+
     func close() {
+        UserDefaults.standard.set(player.time, forKey: Self.playheadKey(url))
+        presenceBeat?.invalidate()
+        stateWrite?.cancel()
+        try? FileManager.default.removeItem(at: url.appendingPathComponent("preview.json"))
         watchers.forEach { $0.cancel() }
         if let controlObserver { DistributedNotificationCenter.default().removeObserver(controlObserver) }
         player.pause()
@@ -80,9 +99,18 @@ final class ProjectDocument {
             let first = lastHistoryData.isEmpty
             lastHistoryData = historyData
             history = bundle.loadHistory()
-            if !first { lastEditAt = Date() }
+            if !first {
+                lastEditAt = Date()
+                if exportState?.finishedPath != nil || exportState?.failed == true { exportState = nil }
+            }
         }
         analysisStatus = Self.jobsSummary(url.appendingPathComponent("jobs.json"))
+        let agent = bundle.loadPresence()
+        if agent != presence { presence = agent }
+        if exportState == nil || exportState?.finishedPath != nil, let record = bundle.loadExportRecord(), record.isCurrent(history: history) {
+            let state = ExportState(progress: record.state == .finished ? 1 : 0, finishedPath: record.state == .finished ? record.path : nil, failed: record.state == .failed)
+            if state != exportState, record.state != .started || record.isLive { exportState = state }
+        }
         let analysisChanged = loadAnalysis()
         guard force || projectData != lastProjectData || analysisChanged else { return }
         lastProjectData = projectData
@@ -193,10 +221,12 @@ final class ProjectDocument {
                 switch action {
                 case "rebuild":
                     self.reload(force: true)
+                case "reveal":
+                    AppModel.shared.reveal()
                 case "seek":
                     guard let time else { return }
                     if play { self.player.play(from: time, to: end) } else { self.player.pause(); self.player.seek(time) }
-                    NSApp.activate()
+                    AppModel.shared.reveal()
                 case "record":
                     guard let request else { return }
                     self.startRecording(URL(fileURLWithPath: request))
@@ -205,6 +235,7 @@ final class ProjectDocument {
                     case "started": self.exportState = ExportState(progress: 0)
                     case "progress": self.exportState = ExportState(progress: progress ?? 0)
                     case "finished": self.exportState = ExportState(progress: 1, finishedPath: exportPath)
+                    case "failed": self.exportState = ExportState(progress: 0, failed: true)
                     default: break
                     }
                 default: break
@@ -223,6 +254,7 @@ final class ProjectDocument {
                 track.clip(at: t).map { "\(track.id):\($0.id)" }
             }
             let state: [String: Any] = [
+                "pid": Int(ProcessInfo.processInfo.processIdentifier),
                 "playhead": (t * 1000).rounded() / 1000,
                 "playing": self.player.isPlaying,
                 "visibleClips": clips,
@@ -253,6 +285,11 @@ final class ProjectDocument {
         reload()
     }
 
+    /// Pins the note that tells Claude the human is done reviewing, and whether to export.
+    func finishReview(export: Bool) {
+        addComment(text: export ? ReviewDone.exportText : ReviewDone.text, time: player.time, x: nil, y: nil)
+    }
+
     func setStatus(_ id: String, _ status: CommentStatus) {
         try? bundle.updateComments { f in
             if let i = f.comments.firstIndex(where: { $0.id == id }) { f.comments[i].status = status }
@@ -276,4 +313,7 @@ final class ProjectDocument {
     }
 
     var openComments: [Comment] { comments.filter { $0.status == .open } }
+
+    /// Open notes where the human spoke last.
+    var awaitingReply: [Comment] { CommentsFile(comments: comments).awaitingReply }
 }

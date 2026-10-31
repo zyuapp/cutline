@@ -18,6 +18,8 @@ enum Theme {
     static let settled = Color(nsColor: .secondaryLabelColor)
     static let wax = Color(nsColor: NS.wax)
     static let claude = Color(nsColor: NS.claude)
+    /// Fill for prominent buttons that act through Claude, dark enough for a white label.
+    static let claudeFill = Color(hex: 0x4D58B0)
     static let tally = Color(nsColor: .systemRed)
     /// The selected segment of a segmented control: neutral, dark enough for its white label.
     static let segment = Color(nsColor: .adaptive(dark: 0x48484D, light: 0x6E6E73, darkContrast: 0x2C2C2E, lightContrast: 0x3A3A3C))
