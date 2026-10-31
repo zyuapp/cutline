@@ -52,9 +52,14 @@ struct EditorView: View {
                             .allowsHitTesting(false)
                     }
                     VStack(spacing: 0) {
+                        if let entry = doc.history.current {
+                            Tally(doc: doc, entry: entry)
+                                .modifier(PictureWidth(picture: picture))
+                                .frame(height: 36)
+                        }
                         ViewerView(doc: doc, pinning: $model.pinning, draft: $model.draft, selected: model.selectedComment)
                             .padding(.horizontal, 24)
-                            .padding(.top, 12)
+                            .padding(.top, doc.history.current == nil ? 12 : 4)
                             .frame(minHeight: 240)
                         TransportBar(doc: doc, picture: picture) { model.startNote() }
                     }
@@ -94,11 +99,6 @@ struct EditorView: View {
         .navigationTitle(doc.project.name)
         .navigationSubtitle(subtitle)
         .toolbar {
-            if let entry = doc.history.current {
-                ToolbarItem(placement: .principal) {
-                    Tally(doc: doc, entry: entry)
-                }
-            }
             if let version = model.updater.available {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Update to \(version)") { model.updater.promptInstall(version) }
@@ -137,13 +137,14 @@ struct EditorView: View {
 struct Tally: View {
     let doc: ProjectDocument
     let entry: HistoryEntry
+    @State private var hovering = false
 
     var body: some View {
         Button(action: doc.jumpToLastChange) {
             SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { ctx in
                 let age = doc.lastEditAt.map { ctx.date.timeIntervalSince($0) } ?? .infinity
                 let live = age < 8
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     LiveDot(live: live)
                     Text(live ? "Claude is editing" : "Last edit")
                         .foregroundStyle(live ? .primary : .secondary)
@@ -162,14 +163,34 @@ struct Tally: View {
                             .foregroundStyle(Theme.claude)
                             .lineLimit(1)
                             .fixedSize()
+                            .padding(.leading, 4)
                     }
                 }
-                .padding(.horizontal, 6)
-                .frame(minWidth: 300)
+                .font(Typeface.font(13))
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.ink.opacity(hovering ? 0.06 : 0)))
                 .animation(.easeOut(duration: 0.5), value: live)
             }
         }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
         .help("Go to this change (⌥⌘L)")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, -14)
+    }
+}
+
+/// Keeps a row as wide as the picture, so its edges line up with the frame and the transport.
+struct PictureWidth: ViewModifier {
+    let picture: CGRect
+
+    func body(content: Content) -> some View {
+        if picture.width >= 600 {
+            content.frame(width: picture.width).frame(maxWidth: .infinity)
+        } else {
+            content.padding(.horizontal, 24)
+        }
     }
 }
 
@@ -208,27 +229,13 @@ struct TransportBar: View {
     var addNote: () -> Void
 
     var body: some View {
-        let wide = picture.width >= 600
-        Group {
-            if wide {
-                HStack(spacing: 0) {
-                    Timecode(time: doc.player.time, fps: doc.project.canvas.fps)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    controls
-                    noteButton.frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                .frame(width: picture.width)
-            } else {
-                HStack(spacing: 0) {
-                    Timecode(time: doc.player.time, fps: doc.project.canvas.fps)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    controls
-                    noteButton.frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                .padding(.horizontal, 32)
-            }
+        HStack(spacing: 0) {
+            Timecode(time: doc.player.time, fps: doc.project.canvas.fps)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            controls
+            noteButton.frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .frame(maxWidth: .infinity)
+        .modifier(PictureWidth(picture: picture))
         .frame(height: 78)
     }
 

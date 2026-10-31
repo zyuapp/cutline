@@ -370,7 +370,7 @@ final class TimelineCanvas: NSView {
                 } else { symbol = "film" }
                 if t.hidden { symbol = "eye.slash" }
             }
-            let iconX: CGFloat = 20
+            let iconX: CGFloat = 24
             if case .notes = lane.kind {
                 let mark = NSBezierPath(ovalIn: CGRect(x: iconX + 1.5, y: lane.rect.midY - 5, width: 11, height: 10))
                 Theme.NS.ink3.setStroke()
