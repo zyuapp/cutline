@@ -41,12 +41,32 @@ extension Toolbox {
 
     func clipGainRide(_ a: Args, dry: Bool) async throws -> ToolResult {
         let p = try session.project()
-        var ids = a.strings("clips") ?? []
+        let named = a.strings("clips") ?? []
+        var listed = named
         if let tid = a.optString("track") {
             guard let t = p.tracks.first(where: { $0.id == tid }) else { throw EditError("No track \(tid)") }
-            ids += t.clips.filter { c in c.kind == .media && (c.mediaId.flatMap { p.mediaAsset($0) }?.hasAudio ?? false) }.map(\.id)
+            listed += t.clips.filter { c in c.kind == .media && (c.mediaId.flatMap { p.mediaAsset($0) }?.hasAudio ?? false) }.map(\.id)
         }
-        guard !ids.isEmpty else { throw EditError("Pass clips or track") }
+        guard !listed.isEmpty else { throw EditError("Pass clips or track") }
+        // A muted clip (its sound detached or split off) is ridden through its linked sound clips.
+        func silent(_ c: Clip) -> Bool { c.volume <= 1e-6 && c.anim["audio.volume"] == nil }
+        var ids: [String] = [], notes: [String] = []
+        for id in listed {
+            guard let c = p.clip(id) else { throw EditError("No clip \(id)") }
+            guard silent(c) else {
+                if !ids.contains(id) { ids.append(id) }
+                continue
+            }
+            let sound = p.linked(id).compactMap { p.clip($0) }.filter { o in
+                !silent(o) && o.kind == .media && (o.mediaId.flatMap { p.mediaAsset($0) }?.hasAudio ?? false)
+            }.map(\.id)
+            if sound.isEmpty {
+                notes.append("\(id) is muted and has no linked sound; skipped")
+            } else {
+                notes.append("\(id) is muted; rode its linked sound \(sound.joined(separator: ", ")) instead")
+                ids += sound.filter { !ids.contains($0) }
+            }
+        }
         let target = a.optDouble("target_lufs") ?? -23
         let maxDb = a.optDouble("max_db") ?? 10
         let ramp = a.optDouble("ramp") ?? 0.2
@@ -55,7 +75,11 @@ extension Toolbox {
         var plans: [(id: String, phrases: [RidePhrase], how: String)] = []
         for id in ids {
             let c = try soundClip(id, p)
-            let x = try await soloSound(c) { $0.anim["audio.volume"] = nil }
+            let x: [[Float]]
+            do { x = try await soloSound(c) { $0.anim["audio.volume"] = nil } } catch where !named.contains(id) {
+                notes.append("\(id): \(error.localizedDescription); skipped")
+                continue
+            }
             var own = words.filter { $0.clipId == id }
             if own.isEmpty, let mid = c.mediaId { own = words.filter { $0.mediaId == mid && $0.start >= c.start - 0.01 && $0.end <= c.end + 0.01 } }
             let spans: [(range: TimeRange, text: String)]
@@ -72,8 +96,9 @@ extension Toolbox {
             }
             plans.append((id, phrases, how))
         }
+        guard !plans.isEmpty else { throw EditError("Nothing to ride: " + notes.joined(separator: "; ")) }
         return try runEdit("Ride clip gain to \(fmt1(target)) LUFS", dry: dry) { p in
-            var lines: [String] = []
+            var lines = notes
             for plan in plans {
                 let results = try p.rideClipGain(plan.id, phrases: plan.phrases, targetLufs: target, maxDb: maxDb, ramp: ramp)
                 let held = results.filter { abs($0.lufs - target) > 0.5 }.count

@@ -137,7 +137,7 @@ extension Toolbox {
             "track": "", "name": "", "muted": "", "hidden": "", "remove": "", "volume": "0–2", "role": "dialogue, music, effects or custom (stems, captions)",
             "output": "Bus id, or master", "sends": "[{bus, level_db, pre_fader, remove}]; [] clears",
             "sends[].bus": "", "sends[].level_db": "", "sends[].pre_fader": "", "sends[].remove": "",
-        ]),
+        ], hide: ["sync_lock"]),
         "audio_bus": ToolBrief(text: "Add, change or remove a submix bus (effects, fader, automation, mute/solo, output); route tracks via track_update output/sends.", args: [
             "bus": "Bus id", "action": "", "name": "", "output": "master or a bus id", "tracks": "Tracks to route into it", "layout": "",
             "volume": "", "gain_db": "", "volume_keys": "[{t, v}] timeline seconds", "muted": "", "solo": "",

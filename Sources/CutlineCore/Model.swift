@@ -312,6 +312,9 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var output: String?
     /// Copies of the track's sound into other buses.
     public var sends: [AudioSend] = []
+    /// Ripples across tracks (insert edits, range deletes, all-track ripple trims) move and cut this track's clips.
+    /// Off leaves them alone, except clips linked to a clip that moves.
+    public var syncLock = true
 
     public init(id: String, kind: TrackKind, name: String, muted: Bool = false, hidden: Bool = false, volume: Double = 1, effects: [Effect] = [], clips: [Clip] = []) {
         self.id = id
@@ -324,7 +327,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.clips = clips
     }
 
-    enum CodingKeys: String, CodingKey { case id, kind, name, muted, hidden, volume, effects, clips, role, volumeCurve, output, sends }
+    enum CodingKeys: String, CodingKey { case id, kind, name, muted, hidden, volume, effects, clips, role, volumeCurve, output, sends, syncLock }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -340,6 +343,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         volumeCurve = try c.decodeIfPresent(Curve.self, forKey: .volumeCurve)
         output = try c.decodeIfPresent(String.self, forKey: .output)
         sends = try c.decodeIfPresent([AudioSend].self, forKey: .sends) ?? []
+        syncLock = try c.decodeIfPresent(Bool.self, forKey: .syncLock) ?? true
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -356,6 +360,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(volumeCurve, forKey: .volumeCurve)
         try c.encodeIfPresent(output, forKey: .output)
         if !sends.isEmpty { try c.encode(sends, forKey: .sends) }
+        if !syncLock { try c.encode(false, forKey: .syncLock) }
     }
 
     public var end: Seconds { clips.last?.end ?? 0 }

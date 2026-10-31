@@ -29,6 +29,7 @@ extension Project {
             if o.name != t.name { fields.append("name") }
             if o.muted != t.muted { fields.append(t.muted ? "muted" : "unmuted") }
             if o.hidden != t.hidden { fields.append(t.hidden ? "hidden" : "shown") }
+            if o.syncLock != t.syncLock { fields.append("sync lock \(t.syncLock ? "on" : "off")") }
             if o.volume != t.volume { fields.append("volume \(fmt2(o.volume))→\(fmt2(t.volume))") }
             if o.effects != t.effects { fields.append("effects") }
             if o.volumeCurve != t.volumeCurve { fields.append(t.volumeCurve == nil ? "volume automation removed" : "volume automation (\(t.volumeCurve!.keys.count) keys)") }

@@ -19,15 +19,17 @@ public enum ClipEdge: String, Sendable {
 
 extension Project {
     /// Trims a clip and its linked clips alike, so linked picture and sound stay in sync: slip slips them all, slide
-    /// slides them all, plain, roll and ripple trims move a linked clip's edge when it meets the trimmed edge (a split
-    /// edit's offset edge stays), and clips a ripple shifts take their linked clips along. `delta` is seconds on the
+    /// slides them all, plain and roll trims move a linked clip's edge when it meets the trimmed edge (a split edit's
+    /// offset edge stays), ripple moves every linked clip's edge by the same amount, and clips a ripple shifts take
+    /// their linked clips along. Neighbours a slide or roll lengthens or shortens take their linked clips along too.
+    /// With `allTracks` a ripple carries to every sync-locked track (see `rippleTracks`). `delta` is seconds on the
     /// timeline (positive moves the edge later); for slip it is seconds of source. Returns a description of what moved.
     @discardableResult
     public mutating func trim(_ id: String, mode: TrimMode, edge: ClipEdge, delta rawDelta: Seconds, allTracks: Bool = false) throws -> String {
         guard let c = clip(id), let loc = locateClip(id) else { throw EditError("No clip \(id)") }
         let partners = linked(id).compactMap { clip($0) }.filter { o in locateClip(o.id).map { $0.track != loc.track } ?? false }
-        let starts = clipStarts
-        let line = try trimOne(id, mode: mode, edge: edge, delta: rawDelta, allTracks: allTracks)
+        let starts = clipStarts, before = clipsById
+        let line = try trimOne(id, mode: mode, edge: edge, delta: rawDelta, allTracks: allTracks, skip: Set(partners.map(\.id)))
         guard abs(canvas.snap(rawDelta)) > eps else { return line }
         let tol = canvas.frameDuration / 2
         var followed: [String] = []
@@ -49,14 +51,14 @@ extension Project {
                     guard met else { continue }
                     _ = try trimOne(o.id, mode: .plain, edge: edge, delta: rawDelta)
                 case .ripple:
-                    guard met else { continue }
                     if allTracks {
-                        // Every track already shifted; only the edge moves.
-                        guard let cur = clip(o.id), let ol = locateClip(o.id) else { continue }
+                        // Every track already rippled; only the edge moves.
+                        guard let cur = clip(o.id) else { continue }
                         let d = canvas.snap(rawDelta)
+                        guard (edge == .start ? cur.duration - d : cur.duration + d) >= canvas.frameDuration else { throw EditError("it would be shorter than a frame.") }
                         var u = edge == .start ? (d > 0 ? Project.trimmedLeft(cur, to: cur.start + d) : Project.extendedLeft(cur, by: -d)) : (d < 0 ? Project.trimmedRight(cur, to: cur.end + d) : Project.extendedRight(cur, by: d))
                         if edge == .start { u.start = cur.start }
-                        tracks[ol.track].clips[ol.clip] = u
+                        try replaceClip(u)
                     } else {
                         _ = try trimOne(o.id, mode: .ripple, edge: edge, delta: rawDelta)
                     }
@@ -66,14 +68,23 @@ extension Project {
             }
             followed.append(o.id)
         }
+        if mode == .ripple && allTracks {
+            for t in tracks {
+                if let (a, b) = zip(t.clips, t.clips.dropFirst()).first(where: { $1.start < $0.end - eps }) {
+                    throw EditError("Rippling every track would overlap \(a.id) and \(b.id) on \(t.id); make room there, or turn its sync lock off (track_update sync_lock:false) so it stays put")
+                }
+            }
+        }
         let carried = mode == .ripple ? propagateLinkedShifts(before: starts) : []
+        let neighbours = try followSideEffects(before: before, skip: Set([id] + partners.map(\.id)))
         var out = line
         if !followed.isEmpty { out += "; linked \(followed.joined(separator: ", ")) \(mode == .slip ? "slipped" : mode == .slide ? "slid" : "trimmed") with it" }
         if !carried.isEmpty { out += "; linked \(carried.joined(separator: ", ")) moved with their clips" }
+        if !neighbours.isEmpty { out += "; linked \(neighbours.joined(separator: ", ")) followed the neighbour\(neighbours.count == 1 ? "" : "s") the \(mode.rawValue) changed" }
         return out
     }
 
-    mutating func trimOne(_ id: String, mode: TrimMode, edge: ClipEdge, delta rawDelta: Seconds, allTracks: Bool = false) throws -> String {
+    mutating func trimOne(_ id: String, mode: TrimMode, edge: ClipEdge, delta rawDelta: Seconds, allTracks: Bool = false, skip: Set<String> = []) throws -> String {
         guard let loc = locateClip(id) else { throw EditError("No clip \(id)") }
         let t = loc.track
         let delta = canvas.snap(rawDelta)
@@ -101,13 +112,18 @@ extension Project {
             if mode == .ripple {
                 let shift = edge == .start ? -delta : delta
                 let pivot = c.end
-                for ti in tracks.indices where ti == t || allTracks {
-                    for i in tracks[ti].clips.indices where tracks[ti].clips[i].id != id && tracks[ti].clips[i].start >= pivot - eps {
-                        tracks[ti].clips[i].start = canvas.snap(tracks[ti].clips[i].start + shift)
-                    }
+                var notes: [String] = []
+                if allTracks {
+                    // Other tracks lose or gain the time at the edit point itself: the clip's head or tail.
+                    let at = edge == .start ? c.start : c.end + min(0, delta)
+                    let span: RippleSpan = shift < 0 ? .close(TimeRange(at, at - shift)) : .open(at: at, amount: shift)
+                    notes = rippleTracks(tracks.indices.filter { $0 != t }, span, skip: skip.union([id]), carryLinked: true)
+                    for i in markers.indices where markers[i].time >= span.point - eps { markers[i].time += shift }
                 }
-                if allTracks { for i in markers.indices where markers[i].time >= pivot - eps { markers[i].time += shift } }
-                return "\(id) \(edge.rawValue) \(delta > 0 ? "+" : "")\(fmt2(delta))s; later clips moved \(shift > 0 ? "+" : "")\(fmt2(shift))s"
+                let moved = tracks[t].clips.indices.filter { tracks[t].clips[$0].id != id && tracks[t].clips[$0].start >= pivot - eps }
+                for i in moved { tracks[t].clips[i].start = canvas.snap(tracks[t].clips[i].start + shift) }
+                if !moved.isEmpty { notes.insert("\(tracks[t].id): \(moved.count) clip\(moved.count == 1 ? "" : "s") moved \(shift > 0 ? "+" : "−")\(fmt2(abs(shift)))s", at: 0) }
+                return "\(id) \(edge.rawValue) \(delta > 0 ? "+" : "")\(fmt2(delta))s; " + (notes.isEmpty ? "nothing later to move" : notes.joined(separator: "; "))
             }
             return "\(id) \(edge.rawValue) \(delta > 0 ? "+" : "")\(fmt2(delta))s"
         case .roll:

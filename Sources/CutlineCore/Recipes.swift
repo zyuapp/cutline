@@ -85,7 +85,7 @@ extension Project {
             if let s = tracks[i].clips.first(where: { t > $0.start + eps && t < $0.end - eps }) { _ = try? splitClip(s.id, at: t) }
         }
         let hold = frozen.duration
-        rippleInsert(at: t, duration: hold, splitTrack: ti)
+        rippleInsert(at: t, duration: hold, splitTrack: ti, syncLock: false)
         if absorb, let rest = tracks[ti].clips.first(where: { $0.id != c.id && $0.mediaId == c.mediaId && abs($0.start - (t + hold)) < eps }) {
             tracks[ti].clips.removeAll { $0.id == rest.id }
             for i in transitions.indices where transitions[i].from == rest.id { transitions[i].from = frozen.id }

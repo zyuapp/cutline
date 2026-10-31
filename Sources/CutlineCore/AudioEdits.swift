@@ -49,12 +49,48 @@ extension Project {
     /// The offset snaps to whole frames unless `subframe`; returns the offset applied.
     @discardableResult
     public mutating func splitEdit(left leftId: String, right rightId: String, offset requested: Seconds, subframe: Bool = false) throws -> Seconds {
-        let offset = subframe ? requested : canvas.snap(requested)
+        try splitEditMoving(left: leftId, right: rightId, offset: requested, subframe: subframe).offset
+    }
+
+    /// `splitEdit`, also returning the linked sound clips it moved: a picture whose sound was detached (silent, with
+    /// linked sound clips on audio tracks) gets the split by moving those clips' edges to the sound cut, so the
+    /// incoming sound is extended or trimmed rather than the silent picture's. Detached edges land on the frame grid.
+    public mutating func splitEditMoving(left leftId: String, right rightId: String, offset requested: Seconds, subframe: Bool = false) throws -> (offset: Seconds, moved: [String]) {
         guard let l = locateClip(leftId), let r = locateClip(rightId) else { throw EditError("Both clips must exist") }
         guard l.track == r.track else { throw EditError("\(leftId) and \(rightId) are on different tracks") }
         let a = tracks[l.track].clips[l.clip], b = tracks[r.track].clips[r.clip]
         guard abs(a.end - b.start) < 1e-3 else { throw EditError("\(leftId) must end where \(rightId) starts (they're \(fmt(b.start - a.end))s apart)") }
+        let aSound = detachedSound(a), bSound = detachedSound(b)
+        let offset = subframe && aSound.isEmpty && bSound.isEmpty ? requested : canvas.snap(requested)
         var na = a, nb = b
+        if !aSound.isEmpty || !bSound.isEmpty {
+            let cut = canvas.snap(b.start - offset)
+            if aSound.isEmpty { na.audioLag = cut - a.end }
+            if bSound.isEmpty { nb.audioLead = b.start - cut }
+            guard na.audioRange.duration > 0.05, nb.audioRange.duration > 0.05 else { throw EditError("A \(fmt(abs(offset)))s split would leave no sound on one of the clips") }
+            var edits: [Clip] = []
+            for s in aSound {
+                guard cut - s.start >= max(0.05, canvas.frameDuration) else { throw EditError("A \(fmt(abs(offset)))s split would leave \(a.id)'s sound \(s.id) with nothing to play") }
+                edits.append(cut < s.end ? Project.trimmedRight(s, to: cut) : Project.extendedRight(s, by: cut - s.end))
+            }
+            for s in bSound {
+                guard s.end - cut >= max(0.05, canvas.frameDuration) else { throw EditError("A \(fmt(abs(offset)))s split would leave \(b.id)'s sound \(s.id) with nothing to play") }
+                edits.append(cut > s.start ? Project.trimmedLeft(s, to: cut) : Project.extendedLeft(s, by: s.start - cut))
+            }
+            let track = tracks[l.track]
+            try checkClipFits(na, track: track)
+            try checkClipFits(nb, track: track)
+            tracks[l.track].clips[l.clip] = na
+            tracks[r.track].clips[r.clip] = nb
+            // Shorten first so a sound clip can grow into the room the other gave up.
+            let old = Dictionary(uniqueKeysWithValues: (aSound + bSound).map { ($0.id, $0) })
+            for e in edits.sorted(by: { $0.duration - old[$0.id]!.duration < $1.duration - old[$1.id]!.duration }) {
+                do { try replaceClip(e) } catch {
+                    throw EditError("\(e.id), the detached sound of \(aSound.contains { $0.id == e.id } ? a.id : b.id), can't reach the sound cut at \(fmt2(cut))s: \(error.localizedDescription)")
+                }
+            }
+            return (offset, edits.map(\.id))
+        }
         if offset >= 0 {
             nb.audioLead = offset
             na.audioLag = -offset
@@ -68,7 +104,16 @@ extension Project {
         try checkClipFits(nb, track: track)
         tracks[l.track].clips[l.clip] = na
         tracks[r.track].clips[r.clip] = nb
-        return offset
+        return (offset, [])
+    }
+
+    /// A silent picture's linked sound clips on audio tracks (its sound after detach_audio or split channels), or []
+    /// when the clip plays its own sound or has none linked.
+    public func detachedSound(_ c: Clip) -> [Clip] {
+        guard c.link != nil, c.volume <= 1e-6, c.anim["audio.volume"] == nil, let loc = locateClip(c.id), tracks[loc.track].kind == .video else { return [] }
+        return linked(c.id).compactMap { clip($0) }.filter { o in
+            hasSound(o) && (locateClip(o.id).map { tracks[$0.track].kind == .audio } ?? false) && o.end > c.start && o.start < c.end
+        }
     }
 
     /// " (snapped to 14 frames, 0.583s)" when snapping moved `requested`, else "".
@@ -113,6 +158,29 @@ extension Project {
         let neighbour: Clip? = edge == .start
             ? (loc.clip > 0 ? clips[loc.clip - 1] : nil).flatMap { abs($0.end - c.start) < 1e-3 ? $0 : nil }
             : (loc.clip + 1 < clips.count ? clips[loc.clip + 1] : nil).flatMap { abs($0.start - c.end) < 1e-3 ? $0 : nil }
+        let detached = detachedSound(c)
+        if !detached.isEmpty {
+            let heard = edge == .start ? detached.map(\.start).min()! : detached.map(\.end).max()!
+            let target = heard + delta
+            if let n = neighbour, hasSound(n) {
+                let (applied, moved) = edge == .start
+                    ? try splitEditMoving(left: n.id, right: id, offset: c.start - target)
+                    : try splitEditMoving(left: id, right: n.id, offset: c.end - target)
+                let cut = (edge == .start ? c.start : c.end) - applied
+                return "Rolled the sound cut between \(edge == .start ? n.id : id) and \(edge == .start ? id : n.id) to \(fmt2(cut))s, moving \(id)'s detached sound \(moved.filter { m in detached.contains { $0.id == m } }.joined(separator: ", "))" + (moved.count > detached.count ? " and \(n.id)'s \(moved.filter { m in !detached.contains { $0.id == m } }.joined(separator: ", "))" : "")
+            }
+            var lines: [String] = []
+            for s in detached {
+                let edgeAt = edge == .start ? s.start : s.end
+                guard abs(edgeAt - heard) < canvas.frameDuration / 2 else { continue }
+                let to = canvas.snap(edgeAt + delta)
+                let u = edge == .start ? (to > s.start ? Project.trimmedLeft(s, to: to) : Project.extendedLeft(s, by: s.start - to)) : (to < s.end ? Project.trimmedRight(s, to: to) : Project.extendedRight(s, by: to - s.end))
+                guard u.duration >= canvas.frameDuration else { throw EditError("That would leave \(s.id) (\(id)'s detached sound) with no sound") }
+                try replaceClip(u)
+                lines.append("\(s.id) now runs \(fmt2(u.start))–\(fmt2(u.end))")
+            }
+            return "Moved \(id)'s detached sound: " + lines.joined(separator: ", ") + " (picture \(fmt2(c.start))–\(fmt2(c.end)))"
+        }
         if let n = neighbour, hasSound(n) {
             let requested = edge == .start ? c.audioLead - delta : -(c.audioLag + delta)
             let applied = edge == .start

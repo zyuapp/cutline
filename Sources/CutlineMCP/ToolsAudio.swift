@@ -60,8 +60,8 @@ extension Toolbox {
                 guard parts.count == 2 else { throw EditError("edit is \"clip_a|clip_b\"") }
                 let requested = try a.double("offset")
                 return try runEdit(requested >= 0 ? "J cut into \(Toolbox.clipName(parts[1], try session.project()))" : "L cut out of \(Toolbox.clipName(parts[0], try session.project()))", dry: dry) { p in
-                    let offset = try p.splitEdit(left: parts[0], right: parts[1], offset: requested, subframe: a.bool("subframe", default: false))
-                    let note = p.snapNote(requested, offset)
+                    let (offset, moved) = try p.splitEditMoving(left: parts[0], right: parts[1], offset: requested, subframe: a.bool("subframe", default: false))
+                    let note = p.snapNote(requested, offset) + (moved.isEmpty ? "" : " (detached sound: " + moved.compactMap { p.clip($0) }.map { "\($0.id) now \(fmt2($0.start))–\(fmt2($0.end))s" }.joined(separator: ", ") + ")")
                     return offset >= 0
                         ? "\(parts[1])'s sound now starts \(fmt(offset))s before its picture, under the end of \(parts[0])\(note)."
                         : "\(parts[0])'s sound now continues \(fmt(-offset))s over the start of \(parts[1])\(note)."

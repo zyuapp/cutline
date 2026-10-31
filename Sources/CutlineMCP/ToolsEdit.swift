@@ -179,8 +179,8 @@ extension Toolbox {
                 }
                 return "Added \(ids.count) clip(s) on \(trackId) at \(fmt(pieces.first?.start ?? at))–\(fmt(pieces.last.map { $0.start + $0.duration } ?? at)), looping \(clip.mediaId!) \(fmt2(loopSource.start))–\(fmt2(loopSource.end))s: \(ids.joined(separator: ", "))"
             }
-            let placed = try p.addClip(clip, trackId: trackId, mode: mode)
-            return "Added \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))" + framing + (warning.map { ". " + $0 } ?? "")
+            let (placed, rippled) = try p.addClipReporting(clip, trackId: trackId, mode: mode)
+            return "Added \(placed.id) on \(trackId) at \(fmt(placed.start))–\(fmt(placed.end))" + framing + (warning.map { ". " + $0 } ?? "") + (rippled.isEmpty ? "" : ". " + (mode == .insert ? "Sync-locked tracks: " : "") + rippled.joined(separator: "; "))
         })
 
         addEdit(EditTool(name: "text_add", description: "Add a title, lower third, label or call-out. Goes on a text layer above the video (created as needed, a new one if the range is busy).", schema: Schema.object(Toolbox.textProps.merging([
@@ -379,8 +379,8 @@ extension Toolbox {
         ], required: ["start", "end"]), label: { a, _ in "Cut \(Toolbox.timeLabel(a.raw["start"]))–\(Toolbox.timeLabel(a.raw["end"]))" }) { p, args in
             let r = TimeRange(try args.time("start"), try args.time("end"))
             guard r.duration > 0 else { throw EditError("end must be after start") }
-            p.deleteRange(r, trackIds: args.strings("track_ids"), ripple: args.bool("ripple", default: true))
-            return "Removed \(fmt(r.start))–\(fmt(r.end)) (\(fmt2(r.duration))s)"
+            let notes = p.deleteRange(r, trackIds: args.strings("track_ids"), ripple: args.bool("ripple", default: true))
+            return "Removed \(fmt(r.start))–\(fmt(r.end)) (\(fmt2(r.duration))s)" + (notes.isEmpty ? "" : ". " + notes.joined(separator: "; "))
         })
 
         addEdit(EditTool(name: "source_cut", description: "Cut source ranges of a media file out of the timeline wherever they play, rippling all tracks. Ranges are SOURCE times from media_transcript, so they stay valid after earlier edits. The main tool for removing flubs, repeated takes, tangents or specific words.", schema: Schema.object([
@@ -512,6 +512,7 @@ extension Toolbox {
             "volume": Schema.number("0–2, multiplies clip volumes (e.g. 0.25 to duck music under speech)"),
             "remove": Schema.bool("Delete the track and its clips"),
             "role": Schema.string("Audio role for stem export: dialogue, music, effects, or a custom name"),
+            "sync_lock": Schema.bool("Default true: insert edits, range_delete and all-track ripple trims move this track's later clips and split or cut clips at the edit point. false leaves the track in place (a music bed), except clips linked to clips that move"),
         ].merging(Toolbox.trackRoutingSchema) { a, _ in a }, required: ["track"]), label: { a, p in Toolbox.describeTrackUpdate(a, p) }) { p, args in
             let id = try args.string("track")
             guard let i = p.trackIndex(id) else { throw EditError("No track \(id)") }
@@ -524,6 +525,7 @@ extension Toolbox {
             if let v = args.optBool("hidden") { p.tracks[i].hidden = v }
             if let v = args.optDouble("volume") { p.tracks[i].volume = v }
             if let v = args.optString("role") { p.tracks[i].role = v.isEmpty ? nil : v }
+            if let v = args.optBool("sync_lock") { p.tracks[i].syncLock = v }
             try Toolbox.applyTrackRouting(&p.tracks[i], args)
             return "Updated track \(id)"
         })
@@ -808,6 +810,7 @@ extension Toolbox {
         if let h = a.optBool("hidden") { return h ? "Hide \(name)" : "Show \(name)" }
         if a.optDouble("volume") != nil { return "Set \(name) volume" }
         if let r = a.optString("role") { return "Set \(name) role to \(r)" }
+        if let l = a.optBool("sync_lock") { return "Sync lock \(l ? "on" : "off") for \(name)" }
         if let o = a.optString("output") { return "Route \(name) to \(o)" }
         if a.has("sends") { return "Set \(name) sends" }
         return "Rename \(name)"

@@ -294,6 +294,7 @@ enum Describe {
             var flags: [String] = []
             if t.muted { flags.append("muted") }
             if t.hidden { flags.append("hidden") }
+            if !t.syncLock { flags.append("sync lock off") }
             if t.volume != 1 { flags.append("vol \(fmt2(t.volume))") }
             let fx = t.effects.isEmpty ? "" : " fx " + t.effects.map { "\($0.id)(\($0.type))" }.joined(separator: " → ")
             lines.append("  \(t.id) \(t.kind.rawValue) \"\(t.name)\"\(flags.isEmpty ? "" : " [" + flags.joined(separator: ", ") + "]"): \(t.clips.count) clips\(fx)")

@@ -29,7 +29,8 @@ extension Toolbox {
                 case .slip: throw EditError("slip takes by (source seconds)")
                 case .slide: delta = target - c.start
                 default:
-                    let sound = c.audioRange
+                    let detached = p.detachedSound(c)
+                    let sound = detached.isEmpty ? c.audioRange : TimeRange(detached.map(\.start).min()!, detached.map(\.end).max()!)
                     delta = target - (edge == .start ? (audio ? sound.start : c.start) : (audio ? sound.end : c.end))
                 }
             } else {

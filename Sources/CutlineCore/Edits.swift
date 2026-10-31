@@ -116,7 +116,15 @@ extension Project {
     /// Places a clip on a track. Start and duration snap to the canvas frame grid.
     @discardableResult
     public mutating func addClip(_ clip: Clip, trackId: String, mode: PlaceMode) throws -> Clip {
+        try addClipReporting(clip, trackId: trackId, mode: mode).clip
+    }
+
+    /// `addClip`, with what an insert or overwrite did to other tracks: per track, clips moved, split or cut.
+    /// An overwrite cuts the same range out of the overwritten clips' linked clips (a picture's sound, not a sound's
+    /// picture); an insert ripples every sync-locked track.
+    public mutating func addClipReporting(_ clip: Clip, trackId: String, mode: PlaceMode) throws -> (clip: Clip, notes: [String]) {
         guard let t = trackIndex(trackId) else { throw EditError("No track \(trackId)") }
+        var notes: [String] = []
         var clip = clip
         if mode == .append { clip.start = tracks[t].end }
         clip.start = canvas.snap(max(0, clip.start))
@@ -126,15 +134,23 @@ extension Project {
         let range = TimeRange(clip.start, clip.end)
         switch mode {
         case .append, .place: break
-        case .overwrite: clearRange(trackIndex: t, range)
-        case .insert: rippleInsert(at: clip.start, duration: clip.duration, splitTrack: t)
+        case .overwrite:
+            let before = tracks, existing = Set(tracks.flatMap(\.clips).map(\.id))
+            let hit = tracks[t].clips.filter { $0.start < range.end - eps && $0.end > range.start + eps }
+            let partners = Set(hit.flatMap { linked($0.id) })
+            clearRange(trackIndex: t, range)
+            let others = tracks.indices.filter { u in u != t && (tracks[t].kind == .video || tracks[u].kind == .audio) && tracks[u].clips.contains { partners.contains($0.id) } }
+            for u in others { clearRange(trackIndex: u, range, keep: { !partners.contains($0.id) }) }
+            relinkPieces(existing: existing)
+            notes = rippleNotes(before: before, tracks: others).map { "linked " + $0 }
+        case .insert: notes = rippleInsert(at: clip.start, duration: clip.duration, splitTrack: t)
         }
         if let blocker = tracks[t].clips.first(where: { $0.start < range.end - eps && $0.end > range.start + eps }) {
             throw EditError("Clip overlaps \(blocker.id) on \(trackId) (\(fmt(blocker.start))–\(fmt(blocker.end))). Use mode overwrite or insert, or another track.")
         }
         tracks[t].clips.append(clip)
         tracks[t].clips.sort { $0.start < $1.start }
-        return clip
+        return (clip, notes)
     }
 
     /// Replaces a clip with an edited version of itself. With `ripple`, later clips on its
@@ -293,24 +309,34 @@ extension Project {
         tracks[t].clips[r.clip].limitSound(from: b.start)
     }
 
-    /// Removes a timeline range from the given tracks (all when nil). With `ripple`,
-    /// everything after the range moves earlier, keeping the tracks in sync.
-    public mutating func deleteRange(_ range: TimeRange, trackIds: [String]? = nil, ripple: Bool) {
+    /// Removes a timeline range from the given tracks (all when nil). With `ripple`, everything after the range moves
+    /// earlier, keeping the tracks in sync; across all tracks, tracks with sync lock off are left alone (but for clips
+    /// linked to clips that move). Returns what moved or was cut on each track.
+    @discardableResult
+    public mutating func deleteRange(_ range: TimeRange, trackIds: [String]? = nil, ripple: Bool) -> [String] {
         let r = TimeRange(canvas.snap(range.start), canvas.snap(range.end))
-        guard r.duration > eps else { return }
+        guard r.duration > eps else { return [] }
         let scope = tracks.indices.filter { trackIds == nil || trackIds!.contains(tracks[$0].id) }
-        for t in scope {
-            clearRange(trackIndex: t, r)
-            if ripple {
-                for i in tracks[t].clips.indices where tracks[t].clips[i].start >= r.end - eps {
-                    tracks[t].clips[i].start = canvas.snap(tracks[t].clips[i].start - r.duration)
+        var notes: [String] = []
+        if ripple && trackIds == nil {
+            notes = rippleTracks(scope, .close(r))
+        } else {
+            let existing = Set(tracks.flatMap(\.clips).map(\.id))
+            for t in scope {
+                clearRange(trackIndex: t, r)
+                if ripple {
+                    for i in tracks[t].clips.indices where tracks[t].clips[i].start >= r.end - eps {
+                        tracks[t].clips[i].start = canvas.snap(tracks[t].clips[i].start - r.duration)
+                    }
                 }
             }
+            relinkPieces(existing: existing)
         }
         if ripple && trackIds == nil {
             markers.removeAll { $0.time >= r.start && $0.time < r.end }
             for i in markers.indices where markers[i].time >= r.end { markers[i].time -= r.duration }
         }
+        return notes
     }
 
     /// Timeline ranges where the given source ranges of a media file play.
@@ -410,10 +436,10 @@ extension Project {
 
     // MARK: Primitives
 
-    mutating func clearRange(trackIndex t: Int, _ r: TimeRange) {
+    mutating func clearRange(trackIndex t: Int, _ r: TimeRange, keep: (Clip) -> Bool = { _ in false }, isolating: Bool = true) {
         var out: [Clip] = []
         for c in tracks[t].clips {
-            if c.end <= r.start + eps || c.start >= r.end - eps {
+            if c.end <= r.start + eps || c.start >= r.end - eps || keep(c) {
                 out.append(c)
                 continue
             }
@@ -436,7 +462,7 @@ extension Project {
             }
         }
         tracks[t].clips = out.sorted { $0.start < $1.start }
-        isolateSound(trackIndex: t, around: r)
+        if isolating { isolateSound(trackIndex: t, around: r) }
     }
 
     /// After `r` was emptied on track `t` (or opened, for an insert): sound of clips before `r` stops by its start and
@@ -471,17 +497,31 @@ extension Project {
         tracks[t].clips = clips
     }
 
-    mutating func rippleInsert(at time: Seconds, duration: Seconds, splitTrack: Int) {
+    /// Opens `duration` at `time`: the clip there on `splitTrack` splits and later clips move. With `syncLock`, every
+    /// sync-locked track ripples alike (clips spanning `time` split); without it other tracks' later clips move and
+    /// clips spanning `time` play on. Returns what moved or split on the other tracks.
+    @discardableResult
+    mutating func rippleInsert(at time: Seconds, duration: Seconds, splitTrack: Int, syncLock: Bool = true) -> [String] {
         if let c = tracks[splitTrack].clips.first(where: { time > $0.start + eps && time < $0.end - eps }) {
             _ = try? splitClip(c.id, at: time)
         }
-        for t in tracks.indices {
-            isolateSound(trackIndex: t, around: TimeRange(time, time))
-            for i in tracks[t].clips.indices where tracks[t].clips[i].start >= time - eps {
-                tracks[t].clips[i].start = canvas.snap(tracks[t].clips[i].start + duration)
+        var notes: [String] = []
+        if syncLock {
+            notes = rippleTracks(tracks.indices.filter { $0 != splitTrack }, .open(at: time, amount: duration), carryLinked: true)
+            isolateSound(trackIndex: splitTrack, around: TimeRange(time, time))
+            for i in tracks[splitTrack].clips.indices where tracks[splitTrack].clips[i].start >= time - eps {
+                tracks[splitTrack].clips[i].start = canvas.snap(tracks[splitTrack].clips[i].start + duration)
+            }
+        } else {
+            for t in tracks.indices {
+                isolateSound(trackIndex: t, around: TimeRange(time, time))
+                for i in tracks[t].clips.indices where tracks[t].clips[i].start >= time - eps {
+                    tracks[t].clips[i].start = canvas.snap(tracks[t].clips[i].start + duration)
+                }
             }
         }
         for i in markers.indices where markers[i].time >= time { markers[i].time += duration }
+        return notes
     }
 
     /// Halves of a clip cut at `t`. Each half keeps only the sound the clip played on its side of `t`, so a cut inside
