@@ -372,6 +372,14 @@ public struct EffectType: Sendable {
         "rate": ["count", "density", "emission", "emit_rate", "per_second", "amount"],
         "lifetime": ["life", "duration"],
         "sprite": ["shape", "particle"],
+        "title": ["name", "heading", "headline", "main", "line1", "first_line", "person", "speaker"],
+        "subtitle": ["role", "job", "job_title", "jobtitle", "position", "occupation", "body", "text", "description", "subheading", "subhead", "tagline", "caption", "line2", "second_line", "handle"],
+        "quote": ["text", "body", "quotation"],
+        "author": ["name", "attribution", "by", "source", "speaker", "credit"],
+        "kicker": ["eyebrow", "overline", "pretitle"],
+        "button": ["cta", "call_to_action"],
+        "label": ["text", "caption"],
+        "badge": ["initials", "avatar"],
     ]
 
     /// The parameter an agent most likely meant: the name itself, a known synonym, or the one unambiguous

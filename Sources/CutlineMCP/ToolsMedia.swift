@@ -434,11 +434,19 @@ extension Toolbox {
             .map { $0.isLetter || $0.isNumber ? $0 : "-" }
             .reduce(into: "") { s, c in if !(c == "-" && s.hasSuffix("-")) { s.append(c) } }
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        let stem = String((base.isEmpty ? "media" : base).prefix(24))
+        let stem = readableStem(base.isEmpty ? "media" : base, limit: 40)
         var id = stem
         var n = 2
         while existing.contains(id) { id = "\(stem)-\(n)"; n += 1 }
         return id
+    }
+
+    /// `base` (words joined by "-") cut to `limit` characters at the last word boundary that keeps at least half.
+    static func readableStem(_ base: String, limit: Int) -> String {
+        guard base.count > limit else { return base }
+        let cut = String(base.prefix(limit))
+        if let dash = cut.lastIndex(of: "-"), cut.distance(from: cut.startIndex, to: dash) >= limit / 2 { return String(cut[..<dash]) }
+        return cut
     }
 
     static func safeName(_ s: String) -> String {

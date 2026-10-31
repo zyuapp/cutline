@@ -3,8 +3,7 @@ import CutlineCore
 import Foundation
 import simd
 
-/// Follows points through a media file with pyramidal Lucas–Kanade on the gray picture: each point's patch is found
-/// in the next frame, then re-aligned to how it looked where tracking began, so small errors don't add up.
+/// Pyramidal Lucas–Kanade on the gray picture: where a point's patch moved from one frame to another.
 enum PointTracker {
     static let analysisSize = CGSize(width: 960, height: 960)
 
@@ -125,64 +124,5 @@ enum PointTracker {
             d = l > 0 ? r.d * 2 : r.d
         }
         return last.map { (d, $0.residual) }
-    }
-
-    struct Run {
-        var samples: [(t: Seconds, points: [SIMD2<Double>?])]
-        var cut: ShotBoundary?
-    }
-
-    /// Tracks `points` (frame fractions at `start`) toward `end`, every `1 / fps` seconds; `patch` is the patch side in
-    /// frame heights. A point is nil once its patch stops matching; it is not picked up again.
-    static func run(media url: URL, from start: Seconds, to end: Seconds, points: [SIMD2<Double>], patch: Double, fps: Double, cuts: [Seconds]) async throws -> Run {
-        let forward = end >= start
-        let frames = try await SourceFrames.open(url: url, maxSize: analysisSize, forward: forward, from: start)
-        let step = 1 / max(1, min(fps, frames.fps))
-        let n = Int((abs(end - start) / step + 1e-6).rounded(.down))
-        let times = (0...n).map { start + (forward ? 1 : -1) * Double($0) * step }
-        let size = SIMD2(Double(frames.size.width), Double(frames.size.height))
-        let radius = max(5, min(24, Int((patch * size.y / 2).rounded())))
-        return try await runBlocking { cancelled -> Run in
-            let shots = TrackerShotGuard(cuts: cuts, frameDuration: max(step, frames.frameDuration))
-            let first = try frames.frame(near: start)
-            var cut = shots.feed(first.buffer, time: first.time)
-            let reference = pyramid(Gray(first.buffer), levels: 4)
-            var prev = reference
-            var prevTime = first.time
-            let origin = points.map { SIMD2<Float>(Float($0.x * size.x), Float($0.y * size.y)) }
-            var pos: [SIMD2<Float>?] = origin
-            var out: [(t: Seconds, points: [SIMD2<Double>?])] = [(start, points)]
-            for t in times.dropFirst() {
-                if cancelled() { throw CancellationError() }
-                let f = try frames.frame(near: t)
-                if f.time != prevTime {
-                    if let b = shots.feed(f.buffer, time: f.time) {
-                        cut = b
-                        break
-                    }
-                    let next = pyramid(Gray(f.buffer), levels: 4)
-                    for i in pos.indices {
-                        guard let p = pos[i] else { continue }
-                        guard let step = track(prev, p, next, radius: radius) else { pos[i] = nil; continue }
-                        var moved = p + step.d
-                        // Drift correction: align the starting patch to where the point is now.
-                        if let fix = track(reference, origin[i], next, guess: moved - origin[i], radius: radius), simd_length(origin[i] + fix.d - moved) < 1.5, fix.residual < 0.08 {
-                            moved = origin[i] + fix.d
-                        } else if step.residual > 0.12 {
-                            pos[i] = nil
-                            continue
-                        }
-                        pos[i] = moved
-                    }
-                    prev = next
-                    prevTime = f.time
-                }
-                out.append((t, pos.map { $0.map { SIMD2(Double($0.x) / size.x, Double($0.y) / size.y) } }))
-            }
-            if cut == nil { cut = shots.finish() }
-            if let cut { out.removeAll { forward ? $0.t >= cut.time : $0.t <= cut.time } }
-            if out.isEmpty { out = [(start, points)] }
-            return Run(samples: out.sorted { $0.t < $1.t }, cut: cut)
-        }
     }
 }

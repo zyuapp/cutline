@@ -119,9 +119,11 @@ extension Toolbox {
         EditorTerm(term: "Sky replacement", aliases: "sky replacement, replace sky, sky swap, new sky, sky mask, sky keyer", summary: "recipe sky_replace keys the sky with mask.sky (a heuristic: bright, smooth, sky-colored region touching the top), puts the new sky under it and relights the foreground. Check the matte; hair, branches, haze and night skies are hard.", calls: [
             ("recipe", #"{"name":"sky_replace","args":{"clip":"<clip>","image":"/path/to/sky.jpg","blend":0.5}}"#),
         ]),
-        EditorTerm(term: "Roto", aliases: "rotoscope, roto, roto brush, magic mask, object mask, garbage matte, bezier mask", summary: "mask.shape draws a pen mask (recipe track_mask makes it follow); mask.object rotos a tracked object; mask.person and mask.subject segment people and subjects.", calls: [
+        EditorTerm(term: "Roto", aliases: "rotoscope, roto, roto brush, magic mask, object mask, garbage matte, bezier mask", summary: "mask.shape draws a pen mask (recipe track_mask makes it follow; mode person or subject redraws it from the matte outline every frame; correct:[{at, points}] fixes a drifting frame); mask.object rotos a tracked object; mask.person and mask.subject segment people and subjects.", calls: [
             ("effect_add", #"{"target":"<clip>","type":"mask.shape","params":{"points":"0.3,0.3 0.7,0.3 0.7,0.7 0.3,0.7","feather":0.01}}"#),
-            ("recipe", #"{"name":"track_mask","args":{"clip":"<clip>"}}"#),
+            ("recipe", #"{"name":"track_mask","args":{"clip":"<clip>","mode":"points","refine":"person"}}"#),
+            ("recipe", #"{"name":"track_mask","args":{"clip":"<clip>","mode":"person"}}"#),
+            ("recipe", #"{"name":"track_mask","args":{"clip":"<clip>","mode":"points","correct":[{"at":2.5,"points":"0.31,0.2 0.52,0.21 0.55,0.9 0.29,0.9"}]}}"#),
         ]),
         // Color
         EditorTerm(term: "Power window", aliases: "power window, window, vignette mask, shape mask, circle mask, secondary window, mask grade", summary: "Any color, blur or stylize effect takes limit rect or ellipse (limit_x, limit_y, limit_width, limit_height, limit_feather, limit_invert); bind it to a face or track to follow.", calls: [

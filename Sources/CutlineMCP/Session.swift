@@ -22,6 +22,8 @@ final class Session {
     var resumed: [String] = []
     /// Ids the latest calls created, for "$last" ("last") and "$last_clip"… ("last_clip"…) references.
     var lastRefs: [String: String] = [:]
+    /// Ids named with as:"x" on any call, for "$x" in later calls of this session.
+    var names: [String: String] = [:]
 
     init() {
         jobs.factory = { [weak self] in self?.work(for: $0) }
@@ -43,6 +45,7 @@ final class Session {
         bundle = b
         built = nil
         lastRefs = [:]
+        names = [:]
         resumed = resumeJobs(b)
         var recent = Session.recentProjects.filter { $0 != url.path }
         recent.insert(url.path, at: 0)

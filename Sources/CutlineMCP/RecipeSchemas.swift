@@ -213,7 +213,7 @@ extension Toolbox {
             ]),
             .init("start", .time, "Timeline start, default 0"),
             .init("end", .time, "Timeline end, default the timeline's end"),
-            .init("every", .integer, "Beats per shot: 1, 2 (default) or 4"),
+            .init("every", .integer, "Beats per shot: 1, 2 (default; beats 1 and 3 of each bar when downbeats are known) or 4 (each downbeat)"),
             .init("music", .ids, "Music clips, tracks or media (on the timeline) whose beats to cut to; default every music clip"),
             .init("track", .string, "Default \"new\""),
             .init("align", .string, "fill (default: the first shot also covers the time before the first beat, so nothing is black), zero (same) or first_beat (trims the music's head so its first beat lands at start)", values: ["fill", "zero", "first_beat"]),
@@ -346,16 +346,21 @@ extension Toolbox {
             .init("sensitivity", .number, "mask.sky sensitivity, default 0.5; raise it when hazy sky is missed"),
             .init("at", .time, "Timeline time the sky and light are measured at, default the clip's middle"),
         ]),
-        RecipeSpec(name: "track_mask", group: "Finishing", summary: "Tracked roto: makes a mask.shape follow the footage by keyframing its points (fx.<id>.points) from the clip's source in and out. planar: the homography of the flat surface the shape lies on (a screen, sign, card; perspective included), from the shape's bounding box or corners; points: each control point tracked on its own; translate: the shape moves with its tracked bounding box. refine snaps every point to the nearest edge of Apple's subject or person matte (magnetic roto). Check with timeline_frames view:\"matte\".", args: [
+        RecipeSpec(name: "track_mask", group: "Finishing", summary: "Tracked roto: makes a mask.shape follow the footage by keyframing its points (fx.<id>.points) from the clip's source in and out. planar: the homography of the flat surface the shape lies on (a screen, sign, card; perspective included), from the shape's bounding box or corners; points: features inside the shape tracked forward and backward, a RANSAC fit of their motion carrying every point (a point keeps its own track where it agrees); translate: the shape moves with its tracked bounding box; person or subject: the shape is the outline of the person/subject matte region it covers, redrawn every frame (no mask.shape needed: one is added). refine snaps the shape to Apple's subject or person matte edge on every frame (with points, tracking continues from the snapped shape). correct [{at, points}] fixes the shape at frames where it drifts: tracking re-anchors there, from both sides, like keyframes in Mocha or Resolve. Check with timeline_frames view:\"matte\".", args: [
             .init("clip", .string, "Video clip with the mask.shape"),
             .init("effect", .string, "The mask.shape effect id; default the clip's first"),
-            .init("mode", .string, "planar (default), points or translate", values: ["planar", "points", "translate"]),
+            .init("mode", .string, "planar (default), points, translate, person or subject", values: ["planar", "points", "translate", "person", "subject"]),
             .init("at", .time, "Timeline time where the shape's points are right, default the clip's start"),
             .init("track", .string, "Use an existing media_track track (\"track:<id>\"; surface tracks drive planar, box tracks translate) instead of tracking now"),
             .init("corners", .any, "planar: the surface's [[x,y]×4] TL, TR, BR, BL in the clip's frame at at, when the shape isn't its outline"),
             .init("refine", .string, "Snap points to matte edges: subject, person or none (default)", values: ["subject", "person", "none"]),
-            .init("snap", .number, "Reach of refine, frame heights, default 0.02"),
+            .init("snap", .number, "Reach of refine, frame heights, default 0.03"),
             .init("size", .number, "points: tracked patch side, frame heights, default 0.08"),
+            .init("correct", .objects, "Corrections: [{at, points}] the shape's right points (same count and order, clip frame) at timeline times; with person/subject they pick the region from that frame on", fields: [
+                .init("at", .time, "Timeline time"),
+                .init("points", .any, "\"x,y x,y …\" or [[x,y], …]"),
+            ]),
+            .init("detail", .integer, "person/subject: points in the outline, default 32"),
         ]),
     ]
 

@@ -196,12 +196,22 @@ public enum PictureMeter {
             }
             // Lower thirds, callouts and counters are titles too.
             for clip in track.clips where clip.kind == .generator {
-                let local = min(clip.duration * 0.5, max(0.5, clip.duration * 0.3))
-                guard let words = clip.generatorText(at: local), let gen = clip.effects.first(where: { GeneratorCatalog.type($0.type) != nil }),
-                      let img = GeneratorRenderer.render(type: gen.type, value: { clip.generatorValue($0, at: local) ?? .number(0) }, canvas: canvas.size),
+                var local = min(clip.duration * 0.5, max(0.5, clip.duration * 0.3))
+                guard let words = clip.onScreenText(at: local), let gen = clip.effects.first(where: { GeneratorCatalog.type($0.type) != nil }) else { continue }
+                // Title presets are measured once built on, before they build off.
+                if gen.type.hasPrefix("title.") {
+                    let num = { (k: String) in clip.generatorValue(k, at: local)?.number ?? 0 }
+                    local = max(0, min(max(local, num("delay") + num("in") + 0.05), clip.duration - num("out") - 0.05))
+                }
+                guard let img = GeneratorRenderer.render(type: gen.type, value: { clip.generatorValue($0, at: local) ?? .number(0) }, canvas: canvas.size, time: local, duration: clip.duration),
                       let drawn = opaqueBounds(img) else { continue }
                 let xf = clip.resolvedTransform(at: local)
-                let box = CGRect(x: 0.5 + (drawn.minX - 0.5) * xf.scale + xf.x, y: 0.5 + (drawn.minY - 0.5) * xf.scale + xf.y, width: drawn.width * xf.scale, height: drawn.height * xf.scale)
+                var box = CGRect(x: 0.5 + (drawn.minX - 0.5) * xf.scale + xf.x, y: 0.5 + (drawn.minY - 0.5) * xf.scale + xf.y, width: drawn.width * xf.scale, height: drawn.height * xf.scale)
+                // Rolling credits cross the frame top to bottom by design; only their sides are checked.
+                if gen.type == "credits", clip.generatorValue("mode", at: local)?.string != "crawl" {
+                    let top = max(box.minY, 0.1), bottom = max(top, min(box.maxY, 0.9))
+                    box = CGRect(x: box.minX, y: top, width: box.width, height: bottom - top)
+                }
                 samples.append((clip.id, "\(clip.id) \"\(words.text.prefix(24))\"", clip.start + local, box, TextStyleColors(text: words.color, background: words.background, stroke: nil)))
             }
         }

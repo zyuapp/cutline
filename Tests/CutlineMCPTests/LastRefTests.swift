@@ -15,7 +15,7 @@ import Testing
     let none = await box.call("effect_add", ["target": "$last_clip", "type": "stylize.vignette"])
     #expect(none.isError && none.plainText.contains("$last_clip refers to nothing yet"), "\(none.plainText)")
     let batchName = await box.call("effect_add", ["target": "$c0", "type": "stylize.vignette"])
-    #expect(batchName.isError && batchName.plainText.contains("batch variable") && batchName.plainText.contains("$last_clip"), "\(batchName.plainText)")
+    #expect(batchName.isError && batchName.plainText.contains("names nothing yet") && batchName.plainText.contains("as:\"c0\"") && batchName.plainText.contains("$last_clip"), "\(batchName.plainText)")
 
     let imported = await box.call("media_import", ["paths": [.string(png.path)], "analyze": false])
     #expect(imported.plainText.contains("$last = "), "\(imported.plainText)")

@@ -207,6 +207,27 @@ extension Project {
 
     // MARK: Rhythm
 
+    /// Indices of the beats a cut every `every` beats lands on. With 2 or 4 and known `downbeats`, counting starts
+    /// at the bar: 4 takes each downbeat, 2 the downbeat and the bar's third beat; otherwise every `every`-th beat
+    /// from the first.
+    public static func beatMarks(_ beats: [Seconds], every: Int, downbeats: [Seconds]) -> (indices: [Int], phased: Bool) {
+        let step = max(1, every)
+        let plain = (Array(stride(from: 0, to: beats.count, by: step)), false)
+        guard step == 2 || step == 4, beats.count >= 2, !downbeats.isEmpty else { return plain }
+        let gaps = zip(beats, beats.dropFirst()).map { $1 - $0 }.sorted()
+        let tolerance = min(0.08, gaps[gaps.count / 2] * 0.3)
+        let isDown = beats.map { b in downbeats.contains { abs($0 - b) <= tolerance } }
+        guard let first = isDown.firstIndex(of: true) else { return plain }
+        var out: [Int] = []
+        var lastDown = first
+        for i in beats.indices {
+            if isDown[i] { lastDown = i }
+            let pos = i < first ? i - first : i - lastDown
+            if step == 4 ? (i < first ? pos % 4 == 0 : pos == 0) : pos % 2 == 0 { out.append(i) }
+        }
+        return out.count >= 2 ? (out, true) : plain
+    }
+
     /// Lays footage on a track so each cut lands on a beat. `pool` is source spans to draw from, unscored.
     public mutating func beatCut(pool: [(mediaId: String, range: TimeRange)], beats: [Seconds], every: Int, trackId: String, from: Seconds? = nil, align: BeatAlign = .fill, music: [String] = []) throws -> String {
         try beatCut(footage: pool.map { BeatFootage(mediaId: $0.mediaId, range: $0.range) }, beats: beats, every: every, trackId: trackId, from: from, align: align, music: music)
@@ -217,10 +238,11 @@ extension Project {
     /// With `from` (the start of the cut range) before the first beat, `align` decides what plays there: `.fill`
     /// stretches the first shot back to `from` so no background shows; `.firstBeat` trims the head of the `music`
     /// clips so their first beat lands on `from`. `framing` gives each fill-framed clip its transform x and y.
-    public mutating func beatCut(footage: [BeatFootage], beats: [Seconds], every: Int, trackId: String, from: Seconds? = nil, align: BeatAlign = .fill, music: [String] = [], energy: ((TimeRange) -> Double?)? = nil, framing: ((Clip) -> (x: Double, y: Double)?)? = nil) throws -> String {
+    public mutating func beatCut(footage: [BeatFootage], beats: [Seconds], every: Int, trackId: String, from: Seconds? = nil, align: BeatAlign = .fill, music: [String] = [], downbeats: [Seconds] = [], energy: ((TimeRange) -> Double?)? = nil, framing: ((Clip) -> (x: Double, y: Double)?)? = nil) throws -> String {
         guard !footage.isEmpty else { throw EditError("No footage to cut") }
+        let chosen = Project.beatMarks(beats, every: every, downbeats: downbeats)
         var marks: [Seconds] = []
-        for i in stride(from: 0, to: beats.count, by: max(1, every)) {
+        for i in chosen.indices {
             let t = canvas.snap(beats[i])
             if marks.last.map({ t > $0 + 1e-6 }) ?? true { marks.append(t) }
         }
@@ -269,7 +291,8 @@ extension Project {
             try addClip(c, trackId: trackId, mode: .overwrite)
             placed.append(c)
         }
-        var note = "Cut \(placed.count) shots on \(trackId) to the beat (every \(every) beat\(every == 1 ? "" : "s")) from \(fmt2(marks.first!))s to \(fmt2(marks.last!))s." + lead
+        let phase = chosen.phased ? (every >= 4 ? ", on the downbeats" : ", on beats 1 and 3 of each bar") : ""
+        var note = "Cut \(placed.count) shots on \(trackId) to the beat (every \(every) beat\(every == 1 ? "" : "s")\(phase)) from \(fmt2(marks.first!))s to \(fmt2(marks.last!))s." + lead
         let byMedia = Dictionary(grouping: placed) { $0.mediaId ?? "" }.mapValues(\.count)
         if byMedia.count > 1 { note += " Shots per media: " + byMedia.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ") + "." }
         if plan.scored { note += plan.energyMatched ? " Picked by quality, with motion following the music's energy (louder passages get busier shots)." : " Picked by quality." }
