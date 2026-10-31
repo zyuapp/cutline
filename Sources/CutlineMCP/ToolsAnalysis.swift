@@ -61,14 +61,16 @@ extension Session {
 
 extension Toolbox {
     func registerAnalysisTools() {
-        add(Tool(name: "analysis_read", description: "Read what analysis found, compactly, so you know the footage without looking at frames. what: summary (default; everything known about the media), beats (tempo, beat and downbeat times with anchor ids), speakers (turns with voice confidence, identity across scenes and whether a turn was pinned or named from a pinned voice), shots (descriptions, shot size, people, text, aesthetics), sounds (events), faces, levels (loudness over time). Without media_id: beats on the timeline (beat:N anchors) and analysis jobs. Times are source seconds unless noted.", schema: Schema.object([
+        add(Tool(name: "analysis_read", description: "Read what analysis found, compactly, so you know the footage without looking at frames. what: summary (default; everything known about the media), beats (tempo, beat and downbeat times with anchor ids), speakers (turns with voice confidence, identity across scenes and whether a turn was pinned or named from a pinned voice), shots (descriptions, shot size, people, text, aesthetics), sounds (events), faces, levels (loudness over time). Without media_id: beats on the timeline (beat:N anchors), analysis jobs and render jobs (export background:true) with their progress and reports; cancel:<render id> stops a render. Times are source seconds unless noted.", schema: Schema.object([
             "media_id": Schema.string("Media id; omit for the timeline"),
             "what": Schema.string("What to read", values: ["summary", "beats", "speakers", "shots", "sounds", "faces", "levels", "jobs"]),
             "start": Schema.time("From this source time"),
             "end": Schema.time("Until this source time"),
             "wait": Schema.number("Seconds to wait for running or resumed analysis of this media (all media without media_id) to finish first (up to 600), e.g. before reframing on face data"),
             "start_missing": Schema.bool("When the requested analysis was never run and isn't queued, start it in the background (then wait applies to it); default false"),
+            "cancel": Schema.string("Render job id (export background:true) to stop; its partial output is removed"),
         ])) { [unowned self] args in
+            if let id = args.optString("cancel") { return .text(try session.renders.cancel(id)) }
             let b = try session.requireBundle()
             let p = try session.project()
             let what = args.optString("what") ?? "summary"
@@ -84,6 +86,9 @@ extension Toolbox {
             }
             if let w = args.optDouble("wait"), w > 0, !(await session.jobs.wait(timeout: min(w, 600), mediaId: args.optString("media_id"))) {
                 lines.append("Analysis still running after \(Int(min(w, 600)))s.")
+            }
+            if let w = args.optDouble("wait"), w > 0, args.optString("media_id") == nil, !session.renders.running.isEmpty, !(await session.renders.wait(timeout: min(w, 600))) {
+                lines.append("Renders still running after \(Int(min(w, 600)))s.")
             }
             let lo = try args.optSourceTime("start") ?? 0, hi = try args.optSourceTime("end") ?? .infinity
             guard let id = args.optString("media_id") else {
@@ -101,7 +106,8 @@ extension Toolbox {
                     lines.append("Jobs:")
                     for j in jobs { lines.append("  \(j.id) \(j.mediaId) \(j.features.joined(separator: "+")): \(j.status)" + (j.status == "running" ? " \(Int(j.progress * 100))%" : "") + (j.message.map { " — \($0)" } ?? "")) }
                 }
-                return .text(lines.joined(separator: "\n").ifEmptyText("Nothing analyzed yet."))
+                lines += session.renders.lines(reports: true)
+                return .text(lines.joined(separator: "\n").ifEmptyText(what == "jobs" ? "No jobs." : "Nothing analyzed yet."))
             }
             guard let m = p.mediaAsset(id) else { throw EditError("No media \(id)") }
             let pending = session.jobs.active.filter { $0.mediaId == id }

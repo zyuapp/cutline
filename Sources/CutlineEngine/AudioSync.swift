@@ -136,7 +136,7 @@ public enum AudioSync {
             let limit = Int(window * sampleRate)
             var samples: [Float] = []
             samples.reserveCapacity(limit)
-            while samples.count < limit, let buffer = output.copyNextSampleBuffer() {
+            while samples.count < limit, let buffer = output.nextSample() {
                 guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
                 var length = 0
                 var ptr: UnsafeMutablePointer<CChar>?

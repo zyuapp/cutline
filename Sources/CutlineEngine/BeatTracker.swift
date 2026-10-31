@@ -318,7 +318,7 @@ public enum BeatTracker {
         let samples = try await runBlocking { _ -> [Float] in
             var samples: [Float] = []
             samples.reserveCapacity(expected)
-            while let buffer = output.copyNextSampleBuffer() {
+            while let buffer = output.nextSample() {
                 guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
                 var length = 0
                 var ptr: UnsafeMutablePointer<CChar>?

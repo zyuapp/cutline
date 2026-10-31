@@ -111,7 +111,7 @@ public enum Delivery {
             let group = DispatchGroup()
             let failure = FailureBox()
             var n = 0
-            while !cancelled(), failure.error == nil, let sample = out.copyNextSampleBuffer() {
+            while !cancelled(), failure.error == nil, let sample = out.nextSample() {
                 guard let pb = CMSampleBufferGetImageBuffer(sample), let img = cgImage(pb) else { continue }
                 n += 1
                 let url = dir.appendingPathComponent(String(format: "%@_%06d.%@", name, n, format.fileExtension))
@@ -194,7 +194,7 @@ public enum Delivery {
                     written += Int64(n)
                 }
             }
-            while !cancelled(), written < totalFrames, let mix, let sample = mix.copyNextSampleBuffer() {
+            while !cancelled(), written < totalFrames, let mix, let sample = mix.nextSample() {
                 guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
                 let at = Int64(((CMSampleBufferGetPresentationTimeStamp(sample) - start).seconds * 48_000).rounded())
                 try silence(until: min(at, totalFrames))
@@ -297,7 +297,7 @@ public enum Delivery {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let images: [CGImage] = try await runBlocking { cancelled in
             var images: [CGImage] = []
-            while !cancelled(), let sample = out.copyNextSampleBuffer() {
+            while !cancelled(), let sample = out.nextSample() {
                 if let pb = CMSampleBufferGetImageBuffer(sample), let img = cgImage(pb) { images.append(img) }
             }
             reader.cancelReading()

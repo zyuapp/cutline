@@ -10,6 +10,7 @@ public enum ReverseProxy {
     static let directory: URL = {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Cutline/reverse", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        WriterWait.sweepTemporaries(in: dir)
         return dir
     }()
     static let lock = NSLock()
@@ -25,7 +26,12 @@ public enum ReverseProxy {
             if let t = inFlight[String(key)] { return t }
             let t = Task<URL, Error> {
                 let tmp = directory.appendingPathComponent("tmp-\(UUID().uuidString).mov")
-                try await write(media, range: range, maxSize: maxSize, to: tmp)
+                do {
+                    try await write(media, range: range, maxSize: maxSize, to: tmp)
+                } catch {
+                    try? FileManager.default.removeItem(at: tmp)
+                    throw error
+                }
                 try? FileManager.default.removeItem(at: url)
                 try FileManager.default.moveItem(at: tmp, to: url)
                 return url
@@ -70,50 +76,69 @@ public enum ReverseProxy {
 
         guard writer.startWriting() else { throw writer.error ?? EditError("Cannot write a reversed copy") }
         writer.startSession(atSourceTime: .zero)
-        let ctx = CIContext()
-        for i in 0..<count {
-            let t = max(range.start, range.end - (Double(i) + 0.5) / fps)
-            let img = try await gen.image(at: CMTime(seconds: t, preferredTimescale: 60000)).image
-            while !video.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 1_000_000) }
-            guard let pool = adaptor.pixelBufferPool else { throw writer.error ?? EditError("Cannot allocate frames") }
-            var pb: CVPixelBuffer?
-            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
-            guard let pb else { throw EditError("Cannot allocate a frame") }
-            ctx.render(CIImage(cgImage: img), to: pb)
-            adaptor.append(pb, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: CMTimeScale(fps.rounded())))
-        }
-        video.markAsFinished()
-
-        if let audioInput {
-            let frames = pcm.count / 2
-            var reversed = [Float](repeating: 0, count: pcm.count)
-            for f in 0..<frames {
-                reversed[2 * f] = pcm[2 * (frames - 1 - f)]
-                reversed[2 * f + 1] = pcm[2 * (frames - 1 - f) + 1]
-            }
-            var asbd = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
-            var fd: CMAudioFormatDescription?
-            CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &fd)
-            let chunk = 48_000
-            var start = 0
-            while start < frames, let fd {
-                let n = min(chunk, frames - start)
-                var block: CMBlockBuffer?
-                CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: n * 8, blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: n * 8, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block)
-                guard let block else { break }
-                reversed.withUnsafeBytes { raw in
-                    _ = CMBlockBufferReplaceDataBytes(with: raw.baseAddress! + start * 8, blockBuffer: block, offsetIntoDestination: 0, dataLength: n * 8)
+        // Picture and sound are fed concurrently: the writer interleaves them and holds back whichever runs ahead.
+        let soundInput = audioInput, samples = pcm
+        do {
+            async let pictures: Void = {
+                let ctx = CIContext()
+                for i in 0..<count {
+                    let t = max(range.start, range.end - (Double(i) + 0.5) / fps)
+                    let img = try await gen.image(at: CMTime(seconds: t, preferredTimescale: 60000)).image
+                    try await WriterWait.ready(video, writer, "The reversed copy of \(media.name)")
+                    guard let pool = adaptor.pixelBufferPool else { throw writer.error ?? EditError("Cannot allocate frames") }
+                    var pb: CVPixelBuffer?
+                    CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
+                    guard let pb else { throw EditError("Cannot allocate a frame") }
+                    ctx.render(CIImage(cgImage: img), to: pb)
+                    guard adaptor.append(pb, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: CMTimeScale(fps.rounded()))) else {
+                        throw writer.error ?? EditError("Cannot write frame \(i) of the reversed copy")
+                    }
                 }
-                var sample: CMSampleBuffer?
-                CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block, formatDescription: fd, sampleCount: n, presentationTimeStamp: CMTime(value: CMTimeValue(start), timescale: 48_000), packetDescriptions: nil, sampleBufferOut: &sample)
-                while !audioInput.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 1_000_000) }
-                if let sample { audioInput.append(sample) }
-                start += n
-            }
-            audioInput.markAsFinished()
+                video.markAsFinished()
+            }()
+            async let sound: Void = {
+                guard let soundInput else { return }
+                try await appendReversed(samples, to: soundInput, writer: writer, name: media.name)
+            }()
+            _ = try await (pictures, sound)
+        } catch {
+            writer.cancelWriting()
+            throw error
         }
         await writer.finishWriting()
         if writer.status != .completed { throw writer.error ?? EditError("Cannot finish the reversed copy") }
+    }
+
+    /// Appends interleaved stereo float PCM backwards, a second per sample buffer.
+    static func appendReversed(_ pcm: [Float], to input: AVAssetWriterInput, writer: AVAssetWriter, name: String) async throws {
+        let frames = pcm.count / 2
+        var reversed = [Float](repeating: 0, count: frames * 2)
+        for f in 0..<frames {
+            reversed[2 * f] = pcm[2 * (frames - 1 - f)]
+            reversed[2 * f + 1] = pcm[2 * (frames - 1 - f) + 1]
+        }
+        var asbd = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+        var fd: CMAudioFormatDescription?
+        CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &fd)
+        guard let fd else { throw EditError("Cannot describe the reversed sound") }
+        let chunk = 48_000
+        var start = 0
+        while start < frames {
+            let n = min(chunk, frames - start)
+            var block: CMBlockBuffer?
+            CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: n * 8, blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: n * 8, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block)
+            guard let block else { throw EditError("Cannot allocate the reversed sound") }
+            reversed.withUnsafeBytes { raw in
+                if let base = raw.baseAddress { _ = CMBlockBufferReplaceDataBytes(with: base + start * 8, blockBuffer: block, offsetIntoDestination: 0, dataLength: n * 8) }
+            }
+            var sample: CMSampleBuffer?
+            CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block, formatDescription: fd, sampleCount: n, presentationTimeStamp: CMTime(value: CMTimeValue(start), timescale: 48_000), packetDescriptions: nil, sampleBufferOut: &sample)
+            guard let sample else { throw EditError("Cannot make a reversed sound buffer") }
+            try await WriterWait.ready(input, writer, "The reversed sound of \(name)")
+            guard input.append(sample) else { throw writer.error ?? EditError("Cannot write the reversed sound") }
+            start += n
+        }
+        input.markAsFinished()
     }
 
     static func readAudio(_ asset: AVAsset, track: AVAssetTrack, range: TimeRange) throws -> [Float] {
@@ -123,7 +148,7 @@ public enum ReverseProxy {
         reader.add(out)
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read audio") }
         var samples: [Float] = []
-        while let buf = out.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(buf) {
+        while let buf = out.nextSample(), let block = CMSampleBufferGetDataBuffer(buf) {
             let len = CMBlockBufferGetDataLength(block)
             var chunk = [Float](repeating: 0, count: len / 4)
             chunk.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: len, destination: $0.baseAddress!) }

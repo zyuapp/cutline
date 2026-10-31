@@ -98,8 +98,8 @@ public enum CameraRawIngest {
             reader.add(out)
             guard reader.startReading() else { return nil }
             defer { reader.cancelReading() }
-            var sample = out.copyNextSampleBuffer()
-            while let s = sample, CMSampleBufferGetNumSamples(s) == 0 { sample = out.copyNextSampleBuffer() }
+            var sample = out.nextSample()
+            while let s = sample, CMSampleBufferGetNumSamples(s) == 0 { sample = out.nextSample() }
             guard let sample else { return nil }
             var session: VTDecompressionSession?
             guard VTDecompressionSessionCreate(allocator: nil, formatDescription: fd, decoderSpecification: nil, imageBufferAttributes: nil, decompressionSessionOut: &session) == noErr, let session else { return nil }
@@ -154,7 +154,7 @@ public enum CameraRawIngest {
         let reader = try AVAssetReader(asset: asset)
         let out = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf])
         reader.add(out)
-        guard reader.startReading(), let s = out.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(s) else { return nil }
+        guard reader.startReading(), let s = out.nextSample(), let pb = CMSampleBufferGetImageBuffer(s) else { return nil }
         defer { reader.cancelReading() }
         guard CVPixelBufferGetWidth(pb) == 2 * w, CVPixelBufferGetHeight(pb) == 2 * h else { return nil }
         CVPixelBufferLockBaseAddress(pb, .readOnly)
@@ -504,11 +504,7 @@ public enum CameraRawDevelop {
 
     /// Renders a scene-linear picture (any color space) into a pool buffer, encodes it and appends it.
     static func append(_ img: CIImage, at t: CMTime, video: AVAssetWriterInput, adaptor: AVAssetWriterInputPixelBufferAdaptor, writer: AVAssetWriter, cancelled: () -> Bool) throws {
-        while !video.isReadyForMoreMediaData {
-            if cancelled() { throw CancellationError() }
-            if writer.status == .failed { throw writer.error ?? EditError("The writer failed") }
-            Thread.sleep(forTimeInterval: 0.002)
-        }
+        try WriterWait.readySync(video, writer, "The developed copy", cancelled: cancelled)
         guard let pool = adaptor.pixelBufferPool else { throw writer.error ?? EditError("Cannot allocate frames") }
         var pb: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
@@ -551,26 +547,31 @@ public enum CameraRawDevelop {
         writer.startSession(atSourceTime: .zero)
         let start = try await track.load(.timeRange).start
         nonisolated(unsafe) let soundInputs = sound
-        // Sound is copied on its own threads so the writer can interleave it with the pictures.
+        // Each sound track is copied on its own task so the writer can interleave them with the pictures.
         let soundDone = Task.detached {
-            for (out, input) in soundInputs {
-                while let s = out.copyNextSampleBuffer() {
-                    while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 2_000_000) }
-                    var timed = s
-                    let pts = CMSampleBufferGetPresentationTimeStamp(s)
-                    if start != .zero, var info = Optional(CMSampleTimingInfo(duration: CMSampleBufferGetDuration(s), presentationTimeStamp: pts - start, decodeTimeStamp: .invalid)) {
-                        var copy: CMSampleBuffer?
-                        CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: s, sampleTimingEntryCount: 1, sampleTimingArray: &info, sampleBufferOut: &copy)
-                        if let copy { timed = copy }
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for (out, input) in soundInputs {
+                    group.addTask {
+                        while let s = out.nextSample() {
+                            try await WriterWait.ready(input, writer, "The developed copy's sound")
+                            var timed = s
+                            let pts = CMSampleBufferGetPresentationTimeStamp(s)
+                            if start != .zero, var info = Optional(CMSampleTimingInfo(duration: CMSampleBufferGetDuration(s), presentationTimeStamp: pts - start, decodeTimeStamp: .invalid)) {
+                                var copy: CMSampleBuffer?
+                                CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: s, sampleTimingEntryCount: 1, sampleTimingArray: &info, sampleBufferOut: &copy)
+                                if let copy { timed = copy }
+                            }
+                            guard input.append(timed) else { throw writer.error ?? EditError("Cannot write the developed copy's sound") }
+                        }
+                        input.markAsFinished()
                     }
-                    input.append(timed)
                 }
-                input.markAsFinished()
+                try await group.waitForAll()
             }
         }
         do {
             try await runBlocking { cancelled in
-                while let s = pictures.copyNextSampleBuffer() {
+                while let s = pictures.nextSample() {
                     guard let pb = CMSampleBufferGetImageBuffer(s) else { continue }
                     let t = CMSampleBufferGetPresentationTimeStamp(s) - start
                     try append(CIImage(cvPixelBuffer: pb), at: t, video: video, adaptor: adaptor, writer: writer, cancelled: cancelled)

@@ -157,7 +157,7 @@ final class Toolbox {
     /// Short state line appended to edit results.
     func footer(_ p: Project) -> String {
         let h = session.bundle?.loadHistory().current
-        return "Timeline \(Frames.timecode(p.duration)) · \(p.tracks.map { "\($0.id):\($0.clips.count)" }.joined(separator: " ")) · history \(h?.id ?? "-")" + (session.jobs.statusLine.map { " · " + $0 } ?? "")
+        return "Timeline \(Frames.timecode(p.duration)) · \(p.tracks.map { "\($0.id):\($0.clips.count)" }.joined(separator: " ")) · history \(h?.id ?? "-")" + (session.jobs.statusLine.map { " · " + $0 } ?? "") + (session.renders.statusLine.map { " · " + $0 } ?? "")
     }
 }
 

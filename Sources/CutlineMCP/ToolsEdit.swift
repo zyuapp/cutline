@@ -246,9 +246,15 @@ extension Toolbox {
             "detach_audio": Schema.bool("Split a picture clip's sound off onto a linked clip on an audio track (audio_track, default a \"Sound of <track>\" track): its split lead/lag, channel routing, level and automation, fades and audio effects move with it and the picture goes silent; the two stay linked so they move together"),
             "attach_audio": Schema.bool("Fold a detached sound clip back into its linked picture (pass either clip): it must play the same media in sync; where they start or end apart it becomes a split edit"),
             "audio_track": Schema.string("With detach_audio: the audio track for the sound"),
+            "resync": Schema.bool("Slip this clip's out-of-sync linked clips (or this clip, when it is the one off) back into sync with their picture; project_status lists linked clips out of sync"),
         ], required: ["clip_id"]), label: { a, p in Toolbox.describeUpdate(a, p) }) { p, args in
             let id = try args.string("clip_id")
             guard var c = p.clip(id) else { throw EditError("No clip \(id)") }
+            let original = c
+            if args.bool("resync", default: false) {
+                let notes = try p.resyncLinked(id)
+                return notes.isEmpty ? "\(id) and its linked clips are already in sync." : "Resynced: " + notes.joined(separator: "; ")
+            }
             if args.bool("detach_audio", default: false) {
                 let had = (lead: c.audioLead, lag: c.audioLag)
                 let (sound, track) = try p.detachAudio(id, to: args.optString("audio_track"))
@@ -300,14 +306,7 @@ extension Toolbox {
                 c.duration = (newOut - newIn) / c.speed
             }
             if let d = try args.optTime("duration") { c.duration = d }
-            if let s = try args.optTime("start") {
-                let delta = s - c.start
-                c.start = s
-                for other in p.linked(id) {
-                    guard let loc = p.locateClip(other) else { continue }
-                    p.tracks[loc.track].clips[loc.clip].start += delta
-                }
-            }
+            if let s = try args.optTime("start") { c.start = s }
             if let e = try args.optTime("end") { c.duration = e - c.start }
             if let v = args.optString("name") { c.name = v }
             if let t = args.optString("text") {
@@ -332,9 +331,12 @@ extension Toolbox {
                     rippleNote = ". This leaves a \(fmt2(old.end - c.end))s gap before the next clip; ripple:true closes it"
                 }
             }
+            let starts = p.clipStarts
             try p.replaceClip(c, ripple: ripple)
-            let now = p.clip(id)!
-            return "Updated \(id): \(Describe.clip(now, p))" + (warning.map { ". " + $0 } ?? "") + rippleNote
+            guard let now = p.clip(id) else { throw EditError("No clip \(id)") }
+            var followed = original.link == nil || args.bool("unlink", default: false) ? [] : try p.followLinked(old: original, new: now, ripple: ripple)
+            if ripple { followed += p.propagateLinkedShifts(before: starts).filter { !followed.contains($0) } }
+            return "Updated \(id): \(Describe.clip(now, p))" + (warning.map { ". " + $0 } ?? "") + rippleNote + (followed.isEmpty ? "" : ". Linked \(followed.joined(separator: ", ")) followed to stay in sync")
         })
 
         addEdit(EditTool(name: "clip_split", description: "Split at a timeline time: one clip (clip_id) or every clip under that time on the given tracks (default all).", schema: Schema.object([

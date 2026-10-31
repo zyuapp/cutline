@@ -218,8 +218,10 @@ public enum Exporter {
     /// shorter than the range, or without a promised audio channel, fails the export. A failed export deletes
     /// whatever it wrote there. Returns the loudness conform when the master has a loudness target.
     @discardableResult
-    public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress: (@Sendable (Double) -> Void)? = nil) async throws -> LoudnessConform? {
-        try await removingOnFailure(url) {
+    public static func export(_ built: BuiltTimeline, to url: URL, options: ExportOptions, progress report: (@Sendable (Double) -> Void)? = nil) async throws -> LoudnessConform? {
+        let heartbeat = Heartbeat.current
+        let progress: @Sendable (Double) -> Void = { heartbeat?.beat(progress: $0); report?($0) }
+        return try await removingOnFailure(url) {
             let conform = options.preset.needsFFmpeg
                 ? try await FFmpegDelivery.export(built, to: url, options: options, progress: progress)
                 : try await write(built, to: url, options: options, progress: progress)
@@ -477,30 +479,36 @@ public enum Exporter {
         for (r, _, _) in trackReaders where !r.startReading() { throw r.error ?? EditError("Cannot read a rendered audio track") }
         guard writer.startWriting() else { throw writer.error ?? EditError("Cannot write \(url.lastPathComponent)") }
         writer.startSession(atSourceTime: .zero)
+        let readers = [reader] + [audioReader].compactMap { $0 } + trackReaders.map(\.0)
+        let watch = StallWatch("Writing \(url.lastPathComponent)") {
+            readers.forEach { $0.cancelReading() }
+            writer.cancelWriting()
+        }
+        defer { watch.stop() }
 
         let total = range.duration.seconds
         let audioStart = CMTime.zero - leaderTime
-        async let video: Void = pump(videoOut, into: videoIn, offset: offset - leaderTime, first: leaderVideo, weave: weave) { t in progress?(min(1, max(0, t - lead) / max(total, 0.001))) }
+        async let video: Void = pump(videoOut, into: videoIn, offset: offset - leaderTime, first: leaderVideo, weave: weave, watch: watch) { t in progress?(min(1, max(0, t - lead) / max(total, 0.001))) }
         async let audio: Void = {
-            if let audioIn { try await pump(audioOut, into: audioIn, offset: audioStart, first: leaderAudio, report: nil) }
+            if let audioIn { try await pump(audioOut, into: audioIn, offset: audioStart, first: leaderAudio, watch: watch, report: nil) }
         }()
-        let readers = trackReaders
+        let trackPumps = trackReaders
         async let tracks: Void = withThrowingTaskGroup(of: Void.self) { group in
-            for (_, out, input) in readers { group.addTask { try await pump(out, into: input, offset: .zero, report: nil) } }
+            for (_, out, input) in trackPumps { group.addTask { try await pump(out, into: input, offset: .zero, watch: watch, report: nil) } }
             try await group.waitForAll()
         }
         // Fed together so the writer can interleave every track while the video is being rendered.
         try await withThrowingTaskGroup(of: Void.self) { group in
             for (input, cues, forced) in textInputs {
-                group.addTask { try await TextTrack.write(cues, to: input, duration: total + lead, forced: forced) }
+                group.addTask { try await TextTrack.write(cues, to: input, duration: total + lead, forced: forced, watch: watch) }
             }
             if let (input, cues) = captionInput {
-                group.addTask { try await CEA608.write(cues, to: input, fps: fps, duration: total + lead) }
+                group.addTask { try await CEA608.write(cues, to: input, fps: fps, duration: total + lead, watch: watch) }
             }
             if let timecodeInput {
                 let first = programStart + tc.frameCount(range.start.seconds) - leaderFrames
                 let sample = try TimecodeTrack.sample(startFrame: (first % tc.framesPerDay + tc.framesPerDay) % tc.framesPerDay, duration: range.duration + leaderTime, try TimecodeTrack.formatDescription(tc))
-                group.addTask { try await TextTrack.append([sample], to: timecodeInput) }
+                group.addTask { try await TextTrack.append([sample], to: timecodeInput, watch: watch) }
             }
             try await group.waitForAll()
         }
@@ -564,45 +572,59 @@ public enum Exporter {
         return settings
     }
 
-    /// Copies `first`, then samples from a reader output shifted back by `offset`, to a writer input.
-    static func pump(_ output: AVAssetReaderOutput?, into input: AVAssetWriterInput, offset: CMTime, first: [CMSampleBuffer] = [], weave: FieldOrder? = nil, report: ((Seconds) -> Void)?) async throws {
+    /// Copies `first`, then samples from a reader output shifted back by `offset`, to a writer input. Fails with
+    /// the watch when nothing moves for its limit or the task is cancelled.
+    static func pump(_ output: AVAssetReaderOutput?, into input: AVAssetWriterInput, offset: CMTime, first: [CMSampleBuffer] = [], weave: FieldOrder? = nil, watch: StallWatch? = nil, report: ((Seconds) -> Void)?) async throws {
         let queue = DispatchQueue(label: "cutline.export.\(input.mediaType.rawValue)")
-        let box = PumpState()
         var next = 0
-        try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
-            input.requestMediaDataWhenReady(on: queue) {
-                guard !box.finished else { return }
-                while input.isReadyForMoreMediaData {
-                    if next < first.count {
-                        defer { next += 1 }
-                        if !input.append(first[next]) {
-                            box.finished = true
-                            done.resume(throwing: EditError("The encoder rejected a leader frame"))
-                            return
+        try await withCancellation(watch) {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                let done = OnceContinuation(c)
+                watch?.register { done.resume(.failure($0)) }
+                guarded(watch, {
+                    input.requestMediaDataWhenReady(on: queue) {
+                        guard !done.isDone else { return }
+                        while input.isReadyForMoreMediaData {
+                            if next < first.count {
+                                defer { next += 1 }
+                                guard guarded(watch, { input.append(first[next]) }) == true else {
+                                    done.resume(.failure(watch?.failed ?? EditError("The encoder rejected a leader frame")))
+                                    return
+                                }
+                                watch?.touch()
+                                continue
+                            }
+                            guard let sample = weave.map({ Interlace.nextFrame(output, order: $0) }) ?? output?.nextSample() else {
+                                guarded(watch, { input.markAsFinished() })
+                                done.resume(watch?.failed.map { .failure($0) } ?? .success(()))
+                                return
+                            }
+                            var buffer = sample
+                            if offset != .zero, let shifted = Self.shift(sample, by: offset) { buffer = shifted }
+                            report?(CMSampleBufferGetPresentationTimeStamp(buffer).seconds)
+                            guard guarded(watch, { input.append(buffer) }) == true else {
+                                done.resume(.failure(watch?.failed ?? EditError("The encoder rejected a frame")))
+                                return
+                            }
+                            watch?.touch()
                         }
-                        continue
                     }
-                    guard let sample = weave.map({ Interlace.nextFrame(output, order: $0) }) ?? output?.copyNextSampleBuffer() else {
-                        input.markAsFinished()
-                        box.finished = true
-                        done.resume()
-                        return
-                    }
-                    var buffer = sample
-                    if offset != .zero, let shifted = Self.shift(sample, by: offset) { buffer = shifted }
-                    report?(CMSampleBufferGetPresentationTimeStamp(buffer).seconds)
-                    if !input.append(buffer) {
-                        box.finished = true
-                        done.resume(throwing: EditError("The encoder rejected a frame"))
-                        return
-                    }
-                }
+                })
             }
         }
     }
 
-    final class PumpState: @unchecked Sendable {
-        var finished = false
+    /// Runs a writer call unless `watch` tripped (nil then).
+    @discardableResult
+    static func guarded<T>(_ watch: StallWatch?, _ body: () -> T) -> T? {
+        guard let watch else { return body() }
+        return watch.live(body)
+    }
+
+    /// Runs `body`, tripping `watch` when the task is cancelled.
+    static func withCancellation<T>(_ watch: StallWatch?, _ body: () async throws -> T) async throws -> T {
+        guard let watch else { return try await body() }
+        return try await withTaskCancellationHandler { try await body() } onCancel: { watch.trip(CancellationError()) }
     }
 
     static func shift(_ sample: CMSampleBuffer, by offset: CMTime) -> CMSampleBuffer? {
@@ -652,7 +674,7 @@ enum TextTrack {
     }
 
     /// Writes cues with empty samples filling the gaps so the track spans the whole timeline.
-    static func write(_ cues: [TimedText], to input: AVAssetWriterInput, duration: Seconds, forced: Bool = false) async throws {
+    static func write(_ cues: [TimedText], to input: AVAssetWriterInput, duration: Seconds, forced: Bool = false, watch: StallWatch? = nil) async throws {
         let fd = try formatDescription(input.mediaType, forced: forced)
         var spans: [(Seconds, Seconds, String)] = []
         var t = 0.0
@@ -663,30 +685,34 @@ enum TextTrack {
             t = c.end
         }
         if duration > t + 0.001 { spans.append((t, duration, "")) }
-        try await append(spans.map { try sample($0.0, $0.1, $0.2, fd) }, to: input)
+        try await append(spans.map { try sample($0.0, $0.1, $0.2, fd) }, to: input, watch: watch)
     }
 
-    static func append(_ samples: [CMSampleBuffer], to input: AVAssetWriterInput) async throws {
+    static func append(_ samples: [CMSampleBuffer], to input: AVAssetWriterInput, watch: StallWatch? = nil) async throws {
         let queue = DispatchQueue(label: "cutline.export.text")
-        let state = Exporter.PumpState()
         var next = 0
-        try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
-            input.requestMediaDataWhenReady(on: queue) {
-                guard !state.finished else { return }
-                while input.isReadyForMoreMediaData {
-                    guard next < samples.count else {
-                        input.markAsFinished()
-                        state.finished = true
-                        done.resume()
-                        return
+        try await Exporter.withCancellation(watch) {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                let done = OnceContinuation(c)
+                watch?.register { done.resume(.failure($0)) }
+                Exporter.guarded(watch, {
+                    input.requestMediaDataWhenReady(on: queue) {
+                        guard !done.isDone else { return }
+                        while input.isReadyForMoreMediaData {
+                            guard next < samples.count else {
+                                Exporter.guarded(watch, { input.markAsFinished() })
+                                done.resume(watch?.failed.map { .failure($0) } ?? .success(()))
+                                return
+                            }
+                            guard Exporter.guarded(watch, { input.append(samples[next]) }) == true else {
+                                done.resume(.failure(watch?.failed ?? EditError("The writer rejected a text or caption sample")))
+                                return
+                            }
+                            watch?.touch()
+                            next += 1
+                        }
                     }
-                    if !input.append(samples[next]) {
-                        state.finished = true
-                        done.resume(throwing: EditError("The writer rejected a text or caption sample"))
-                        return
-                    }
-                    next += 1
-                }
+                })
             }
         }
     }

@@ -20,6 +20,7 @@ public enum RetimeProxy {
     static let directory: URL = {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Cutline/retime", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        WriterWait.sweepTemporaries(in: dir)
         return dir
     }()
     static let lock = NSLock()
@@ -48,7 +49,7 @@ public enum RetimeProxy {
         let offset: (Seconds) -> Seconds
         let total: Seconds
         if clip.isRetimed {
-            let steps = max(8, Int(d * 240))
+            let steps = max(8, min(2_000_000, Int(saturating: d * 240)))
             let h = d / Double(steps)
             var table = [0.0]
             table.reserveCapacity(steps + 1)
@@ -146,10 +147,7 @@ public enum RetimeProxy {
                         dissolve.time = Float(p)
                         image = dissolve.outputImage!
                     }
-                    while !video.isReadyForMoreMediaData {
-                        if cancelled() { throw CancellationError() }
-                        Thread.sleep(forTimeInterval: 0.001)
-                    }
+                    try WriterWait.readySync(video, writer, "The retimed copy", cancelled: cancelled)
                     guard let pool = adaptor.pixelBufferPool else { throw writer.error ?? EditError("Cannot allocate frames") }
                     var pb: CVPixelBuffer?
                     CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)

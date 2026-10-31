@@ -358,7 +358,7 @@ struct AAFWriter {
             return a.value + (b.value - a.value) * (k - Double(a.frame)) / Double(b.frame - a.frame)
         }
         let shown = [value(0), value(Double(n - 1))] + pts.filter { $0.frame < n }.map(\.value)
-        let first = Int((shown.min()! + 1e-6).rounded(.down)), last = Int((shown.max()! + 1e-6).rounded(.down))
+        let first = Int(saturating: ((shown.min() ?? 0) + 1e-6).rounded(.down)), last = Int(saturating: ((shown.max() ?? 0) + 1e-6).rounded(.down))
         let length = last - first + 1
         let sign = c.reverse ? -1.0 : 1.0
         var speeds: [(frame: Int, value: Double)] = []

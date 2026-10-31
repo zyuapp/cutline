@@ -95,7 +95,7 @@ public enum MediaProbe {
             defer { reader.cancelReading() }
             // The first buffers can be empty markers.
             for _ in 0..<8 {
-                guard let sample = out.copyNextSampleBuffer() else { return nil }
+                guard let sample = out.nextSample() else { return nil }
                 guard let block = CMSampleBufferGetDataBuffer(sample), let fd = CMSampleBufferGetFormatDescription(sample) else { continue }
                 let wide = CMFormatDescriptionGetMediaSubType(fd) == kCMTimeCodeFormatType_TimeCode64
                 var raw = Data(count: CMBlockBufferGetDataLength(block))

@@ -209,7 +209,7 @@ extension Toolbox {
             "effect": Schema.string("For view matte: the effect id on that clip; for compare: the effect to show off and on"),
             "version": Schema.string("For view compare: a history entry id (history lists them) shown beside the current edit"),
             "multicam": Schema.bool("Angle viewer: every angle of the multicam clip at each time (default one frame at the clip's middle), the live angle outlined in red"),
-        ])) { [unowned self] args in
+        ])) { [unowned self] args in try await rendering("timeline_frames", args) { [unowned self] args in
             if args.optString("view") == "matte" { return try await self.matteFrames(args) }
             if args.optString("view") == "compare" { return try await self.compareFrames(args) }
             if args.bool("multicam", default: false) { return try await self.multicamFrames(args) }
@@ -238,7 +238,7 @@ extension Toolbox {
             var r = ToolResult.text(lines.joined(separator: "\n"))
             r.addImage(jpeg)
             return r
-        })
+        } })
 
         add(Tool(name: "timeline_transcript", description: "Read what the edited timeline says, in TIMELINE time, grouped by clip so you can check cuts land between words. Reads the dialogue tracks the captions use (the dialogue role, else every track not named or roled music, effects or ambience; captions_set track_ids overrides); all_tracks:true reads every track. Shows remaining pauses ≥0.4s and leftover filler words.", schema: Schema.object([
             "start": Schema.time("From timeline time"),

@@ -74,7 +74,7 @@ public enum SoundEventDetector {
         try analyzer.add(request, withObserver: observer)
 
         var position: AVAudioFramePosition = 0
-        while let buffer = output.copyNextSampleBuffer() {
+        while let buffer = output.nextSample() {
             guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
             var length = 0
             var ptr: UnsafeMutablePointer<CChar>?

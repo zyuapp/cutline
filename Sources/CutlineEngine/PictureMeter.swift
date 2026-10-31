@@ -47,7 +47,7 @@ public enum PictureMeter {
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline's picture") }
         let frames = try await runBlocking { _ -> [FrameStats] in
             var frames: [FrameStats] = []
-            while let sample = output.copyNextSampleBuffer() {
+            while let sample = output.nextSample() {
                 guard let pb = CMSampleBufferGetImageBuffer(sample) else { continue }
                 frames.append(stats(pb, time: CMSampleBufferGetPresentationTimeStamp(sample).seconds, background: background))
             }

@@ -41,7 +41,7 @@ public enum AudioAnalyzer {
             var acc: Float = 0
             var count = 0
 
-            while let buffer = output.copyNextSampleBuffer() {
+            while let buffer = output.nextSample() {
                 guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
                 var length = 0
                 var ptr: UnsafeMutablePointer<CChar>?

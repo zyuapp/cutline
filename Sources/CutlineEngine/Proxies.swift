@@ -213,10 +213,15 @@ public enum Proxies {
         guard writer.startWriting() else { throw writer.error ?? EditError("Cannot write a proxy of \(media.name)") }
         writer.startSession(atSourceTime: .zero)
         let total = max(duration.seconds, 0.001)
+        let watch = StallWatch("The proxy of \(media.name)") {
+            reader.cancelReading()
+            writer.cancelWriting()
+        }
+        defer { watch.stop() }
         try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { try await Exporter.pump(videoOut, into: videoIn, offset: .zero) { t in progress?(min(1, t / total)) } }
+            group.addTask { try await Exporter.pump(videoOut, into: videoIn, offset: .zero, watch: watch) { t in progress?(min(1, t / total)) } }
             for (out, input) in audio {
-                group.addTask { try await Exporter.pump(out, into: input, offset: .zero, report: nil) }
+                group.addTask { try await Exporter.pump(out, into: input, offset: .zero, watch: watch, report: nil) }
             }
             try await group.waitForAll()
         }

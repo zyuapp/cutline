@@ -6,7 +6,7 @@ struct FrameGrid: Equatable {
     let den: Int
 
     init(fps: Double) {
-        let fps = fps > 0 ? fps : 30
+        let fps = fps > 0 && fps <= 10_000 ? fps : 30
         let whole = fps.rounded()
         if abs(fps - whole) > 1e-6, abs(fps - whole * 1000 / 1001) < 0.01 {
             num = 1001; den = Int(whole) * 1000
@@ -19,7 +19,7 @@ struct FrameGrid: Equatable {
 
     var rate: Double { Double(den) / Double(num) }
 
-    func frames(_ t: Seconds) -> Int { Int((t * rate).rounded()) }
+    func frames(_ t: Seconds) -> Int { Int(saturating: (t * rate).rounded()) }
 
     /// FCPXML time of a frame count, reduced, e.g. "3/2s" or "5s".
     func fcp(_ frames: Int) -> String { FrameGrid.fcp(frames * num, den) }

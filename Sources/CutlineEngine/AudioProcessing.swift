@@ -251,7 +251,7 @@ enum AudioIO {
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline's audio") }
         try await withoutActuallyEscaping(body) { body in
             try await offPool {
-                while let sample = output.copyNextSampleBuffer() {
+                while let sample = output.nextSample() {
                     guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
                     var length = 0
                     var ptr: UnsafeMutablePointer<CChar>?

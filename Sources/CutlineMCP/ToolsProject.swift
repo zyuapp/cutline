@@ -86,7 +86,8 @@ extension Toolbox {
             if args.optString("detail") == "json" {
                 return .text(String(data: try ProjectBundle.encoder.encode(p), encoding: .utf8) ?? "")
             }
-            return .text(Describe.project(p, bundle: b, mix: try? session.measuredMix[session.stems().masterKey(for: p)]) + (session.jobs.statusLine.map { "\n" + $0 } ?? ""))
+            let renders = session.renders.lines(reports: false)
+            return .text(Describe.project(p, bundle: b, mix: try? session.measuredMix[session.stems().masterKey(for: p)]) + (session.jobs.statusLine.map { "\n" + $0 } ?? "") + (renders.isEmpty ? "" : "\n" + renders.joined(separator: "\n")))
         })
 
         addEdit(EditTool(name: "canvas_set", description: "Change the canvas size, frame rate or background. Media clips refit automatically; text and captions scale with the canvas. A new frame rate conforms the timeline: cuts, sound edges, transitions, markers, keyframes and caption offsets snap to the new frame grid (cuts that met still meet), or keep their frame counts with conform:\"keep_frames\".", schema: Schema.object(canvasProps.merging([

@@ -136,7 +136,7 @@ final class SourceFrames {
     }
 
     private func next(_ out: AVAssetReaderTrackOutput, _ reader: AVAssetReader) throws -> Frame? {
-        while let sample = out.copyNextSampleBuffer() {
+        while let sample = out.nextSample() {
             guard let image = CMSampleBufferGetImageBuffer(sample) else { continue }
             let t = CMSampleBufferGetPresentationTimeStamp(sample).seconds
             let upright = CIImage(cvPixelBuffer: image).transformed(by: orient)
@@ -171,9 +171,10 @@ final class SourceFrames {
 /// while framework work it waits on needs threads. `work` should poll `cancelled`.
 public func runBlocking<T>(_ work: @escaping (_ cancelled: () -> Bool) throws -> T) async throws -> T {
     let flag = CancelFlag()
+    let heartbeat = Heartbeat.current
     return try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<T, Error>) in
-            let thread = Thread { c.resume(with: Result { try work { flag.isSet } }) }
+            let thread = Thread { c.resume(with: Result { try Heartbeat.$current.withValue(heartbeat) { try work { flag.isSet } } }) }
             thread.stackSize = 8 << 20
             thread.qualityOfService = .userInitiated
             thread.start()

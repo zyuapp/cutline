@@ -223,6 +223,7 @@ public enum AudioUnitHost {
         while out[0].count < wanted {
             let need = wanted - out[0].count + skip
             let status = try engine.renderOffline(AVAudioFrameCount(Swift.min(Int(buffer.frameCapacity), need)), to: buffer)
+            Heartbeat.beat()
             switch status {
             case .success: stalls = 0
             case .cannotDoInCurrentContext, .insufficientDataFromInputNode:

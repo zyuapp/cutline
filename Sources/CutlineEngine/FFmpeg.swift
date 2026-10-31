@@ -50,10 +50,12 @@ public enum FFmpeg {
         proc.standardOutput = out
         proc.standardError = err
         let state = RunState()
+        let heartbeat = Heartbeat.current
         out.fileHandleForReading.readabilityHandler = { h in
             let data = h.availableData
             guard !data.isEmpty else { state.close(stdout: true); h.readabilityHandler = nil; return }
             state.touch(stdout: data)
+            heartbeat?.beat()
             guard let duration, duration > 0, let progress else { return }
             for line in String(decoding: data, as: UTF8.self).split(separator: "\n") where line.hasPrefix("out_time_us=") {
                 if let us = Double(line.dropFirst("out_time_us=".count)) { progress(min(1, max(0, us / 1_000_000 / duration))) }
@@ -61,7 +63,7 @@ public enum FFmpeg {
         }
         err.fileHandleForReading.readabilityHandler = { h in
             let data = h.availableData
-            if data.isEmpty { state.close(stdout: false); h.readabilityHandler = nil } else { state.touch(stderr: data) }
+            if data.isEmpty { state.close(stdout: false); h.readabilityHandler = nil } else { state.touch(stderr: data); heartbeat?.beat() }
         }
         let status: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (done: CheckedContinuation<Int32, Error>) in

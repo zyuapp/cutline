@@ -136,7 +136,7 @@ public struct HDRMetadata: Sendable, Equatable {
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline to measure its light levels") }
         return try await runBlocking { stop in
             var levels = LightLevels()
-            while let sample = output.copyNextSampleBuffer() {
+            while let sample = output.nextSample() {
                 if stop() {
                     reader.cancelReading()
                     throw CancellationError()

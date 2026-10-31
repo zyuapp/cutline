@@ -345,7 +345,7 @@ public enum Diarizer {
         let samples = try await runBlocking { _ -> [Float] in
             var resampler: Resampler?
             var samples: [Float] = []
-            while let buffer = output.copyNextSampleBuffer() {
+            while let buffer = output.nextSample() {
                 guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
                 if resampler == nil {
                     let rate = CMSampleBufferGetFormatDescription(buffer).flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee.mSampleRate } ?? decodeRate

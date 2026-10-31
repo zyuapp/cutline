@@ -446,7 +446,10 @@ enum BaseVideo {
         let url = dir.appendingPathComponent("base-v1.mov")
         if !FileManager.default.fileExists(atPath: url.path) {
             let tmp = dir.appendingPathComponent("base-\(UUID().uuidString).mov")
-            try await write(to: tmp)
+            do { try await write(to: tmp) } catch {
+                try? FileManager.default.removeItem(at: tmp)
+                throw error
+            }
             try? FileManager.default.moveItem(at: tmp, to: url)
         }
         let a = AVURLAsset(url: url)
@@ -468,7 +471,7 @@ enum BaseVideo {
         memset(CVPixelBufferGetBaseAddress(pb), 0, CVPixelBufferGetDataSize(pb))
         CVPixelBufferUnlockBaseAddress(pb, [])
         for i in 0...30 {
-            while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 1_000_000) }
+            try await WriterWait.ready(input, writer, "The base video")
             adaptor.append(pb, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: 30))
         }
         input.markAsFinished()

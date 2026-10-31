@@ -114,7 +114,7 @@ extension Toolbox {
             "media_id": "Replace edit: other media, same place and length", "text": "New title words", "name": "",
             "ripple": "Shift later clips on the track", "link": "Clips that move together with it", "unlink": "",
             "allow_stretch": "Allow audio below 0.25×",
-        ], hide: ["detach_audio", "attach_audio", "audio_track"]),
+        ], hide: ["detach_audio", "attach_audio", "audio_track", "resync"]),
         "clip_split": ToolBrief(text: "Split one clip, or every clip under a time, at a timeline time.", args: [
             "at": "", "clip_id": "", "track_ids": "",
         ]),
@@ -196,7 +196,7 @@ extension Toolbox {
         ]),
         "analysis_read": ToolBrief(text: "Read analysis: summary, beats, speakers, shots, sounds, faces, levels; no media_id: timeline beats and jobs. Source seconds.", args: [
             "media_id": "Omit for the timeline", "what": "Default summary", "start": "", "end": "",
-            "wait": "Seconds to wait for running analysis (≤600)", "start_missing": "Start analysis that never ran",
+            "wait": "Seconds to wait for running analysis/renders (≤600)", "start_missing": "Start analysis that never ran", "cancel": "Render job id to stop",
         ]),
         "export": ToolBrief(text: "Render the timeline (default HEVC .mp4 in <project>/exports); platform picks the codec and checks the spec. Also subtitles, captions, interchange, stems, stills, variants; catalog tool=export for all options.", args: [
             "path": "", "platform": "", "strict": "Refuse on failed checks (default for masters)", "auto_conform": "Conform loudness, size, fps", "check_only": "Checks only",
@@ -211,7 +211,7 @@ extension Toolbox {
             "subtitle_position": "", "subtitle_speakers": "", "closed_captions": "CEA-608 plus .scc",
             "chapters": "From markers, default with 2+", "interchange": "otio, fcpxml, edl, xml, aaf (+ .notes.txt)", "aaf_handles": "", "render_graphics": "Bake generators", "bake_luts": "Grades as .cube", "trim": "For archive: used parts only",
             "reveal": "", "variants": "[{name, ops: [{tool, args}], …export args}] each exported after the base, then undone", "base": "With variants: render this export too, default true",
-            "sdr_from_hdr": "true or {method, target_nits}",
+            "sdr_from_hdr": "true or {method, target_nits}", "background": "Return a job id at once",
         ], hide: ["all_timelines"]),
         "timeline_measure": ToolBrief(text: "Measure the render: sound (LUFS, peaks), picture (exposure, cast, flashes; nits if HDR), text, scopes, compare (shot continuity).", args: [
             "what": "sound, picture, text, scopes, compare; default the first three", "start": "", "end": "", "at": "For scopes",

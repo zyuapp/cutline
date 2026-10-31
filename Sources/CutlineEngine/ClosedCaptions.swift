@@ -466,9 +466,9 @@ public enum CEA608 {
     }
 
     /// Writes `cues` to a `.closedCaption` input made with `formatDescription()` as the source format hint.
-    public static func write(_ cues: [TimedText], to input: AVAssetWriterInput, fps: Double, duration: Seconds, mode: Mode = .popOn, channel: Int = 1) async throws {
+    public static func write(_ cues: [TimedText], to input: AVAssetWriterInput, fps: Double, duration: Seconds, mode: Mode = .popOn, channel: Int = 1, watch: StallWatch? = nil) async throws {
         let samples = try captionSampleBuffers(encode(cues, fps: fps, mode: mode, channel: channel), fps: fps, duration: duration)
-        try await TextTrack.append(samples, to: input)
+        try await TextTrack.append(samples, to: input, watch: watch)
     }
 
     /// The field 1 byte pairs of an asset's first 'c608' track, null padding removed.
@@ -480,7 +480,7 @@ public enum CEA608 {
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the closed captions") }
         return try await runBlocking { _ -> [Run] in
             var runs: [Run] = []
-            while let sample = output.copyNextSampleBuffer() {
+            while let sample = output.nextSample() {
                 guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
                 let length = CMBlockBufferGetDataLength(block)
                 var bytes = [UInt8](repeating: 0, count: length)

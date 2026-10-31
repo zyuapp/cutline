@@ -55,6 +55,7 @@ extension Project {
                 }
             }
         }
+        out += linkSyncIssues().map { $0.summary(fps: canvas.fps) }
         out += unseenClips()
         out += uncoveredFrame()
         out += doubledSound()

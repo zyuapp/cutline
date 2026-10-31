@@ -641,7 +641,7 @@ final class FCPReader {
             let start = time(e.attr("start")) ?? 0
             if start > 0, !isImage { m.timecodeStart = start }
             if let reel = e.first("metadata")?.elems.first(where: { $0.attr("key") == "com.apple.proapps.studio.reel" })?.attr("value"), !reel.isEmpty { m.reel = reel }
-            if hasAudio, let tracks = e.attr("audioSources").flatMap({ Int($0) }), let total = e.attr("audioChannels").flatMap({ Int($0) }), tracks > 0, total > 0 {
+            if hasAudio, let tracks = e.attr("audioSources").flatMap({ Int($0) }), let total = e.attr("audioChannels").flatMap({ Int($0) }), tracks > 0, tracks <= 64, total > 0 {
                 m.audioChannels = Importer.sourceChannels((0..<tracks).map { total / tracks + ($0 < total % tracks ? 1 : 0) })
             }
             if hasAudio, var rate = e.attr("audioRate")?.lowercased() {

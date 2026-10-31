@@ -18,6 +18,7 @@ final class Session {
     /// The last loudness measured for a mix, by master stem key, so status can show drift without re-measuring.
     var measuredMix: [String: LoudnessReport] = [:]
     let jobs = JobBoard()
+    let renders = RenderJobs()
     /// Jobs left pending in the bundle when the last `open` found it, which a runner continues.
     var resumed: [String] = []
     /// Ids the latest calls created, for "$last" ("last") and "$last_clip"… ("last_clip"…) references.

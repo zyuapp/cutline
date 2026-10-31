@@ -109,7 +109,7 @@ public enum HDRScopes {
         reader.add(output)
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot render the frame at \(String(format: "%.2f", t))s") }
         defer { reader.cancelReading() }
-        let next = try await runBlocking { _ in output.copyNextSampleBuffer() }
+        let next = try await runBlocking { _ in output.nextSample() }
         guard let sample = next, let pb = CMSampleBufferGetImageBuffer(sample), let f = codeValues(pb) else {
             throw reader.error ?? EditError("No frame at \(String(format: "%.2f", t))s")
         }
@@ -131,7 +131,7 @@ public enum HDRScopes {
         guard reader.startReading() else { throw reader.error ?? EditError("Cannot read the timeline's picture") }
         return try await runBlocking { stop in
             var out: [Light] = []
-            while let sample = output.copyNextSampleBuffer() {
+            while let sample = output.nextSample() {
                 if stop() {
                     reader.cancelReading()
                     throw CancellationError()

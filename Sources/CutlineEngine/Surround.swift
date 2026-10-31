@@ -369,7 +369,7 @@ extension AudioIO {
         try await withoutActuallyEscaping(body) { body in
             try await offPool {
                 var next: Int64 = 0
-                while let sample = output.copyNextSampleBuffer() {
+                while let sample = output.nextSample() {
                     guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
                     var length = 0
                     var ptr: UnsafeMutablePointer<CChar>?
@@ -399,6 +399,7 @@ extension AudioIO {
             }
             try file.write(from: buf)
         }
+        Heartbeat.beat()
     }
 
     /// Reads up to `frames` frames from the file's current position as deinterleaved float, zero-padded past the end.
@@ -407,6 +408,7 @@ extension AudioIO {
         var out = [[Float]](repeating: [Float](repeating: 0, count: frames), count: channels)
         guard frames > 0, file.framePosition < file.length, let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(frames)) else { return out }
         try file.read(into: buf, frameCount: AVAudioFrameCount(frames))
+        Heartbeat.beat()
         let n = Int(buf.frameLength)
         for c in 0..<channels { out[c].withUnsafeMutableBufferPointer { $0.baseAddress!.update(from: buf.floatChannelData![c], count: n) } }
         return out

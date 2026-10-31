@@ -18,10 +18,62 @@ public enum ClipEdge: String, Sendable {
 }
 
 extension Project {
-    /// Trims a clip. `delta` is seconds on the timeline (positive moves the edge later);
-    /// for slip it is seconds of source. Returns a description of what moved.
+    /// Trims a clip and its linked clips alike, so linked picture and sound stay in sync: slip slips them all, slide
+    /// slides them all, plain, roll and ripple trims move a linked clip's edge when it meets the trimmed edge (a split
+    /// edit's offset edge stays), and clips a ripple shifts take their linked clips along. `delta` is seconds on the
+    /// timeline (positive moves the edge later); for slip it is seconds of source. Returns a description of what moved.
     @discardableResult
     public mutating func trim(_ id: String, mode: TrimMode, edge: ClipEdge, delta rawDelta: Seconds, allTracks: Bool = false) throws -> String {
+        guard let c = clip(id), let loc = locateClip(id) else { throw EditError("No clip \(id)") }
+        let partners = linked(id).compactMap { clip($0) }.filter { o in locateClip(o.id).map { $0.track != loc.track } ?? false }
+        let starts = clipStarts
+        let line = try trimOne(id, mode: mode, edge: edge, delta: rawDelta, allTracks: allTracks)
+        guard abs(canvas.snap(rawDelta)) > eps else { return line }
+        let tol = canvas.frameDuration / 2
+        var followed: [String] = []
+        for o in partners {
+            let met = edge == .start ? abs(o.start - c.start) < tol : abs(o.end - c.end) < tol
+            do {
+                switch mode {
+                case .slip:
+                    guard o.kind == .media else { continue }
+                    _ = try trimOne(o.id, mode: .slip, edge: edge, delta: rawDelta)
+                case .slide:
+                    _ = try trimOne(o.id, mode: .slide, edge: edge, delta: rawDelta)
+                case .roll:
+                    guard met else { continue }
+                    do { _ = try trimOne(o.id, mode: .roll, edge: edge, delta: rawDelta) } catch {
+                        _ = try trimOne(o.id, mode: .plain, edge: edge, delta: rawDelta)
+                    }
+                case .plain:
+                    guard met else { continue }
+                    _ = try trimOne(o.id, mode: .plain, edge: edge, delta: rawDelta)
+                case .ripple:
+                    guard met else { continue }
+                    if allTracks {
+                        // Every track already shifted; only the edge moves.
+                        guard let cur = clip(o.id), let ol = locateClip(o.id) else { continue }
+                        let d = canvas.snap(rawDelta)
+                        var u = edge == .start ? (d > 0 ? Project.trimmedLeft(cur, to: cur.start + d) : Project.extendedLeft(cur, by: -d)) : (d < 0 ? Project.trimmedRight(cur, to: cur.end + d) : Project.extendedRight(cur, by: d))
+                        if edge == .start { u.start = cur.start }
+                        tracks[ol.track].clips[ol.clip] = u
+                    } else {
+                        _ = try trimOne(o.id, mode: .ripple, edge: edge, delta: rawDelta)
+                    }
+                }
+            } catch {
+                throw EditError("Linked \(o.id) can't \(mode.rawValue) with \(id): \(error.localizedDescription) Unlink it (clip_update unlink:true) or make room")
+            }
+            followed.append(o.id)
+        }
+        let carried = mode == .ripple ? propagateLinkedShifts(before: starts) : []
+        var out = line
+        if !followed.isEmpty { out += "; linked \(followed.joined(separator: ", ")) \(mode == .slip ? "slipped" : mode == .slide ? "slid" : "trimmed") with it" }
+        if !carried.isEmpty { out += "; linked \(carried.joined(separator: ", ")) moved with their clips" }
+        return out
+    }
+
+    mutating func trimOne(_ id: String, mode: TrimMode, edge: ClipEdge, delta rawDelta: Seconds, allTracks: Bool = false) throws -> String {
         guard let loc = locateClip(id) else { throw EditError("No clip \(id)") }
         let t = loc.track
         let delta = canvas.snap(rawDelta)

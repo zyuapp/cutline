@@ -15,8 +15,8 @@ enum Interlace {
     /// Reads two frames rendered at the field rate and returns one frame holding the first in time on
     /// the leading field's lines and the second on the others, timed as the first and lasting both.
     static func nextFrame(_ output: AVAssetReaderOutput?, order: FieldOrder) -> CMSampleBuffer? {
-        guard let first = output?.copyNextSampleBuffer() else { return nil }
-        let second = output?.copyNextSampleBuffer()
+        guard let first = output?.nextSample() else { return nil }
+        let second = output?.nextSample()
         guard let a = CMSampleBufferGetImageBuffer(first) else { return first }
         let b = second.flatMap(CMSampleBufferGetImageBuffer) ?? a
         guard let woven = weave(a, b, order: order) else { return first }

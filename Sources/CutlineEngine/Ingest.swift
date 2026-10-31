@@ -113,7 +113,7 @@ public enum MediaIngest {
                     out.alwaysCopiesSampleData = false
                     reader.add(out)
                     guard reader.startReading() else { return "\(kind): " + describe(reader.error) }
-                    let failed = out.copyNextSampleBuffer() == nil && reader.status == .failed
+                    let failed = out.nextSample() == nil && reader.status == .failed
                     let error = reader.error
                     reader.cancelReading()
                     if failed { return "\(kind): " + describe(error) }

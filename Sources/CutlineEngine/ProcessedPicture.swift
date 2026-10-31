@@ -217,10 +217,7 @@ public enum ProcessedPicture {
                 }
                 let stages = PictureProcessor.stages(r.effects, width: w, height: h, fps: frames.fps, context: frames.context, plates: plates, cuts: r.cuts)
                 try PictureProcessor(stages: stages).run(window, cancelled: cancelled) { i, t, plane in
-                    while !input.isReadyForMoreMediaData {
-                        if cancelled() { throw CancellationError() }
-                        Thread.sleep(forTimeInterval: 0.001)
-                    }
+                    try WriterWait.readySync(input, writer, "The processed copy", cancelled: cancelled)
                     guard let pool = adaptor.pixelBufferPool else { throw writer.error ?? EditError("Cannot allocate frames") }
                     var pb: CVPixelBuffer?
                     CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)

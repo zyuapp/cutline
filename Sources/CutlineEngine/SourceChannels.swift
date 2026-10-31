@@ -142,7 +142,7 @@ public enum SourceChannels {
                 var done = [Bool](repeating: false, count: tracks.count)
                 let target = 32_768
                 func pull(_ t: Int) {
-                    guard !done[t], let sample = outputs[t].copyNextSampleBuffer() else { done[t] = true; return }
+                    guard !done[t], let sample = outputs[t].nextSample() else { done[t] = true; return }
                     guard let block = CMSampleBufferGetDataBuffer(sample) else { return }
                     let n = counts[t]
                     let pts = CMSampleBufferGetPresentationTimeStamp(sample)

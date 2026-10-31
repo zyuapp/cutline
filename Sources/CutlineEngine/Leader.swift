@@ -264,7 +264,7 @@ public enum TimecodeTrack {
         let found = try await runBlocking { _ -> (CMBlockBuffer, CMFormatDescription)? in
             var found: (CMBlockBuffer, CMFormatDescription)?
             // Edit-boundary markers come first and carry no data.
-            while found == nil, let sample = out.copyNextSampleBuffer() {
+            while found == nil, let sample = out.nextSample() {
                 if let block = CMSampleBufferGetDataBuffer(sample), let fd = CMSampleBufferGetFormatDescription(sample) { found = (block, fd) }
             }
             reader.cancelReading()
