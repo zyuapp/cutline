@@ -51,8 +51,19 @@ extension Project {
         timelineName = name
     }
 
-    /// Makes another timeline the one being edited; the current one is kept as it is.
+    /// The timeline `name` stands for: an exact match, else the one match ignoring case and surrounding spaces.
+    public func timelineNamed(_ name: String) throws -> String {
+        if timelineNames.contains(name) { return name }
+        let key = name.trimmingCharacters(in: .whitespaces).lowercased()
+        let hits = timelineNames.filter { $0.trimmingCharacters(in: .whitespaces).lowercased() == key }
+        if hits.count == 1 { return hits[0] }
+        if hits.count > 1 { throw EditError("\(name) matches timelines \(hits.joined(separator: ", ")); use the exact name") }
+        throw EditError("No timeline \(name); timelines: \(timelineNames.joined(separator: ", "))")
+    }
+
+    /// Makes another timeline the one being edited; the current one is kept as it is. Names match ignoring case when unambiguous.
     public mutating func switchTimeline(to name: String) throws {
+        let name = try timelineNamed(name)
         guard name != currentTimelineName else { return }
         guard let i = timelines.firstIndex(where: { $0.name == name }) else { throw EditError("No timeline \(name); timelines: \(timelineNames.joined(separator: ", "))") }
         let target = timelines.remove(at: i)
@@ -62,6 +73,7 @@ extension Project {
 
     public mutating func renameTimeline(_ old: String, to new: String) throws {
         let new = new.trimmingCharacters(in: .whitespaces)
+        let old = try timelineNamed(old)
         guard !new.isEmpty, !timelineNames.contains(new) else { throw EditError("Pick a new, unused name") }
         if old == currentTimelineName { timelineName = new; return }
         guard let i = timelines.firstIndex(where: { $0.name == old }) else { throw EditError("No timeline \(old)") }
@@ -69,6 +81,7 @@ extension Project {
     }
 
     public mutating func deleteTimeline(_ name: String) throws {
+        let name = try timelineNamed(name)
         guard name != currentTimelineName else { throw EditError("Switch to another timeline before deleting \(name)") }
         guard let i = timelines.firstIndex(where: { $0.name == name }) else { throw EditError("No timeline \(name)") }
         timelines.remove(at: i)

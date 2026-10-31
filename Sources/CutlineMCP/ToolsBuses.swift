@@ -3,7 +3,7 @@ import CutlineEngine
 import Foundation
 
 extension Toolbox {
-    static let busDocs = "Mixing: audio_bus adds submix buses (e.g. DIA, MUS, FX, a reverb bus) with effects (any audio.* or Audio Unit), a fader with automation (volume_keys), mute, solo and an output (master or another bus). track_update output routes a track to a bus; sends copy it into more buses at level_db, pre_fader or after the fader. param_set a clip's audio.role (\"dialogue.room tone\" stays in the dialogue stem, \"ambience\" gets its own) to split stems by subrole. recipe dme_buses routes tracks by role inferred from speech, music and silence (printed so you can override it) to DIA/MUS/FX buses, a light DIA compressor and a master limiter. export deliver:\"stems\" stems:\"buses\" writes one file per bus plus M&E; project_status shows the routing tree."
+    static let busDocs = "Mixing: audio_bus adds submix buses (e.g. DIA, MUS, FX, a reverb bus) with effects (any audio.* or Audio Unit), a fader with automation (volume_keys: linear gain 0–4 like volume, or decibels as \"-6dB\" values, volume_db_keys or unit:\"db\", matching gain_db and sends' level_db), mute, solo and an output (master or another bus). track_update output routes a track to a bus; sends copy it into more buses at level_db, pre_fader or after the fader. param_set a clip's audio.role (\"dialogue.room tone\" stays in the dialogue stem, \"ambience\" gets its own) to split stems by subrole. recipe dme_buses routes tracks by role inferred from speech, music and silence (printed so you can override it) to DIA/MUS/FX buses, a light DIA compressor and a master limiter. export deliver:\"stems\" stems:\"buses\" writes one file per bus plus M&E; project_status shows the routing tree."
 
     func registerBusTools() {
         addEdit(EditTool(name: "audio_bus", description: "Add, change or remove a submix bus. Tracks feed a bus with track_update output (and sends); its effects, fader and automation process their sum, then it feeds the master or another bus (no loops). While buses are used the mix renders offline through them (preview plays the plain mix until it is ready). Bus effects take the same type/params as effect_add, including Audio Units.", schema: Schema.object([
@@ -15,7 +15,7 @@ extension Toolbox {
             "layout": Schema.string("Channel layout of the bus: mix (default, follows the master; stereo under a mono master), stereo or mono; a surround master also takes its own layout", values: ["mix"] + AudioLayout.allCases.map(\.rawValue)),
             "volume": Schema.number("Fader gain 0–4 (1 unchanged)"),
             "gain_db": Schema.number("Fader gain in dB instead of volume"),
-            "volume_keys": ["type": "array", "items": ["type": "array"], "description": "Fader automation [[timeline time, 0…4, ease?], …]; [] removes it"],
+            "volume_keys": ["type": "array", "items": ["type": "array"], "description": "Fader automation [[timeline time, gain 0…4 or \"-6dB\", ease?], …] ({t, v} objects too); volume_db_keys or unit:\"db\" read plain numbers as dB; [] removes it"],
             "muted": Schema.bool("Mute the bus"),
             "solo": Schema.bool("Solo the bus: only soloed buses, what feeds them and their path to the master are heard"),
             "type": Schema.string("Add or update an effect of this type on the bus (audio.eq, audio.compressor, audio.limiter, audio.reverb, audio.delay, … or an Audio Unit id)"),
@@ -70,8 +70,19 @@ extension Toolbox {
         }
         if let list = args.raw["volume_keys"]?.array {
             var keys: [CurveKey] = []
+            let shape = "volume_keys are [timeline time, gain 0…4 or \"-6dB\", ease?] (volume_db_keys or unit:\"db\" take decibels)"
             for k in list {
-                guard let arr = k.array, arr.count >= 2, let v = arr[1].double, v >= 0, v <= 4 else { throw EditError("volume_keys are [timeline time, 0…4, ease?]") }
+                guard let arr = k.array, arr.count >= 2 else { throw EditError(shape) }
+                let v: Double
+                if let linear = arr[1].double {
+                    v = linear
+                } else if let s = arr[1].string, s.lowercased().hasSuffix("db"), let db = Double(s.dropLast(2).trimmingCharacters(in: .whitespaces)) {
+                    guard db <= 12 else { throw EditError("Bus fader keys go up to +12 dB (\(s))") }
+                    v = db <= -96 ? 0 : pow(10, db / 20)
+                } else {
+                    throw EditError(shape)
+                }
+                guard v >= 0, v <= 4 else { throw EditError(shape) }
                 keys.append(CurveKey(t: try Args.parseTime(arr[0], name: "time"), v: .number(v), ease: arr.count > 2 ? Easing(rawValue: arr[2].string ?? "") ?? .easeInOut : .easeInOut))
             }
             bus.volumeCurve = keys.isEmpty ? nil : Curve(keys: keys.sorted { $0.t < $1.t })

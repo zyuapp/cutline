@@ -180,6 +180,7 @@ private func pq(_ nits: Float) -> SIMD3<Float> { SIMD3(repeating: Transfer.pqEnc
     let note = try p.beatCut(footage: footage, beats: beats, every: 1, trackId: "V1", energy: { r in r.start >= 2 ? 1 : 0 }) { _ in (0, 0.1) }
     let clips = p.tracks[0].clips
     #expect(clips.count == 8 && clips.allSatisfy { $0.transform.y == 0.1 })
-    #expect(clips.first?.mediaId == "a" && clips.last?.mediaId == "b", "\(clips.map { $0.mediaId ?? "" })")
+    let loud = clips.filter { $0.start >= 2 - 1e-6 }, quiet = clips.filter { $0.start < 2 - 1e-6 }
+    #expect(clips.first?.mediaId == "a" && loud.filter { $0.mediaId == "b" }.count > quiet.filter { $0.mediaId == "b" }.count, "\(clips.map { $0.mediaId ?? "" })")
     #expect(note.contains("motion following the music") && note.contains("a ×") && note.contains("framed"), "\(note)")
 }

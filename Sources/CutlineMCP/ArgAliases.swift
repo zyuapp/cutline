@@ -72,6 +72,8 @@ extension Toolbox {
         ArgAliasGroup(["start", "from", "in", "source_in", "source_start"], only: ["assemble.segments"]),
         ArgAliasGroup(["end", "to", "out", "source_out", "source_end"], only: ["assemble.segments"]),
         ArgAliasGroup(["reverse", "reversed", "backwards"], only: ["clip_update"]),
+        ArgAliasGroup(["bus", "id", "bus_id"], only: ["audio_bus"]),
+        ArgAliasGroup(["gain_db", "volume_db", "level_db", "db"], only: ["audio_bus"]),
     ]
 
     /// Every alias `tool` accepts and the declared argument it stands for.
@@ -111,6 +113,8 @@ extension Toolbox {
             if snake != k, declared.contains(snake) { try move(k, to: snake); continue }
             if let canonical = table[snake] { try move(k, to: canonical) }
         }
+        if tool == "assemble" { segmentMediaDefault(&o, declared: declared) }
+        if tool == "audio_bus" { try busShorthand(&o) }
         // param_set {path, value} → {set: {path: value}}; {path, keys} → {animate: {path: keys}}.
         if !declared.contains("path"), let path = o["path"]?.string {
             let slot = !declared.contains("value") && o["value"] != nil && declared.contains("set") ? ("value", "set")
@@ -166,6 +170,47 @@ extension Toolbox {
             }
         }
     }
+
+    /// assemble's top-level media_id (or media) is the media of every segment that doesn't name one.
+    static func segmentMediaDefault(_ o: inout [String: JSON], declared: Set<String>) {
+        guard let key = ["media_id", "media", "mediaId"].first(where: { !declared.contains($0) && o[$0]?.string != nil }),
+              let id = o[key]?.string, let segs = o["segments"]?.array else { return }
+        o[key] = nil
+        o["segments"] = .array(segs.map { s in
+            guard case .object(var so) = s, so["media_id"] == nil, so["media"] == nil, so["mediaId"] == nil else { return s }
+            so["media_id"] = .string(id)
+            return .object(so)
+        })
+    }
+
+    /// audio_bus: name stands for bus when bus is missing; volume_db_keys, unit:"db" and {t, v} keys become volume_keys
+    /// entries [t, "<v>dB", ease?], which the bus reads as decibels.
+    static func busShorthand(_ o: inout [String: JSON]) throws {
+        if o["bus"] == nil, let name = o["name"]?.string { o["bus"] = .string(name) }
+        let unit = o.removeValue(forKey: "unit")?.string.map { $0.lowercased() }
+        if let unit, unit != "db", unit != "linear", unit != "gain" { throw EditError("unit is db or linear (volume_keys values)") }
+        var decibels = unit == "db"
+        if let db = o.removeValue(forKey: "volume_db_keys") {
+            if o["volume_keys"] != nil { throw EditError("Pass volume_keys or volume_db_keys, not both") }
+            o["volume_keys"] = db
+            decibels = true
+        }
+        guard let keys = o["volume_keys"]?.array else { return }
+        let forcedDb = decibels
+        o["volume_keys"] = .array(keys.map { k in
+            var parts: [JSON]
+            if let obj = k.object {
+                parts = [obj["t"] ?? obj["time"] ?? obj["at"] ?? .null, obj["v"] ?? obj["value"] ?? obj["volume"] ?? obj["db"].map { .string("\($0.double.map(fmtDb) ?? $0.string ?? "")dB") } ?? .null]
+                if let e = obj["ease"] ?? obj["easing"] { parts.append(e) }
+            } else {
+                parts = k.array ?? [k]
+            }
+            if forcedDb, parts.count >= 2, let v = parts[1].double { parts[1] = .string("\(fmtDb(v))dB") }
+            return .array(parts)
+        })
+    }
+
+    private static func fmtDb(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(v) }
 
     /// between: ["clip_a", "clip_b"] names one cut, "clip_a|clip_b".
     static func betweenShorthand(_ o: inout [String: JSON], declared: Set<String>) {

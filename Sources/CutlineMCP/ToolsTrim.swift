@@ -12,8 +12,11 @@ extension Toolbox {
             "all_tracks": Schema.bool("Ripple every track, default false"),
             "part": Schema.string("video (default, the whole clip) or audio (only its sound)", values: ["video", "audio"]),
             "subframe": Schema.bool("With part audio: place the sound edge sample-accurately instead of on the frame grid, default false"),
-        ], required: ["clip_id"]), label: { a, _ in
-            "\((a.optString("mode") ?? "plain").capitalized) trim \(a.optString("clip_id") ?? "")"
+        ], required: ["clip_id"]), label: { a, p in
+            let id = a.optString("clip_id") ?? ""
+            guard a.optString("part") == "audio" else { return "\((a.optString("mode") ?? "plain").capitalized) trim \(id)" }
+            return Toolbox.soundTrimLabel(id, edge: ClipEdge(rawValue: a.optString("edge") ?? "end") ?? .end,
+                                          amount: a.optDouble("by").map { "by \($0 >= 0 ? "+" : "")\(fmt2($0))s" } ?? (a.optString("to") ?? a.optDouble("to").map(fmt2)).map { "to \($0)" } ?? "", p)
         }) { p, args in
             let id = try args.string("clip_id")
             guard let c = p.clip(id) else { throw EditError("No clip \(id)") }
@@ -39,5 +42,20 @@ extension Toolbox {
             if audio { return try p.trimAudio(id, edge: edge, delta: delta, subframe: args.bool("subframe", default: false)) + "." }
             return try p.trim(id, mode: mode, edge: edge, delta: delta, allTracks: args.bool("all_tracks", default: false)) + "."
         })
+    }
+
+    /// History label of a part:audio trim: "Roll sound cut a|b by +0.50s" when the sound edge meets a touching clip's
+    /// sound, else "J cut c2 by -0.50s" (start) or "L cut c2 by +0.50s" (end).
+    static func soundTrimLabel(_ id: String, edge: ClipEdge, amount: String, _ p: Project) -> String {
+        let tail = amount.isEmpty ? "" : " " + amount
+        guard let c = p.clip(id) else { return "\(edge == .start ? "J" : "L") cut \(id)\(tail)" }
+        let sound = p.detachedSound(c).first ?? c
+        if let loc = p.locateClip(sound.id) {
+            let range = sound.audioRange
+            let others = p.tracks[loc.track].clips.filter { $0.id != sound.id }
+            let touching = edge == .end ? others.first { abs($0.audioRange.start - range.end) < 1e-3 } : others.first { abs($0.audioRange.end - range.start) < 1e-3 }
+            if let n = touching { return "Roll sound cut \(edge == .end ? "\(sound.id)|\(n.id)" : "\(n.id)|\(sound.id)")\(tail)" }
+        }
+        return "\(edge == .start ? "J" : "L") cut \(id)\(tail)"
     }
 }

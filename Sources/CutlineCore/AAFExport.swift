@@ -79,6 +79,8 @@ struct AAFWriter {
 
     var ranges: [String: (lo: Int, hi: Int)] = [:]
     var masters: [String: AAFMobID] = [:]
+    /// Link groups of more than one clip.
+    let links: Set<String>
     var operations = Set<AUID>()
 
     init(project: Project, ctx: InterchangeContext, handles: Seconds, date: Date) {
@@ -87,6 +89,9 @@ struct AAFWriter {
         grid = FrameGrid(fps: project.canvas.fps)
         handleFrames = max(0, grid.frames(handles))
         self.date = date
+        var count: [String: Int] = [:]
+        for c in project.tracks.flatMap(\.clips) { if let l = c.link { count[l, default: 0] += 1 } }
+        links = Set(count.filter { $0.value > 1 }.keys)
     }
 
     func f(_ t: Seconds) -> Int { grid.frames(t) }
@@ -330,6 +335,8 @@ struct AAFWriter {
             if !grade.isEmpty { notes.append(("Comment", grade.joined(separator: "; "))) }
         }
         if channel != nil, let hint = piece.hint { notes.append(("Cutline sound", hint)) }
+        // The picture and its detached sound; a picture's own sound rides on it.
+        if let l = piece.clip?.link, links.contains(l), channel == nil || piece.track?.kind == .audio { notes.append((Project.aafLinkComment, l)) }
         if !notes.isEmpty { seg.set(0x0204, comments(notes)) }
         return seg
     }

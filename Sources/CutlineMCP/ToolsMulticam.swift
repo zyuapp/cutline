@@ -277,6 +277,10 @@ extension Toolbox {
             let clip = try Toolbox.multicamClip(id, current)
             return try await multicamAuto(a, dry: dry, bundle: b, project: current, clip: clip)
         }
+        // Without clip or angles: the timeline's multicam clip, when there is exactly one.
+        if a.strings("angles") == nil, current.tracks.contains(where: { $0.clips.contains { current.multicamSetup($0) != nil } }) {
+            return try await multicamAuto(a, dry: dry, bundle: b, project: current, clip: try Toolbox.multicamClip(nil, current))
+        }
         guard let angles = a.strings("angles"), angles.count >= 2 else { throw EditError("Pass clip (a multicam clip), at least two angles (media ids), or cuts: [{at, angle}] to switch angles by hand") }
         let audioId = a.optString("audio") ?? angles[0]
         guard let audio = current.mediaAsset(audioId), audio.hasAudio else { throw EditError("\(audioId) has no sound to sync and cut by") }

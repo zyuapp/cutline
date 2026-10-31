@@ -367,11 +367,12 @@ struct LaneBuilder {
         }
     }
 
-    /// Detached audio playing exactly under its own silenced video clip folds back into that clip.
+    /// Audio playing exactly under its own silenced video clip folds back into that clip, unless Cutline linked them as detached sound.
     static func foldAudio(_ slots: inout [Slot]) {
         var removals: [(slot: Int, clip: Int)] = []
+        let linked = Set(slots.filter { $0.kind == .video }.flatMap(\.clips).compactMap(\.link))
         for s in slots.indices where slots[s].kind == .audio {
-            for (k, a) in slots[s].clips.enumerated() where a.kind == .media {
+            for (k, a) in slots[s].clips.enumerated() where a.kind == .media && !(a.link.map(linked.contains) ?? false) {
                 for v in slots.indices where slots[v].kind == .video && slots[v].disabled == slots[s].disabled {
                     guard let i = slots[v].clips.firstIndex(where: { c in
                         c.kind == .media && c.volume == 0 && c.mediaId == a.mediaId && abs(c.start - a.start) < 1e-4 && abs(c.duration - a.duration) < 1e-4
@@ -803,7 +804,10 @@ final class FCPReader {
             return (c, .video)
         }
         switch e.name ?? "" {
-        case "asset-clip", "video", "audio": return mediaClip(e, start: start, duration: duration)
+        case "asset-clip", "video", "audio":
+            guard var r = mediaClip(e, start: start, duration: duration) else { return nil }
+            r.0.link = e.first("metadata")?.elems.first { $0.attr("key") == Project.fcpLinkKey }?.attr("value")
+            return r
         case "clip", "sync-clip": return containerClip(e, start: start, duration: duration, place: place, lane: lane, disabled: disabled)
         case "ref-clip": return refClip(e, start: start)
         case "title": return (titleClip(e), .video)
@@ -1838,13 +1842,14 @@ extension Importer {
 
     /// Links each sound clip left on an audio track to the silent picture clip of the same media it plays in sync
     /// with, so they move together like a detached sound.
-    static func linkSeparateSound(_ tracks: inout [Track], half: Seconds) {
+    /// Clips in `skip` were linked by the file and stay as they are.
+    static func linkSeparateSound(_ tracks: inout [Track], half: Seconds, skip: Set<String> = []) {
         for t in tracks.indices where tracks[t].kind == .audio {
-            for i in tracks[t].clips.indices where tracks[t].clips[i].kind == .media && tracks[t].clips[i].link == nil {
+            for i in tracks[t].clips.indices where tracks[t].clips[i].kind == .media && tracks[t].clips[i].link == nil && !skip.contains(tracks[t].clips[i].id) {
                 let a = tracks[t].clips[i]
                 for v in tracks.indices where tracks[v].kind == .video {
                     guard let j = tracks[v].clips.firstIndex(where: { c in
-                        c.kind == .media && c.mediaId == a.mediaId && c.volume <= 1e-6 && abs(c.speed - a.speed) < 1e-6 && c.reverse == a.reverse
+                        !skip.contains(c.id) && c.kind == .media && c.mediaId == a.mediaId && c.volume <= 1e-6 && abs(c.speed - a.speed) < 1e-6 && c.reverse == a.reverse
                             && a.start < c.end - half && c.start < a.end - half
                             && abs((a.sourceIn - a.start * a.speed) - (c.sourceIn - c.start * c.speed)) < half * max(a.speed, 1)
                     }) else { continue }
@@ -2002,7 +2007,11 @@ extension Importer {
             var idx = 4
             var transFrames = 0
             if tokens.count >= 9, let d = Int(tokens[4]) { transFrames = d; idx = 5 }
-            let tcs = tokens.dropFirst(idx).prefix(4).compactMap { EDLTimecode.parse($0, nominal: nominal, drop: drop) }
+            // A list that marks drop frame with ";" in its record times counts sources written with ":" non-drop.
+            let marked = drop && tokens.dropFirst(idx + 2).prefix(2).contains { $0.contains(";") || $0.contains(".") }
+            let tcs = tokens.dropFirst(idx).prefix(4).enumerated().compactMap { k, t in
+                EDLTimecode.parse(t, nominal: nominal, drop: drop && !(marked && k < 2 && !t.contains(";") && !t.contains(".")))
+            }
             guard tcs.count == 4 else { warnings.append("Line \(n + 1): unreadable event"); continue }
             lines.append(Line(event: first, reel: tokens[1], channel: tokens[2].uppercased(), trans: tokens[3].uppercased(), transFrames: transFrames,
                               src: (tcs[0].frames, tcs[1].frames), rec: (tcs[2].frames, tcs[3].frames), drop: tcs[2].drop,
@@ -2453,7 +2462,7 @@ extension Project {
         /// Source frame `f` counted as `s` does, in the list's counting: the same frame count at the same rate (only the
         /// drop-frame labels change), else the list frame nearest the label's time of day (hh:mm:ss and the fraction of
         /// a second), so every label is valid at the list's rate: a fraction that rounds to a whole second carries into it.
-        func listFrames(_ f: Int, from s: TimecodeFormat) -> Int {
+        func listFrames(_ f: Int, from s: TimecodeFormat, drop: Bool) -> Int {
             if s.frameNum * format.frameDen == format.frameNum * s.frameDen { return f }
             let parts = s.string(f).split(whereSeparator: { ":;".contains($0) }).compactMap { Int($0) }
             guard parts.count == 4 else { return f }
@@ -2464,16 +2473,20 @@ extension Project {
             if drop, sec == 0, m % 10 != 0 { ff = max(ff, EDLTimecode.dropFrames(nominal)) }
             return EDLTimecode.frames(h, m, sec, ff, nominal: nominal, drop: drop)
         }
-        /// Source frame at second `t` of the clip's media, counted at the list's rate and drop frame.
-        func src(_ c: Clip, _ t: Seconds) -> Int { listFrames(nativeSrc(c, t), from: srcFormat(c)) }
+        /// Whether the clip's source timecode is labeled drop frame: only drop-frame sources in a drop-frame list.
+        func srcDrop(_ c: Clip?) -> Bool { drop && (c.map { srcFormat($0).dropFrame } ?? true) }
+        func stc(_ f: Int, _ c: Clip?) -> String { EDLTimecode.string(f, nominal: nominal, drop: srcDrop(c)) }
+        /// Source frame at second `t` of the clip's media, counted at the list's rate in the source's own drop frame.
+        func src(_ c: Clip, _ t: Seconds) -> Int { listFrames(nativeSrc(c, t), from: srcFormat(c), drop: srcDrop(c)) }
         /// List frames of source played over `frames` record frames.
         func srcLength(_ c: Clip, _ frames: Int) -> Int { Int((Double(frames) * c.speed).rounded()) }
         func clipName(_ c: Clip) -> String { c.name ?? c.mediaId.flatMap(mediaAsset)?.name ?? c.id }
         var out = ["TITLE: \(title)", "FCM: \(drop ? "DROP FRAME" : "NON-DROP FRAME")", ""]
         var event = 0
-        func line(_ reel: String, _ ch: String, _ tr: String, _ dur: Int?, _ s0: Int, _ s1: Int, _ r0: Int, _ r1: Int) {
+        /// Source times in `source`'s drop frame (the list's for black), record times in the list's.
+        func line(_ reel: String, _ ch: String, _ tr: String, _ dur: Int?, _ s0: Int, _ s1: Int, _ r0: Int, _ r1: Int, source: Clip? = nil) {
             let d = dur.map { String(format: "%03d", $0) } ?? "   "
-            out.append("\(String(format: "%03d", event))  \(pad(reel, 8)) \(pad(ch, 5)) \(pad(tr, 4)) \(d) \(tc(s0)) \(tc(s1)) \(tc(r0 + origin)) \(tc(r1 + origin))")
+            out.append("\(String(format: "%03d", event))  \(pad(reel, 8)) \(pad(ch, 5)) \(pad(tr, 4)) \(d) \(stc(s0, source)) \(stc(s1, source)) \(tc(r0 + origin)) \(tc(r1 + origin))")
         }
         func code(_ tr: Transition) -> String { tr.type == "wipe" ? "W001" : "D" }
 
@@ -2495,7 +2508,7 @@ extension Project {
             }
             if abs(c.speed - 1) > 1e-9 || c.reverse {
                 let v = c.speed * canvas.fps * (c.reverse ? -1 : 1)
-                out.append("M2   \(pad(reel(c), 8))       \(String(format: "%05.1f", v))                \(tc(s0))")
+                out.append("M2   \(pad(reel(c), 8))       \(String(format: "%05.1f", v))                \(stc(s0, c))")
             }
         }
 
@@ -2520,16 +2533,16 @@ extension Project {
             if let (tr, d, from) = e.into {
                 if let from {
                     let fs = src(from, sourceTime(from, at: e.r0, sound: !picture))
-                    line(reel(from), ch, "C", nil, fs, fs, e.r0, e.r0)
+                    line(reel(from), ch, "C", nil, fs, fs, e.r0, e.r0, source: from)
                 } else {
                     line("BL", ch, "C", nil, 0, 0, e.r0, e.r0)
                 }
-                line(reel(c), ch, code(tr), d, s0, s1, e.r0, e.r1)
+                line(reel(c), ch, code(tr), d, s0, s1, e.r0, e.r1, source: c)
                 audLine()
                 if let from { out.append("* FROM CLIP NAME: \(clipName(from))") }
                 out.append("* TO CLIP NAME: \(clipName(c))")
             } else {
-                line(reel(c), ch, "C", nil, s0, s1, e.r0, e.r1)
+                line(reel(c), ch, "C", nil, s0, s1, e.r0, e.r1, source: c)
                 audLine()
                 out.append("* FROM CLIP NAME: \(clipName(c))")
             }
@@ -2547,7 +2560,7 @@ extension Project {
             if let (tr, d) = e.out {
                 event += 1
                 let fs = src(c, sourceTime(c, at: e.r1, sound: !picture))
-                line(reel(c), ch, "C", nil, fs, fs, e.r1, e.r1)
+                line(reel(c), ch, "C", nil, fs, fs, e.r1, e.r1, source: c)
                 line("BL", ch, code(tr), d, 0, d, e.r1, e.r1 + d)
                 audLine()
                 out.append("* FROM CLIP NAME: \(clipName(c))")
@@ -2806,6 +2819,8 @@ final class XMEMLReader {
     /// Clip ids to their clipitem ids, and the clipitems each is linked with.
     var xmlIds: [String: String] = [:]
     var links: [String: Set<String>] = [:]
+    /// Sound clips Cutline wrote as detached from their picture.
+    var detachedSound = Set<String>()
     var clipCount = 0, transitionCount = 0
     var canvas = Canvas()
 
@@ -2927,7 +2942,7 @@ final class XMEMLReader {
             }
         }
         for t in tracks.indices where tracks[t].kind == .audio {
-            for a in tracks[t].clips {
+            for a in tracks[t].clips where !detachedSound.contains(a.id) {
                 for v in tracks.indices where tracks[v].kind == .video && !folded.contains(a.id) {
                     // Another source channel of a picture already heard stays a clip of its own.
                     guard let i = tracks[v].clips.firstIndex(where: { same($0, a, channels: false) && (!heard.contains($0.id) || $0.channels == a.channels) }) else { continue }
@@ -2940,7 +2955,7 @@ final class XMEMLReader {
         }
         // Sound linked to its picture but starting or ending elsewhere is a split edit.
         for t in tracks.indices where tracks[t].kind == .audio {
-            for a in tracks[t].clips where !folded.contains(a.id) && a.kind == .media {
+            for a in tracks[t].clips where !folded.contains(a.id) && !detachedSound.contains(a.id) && a.kind == .media {
                 let linked = links[a.id] ?? []
                 for v in tracks.indices where tracks[v].kind == .video && !folded.contains(a.id) {
                     guard let i = tracks[v].clips.firstIndex(where: { c in
@@ -2963,7 +2978,7 @@ final class XMEMLReader {
         for t in tracks.indices where tracks[t].kind == .audio {
             let kept = tracks[t].clips.filter { a in
                 if folded.contains(a.id) { return false }
-                if !(links[a.id] ?? []).isDisjoint(with: heardXML),
+                if !detachedSound.contains(a.id), !(links[a.id] ?? []).isDisjoint(with: heardXML),
                    let v = tracks.lazy.filter({ $0.kind == .video }).flatMap(\.clips).first(where: { heard.contains($0.id) && $0.mediaId == a.mediaId && $0.channels == a.channels && links[a.id]!.contains(xmlIds[$0.id] ?? "") }) {
                     soundOf[a.id] = v.id
                     return false
@@ -3014,7 +3029,28 @@ final class XMEMLReader {
         for t in tracks.indices {
             if tracks[t].kind == .video { v += 1; tracks[t].id = "V\(v)" } else { a += 1; tracks[t].id = "A\(a)" }
         }
-        Importer.linkSeparateSound(&tracks, half: half)
+        // Clipitems the file links stay linked; sound it doesn't link is matched to its picture.
+        var root: [String: String] = [:]
+        func find(_ x: String) -> String {
+            var x = x
+            while let r = root[x], r != x { x = r }
+            return x
+        }
+        let explicit = Set(tracks.flatMap(\.clips).map(\.id).filter { !(links[$0] ?? []).isEmpty })
+        for id in explicit.sorted() {
+            guard let own = xmlIds[id] else { continue }
+            for other in (links[id] ?? []).sorted() where find(other) != find(own) { root[find(other)] = find(own) }
+        }
+        var groups: [String: [(t: Int, c: Int)]] = [:]
+        for t in tracks.indices {
+            for c in tracks[t].clips.indices where explicit.contains(tracks[t].clips[c].id) {
+                if let x = xmlIds[tracks[t].clips[c].id] { groups[find(x), default: []].append((t, c)) }
+            }
+        }
+        for (key, at) in groups where at.count > 1 {
+            for (t, c) in at { tracks[t].clips[c].link = "lnk_" + key.replacingOccurrences(of: "clipitem-", with: "") }
+        }
+        Importer.linkSeparateSound(&tracks, half: half, skip: explicit)
         return (tracks, Importer.foldTransitions(transitions, soundOf: soundOf, separate: heard, frame: 1 / fps))
     }
 
@@ -3111,6 +3147,7 @@ final class XMEMLReader {
             ids[i] = c.id
             xmlIds[c.id] = e.attr("id")
             links[c.id] = Set(e.elems.filter { $0.name == "link" }.compactMap { text($0, "linkclipref") })
+            if kind == .audio, e.elems.filter({ $0.name == "comments" }).flatMap(\.elems).contains(where: { $0.stringValue == Project.detachedTag }) { detachedSound.insert(c.id) }
         }
 
         var transitions: [Transition] = []
@@ -3697,23 +3734,35 @@ extension Project {
                 }
                 return sound.clips.isEmpty ? nil : sound
             }
-            var places: [String: XMLElem] = [:]
+            var places: [String: (order: (Int, Int), elem: XMLElem)] = [:]
             func plan(_ tracks: [Track], kind: TrackKind, sound: Bool) {
                 for (t, track) in tracks.enumerated() {
                     let clips = track.clips.filter { emits($0, kind) }.sorted { $0.start < $1.start }
+                    let index = t + 1 + (sound || kind == .video ? 0 : soundTracks.count)
                     for (n, c) in clips.enumerated() {
                         var kids = [leaf("linkclipref", itemId(c, sound: sound)), leaf("mediatype", kind == .video ? "video" : "audio"),
-                                    leaf("trackindex", "\(t + 1 + (sound || kind == .video ? 0 : soundTracks.count))"), leaf("clipindex", "\(n + 1)")]
+                                    leaf("trackindex", "\(index)"), leaf("clipindex", "\(n + 1)")]
                         if kind == .audio { kids.append(leaf("groupindex", "1")) }
-                        places[itemId(c, sound: sound)] = XMLElem("link", children: kids)
+                        places[itemId(c, sound: sound)] = ((kind == .video ? 0 : 1, index), XMLElem("link", children: kids))
                     }
                 }
             }
             plan(videoTracks, kind: .video, sound: false)
             plan(soundTracks, kind: .audio, sound: true)
+            plan(scope.tracks.filter { $0.kind == .audio }, kind: .audio, sound: false)
+            var linkGroups: [String: [Clip]] = [:]
+            for track in scope.tracks { for c in track.clips { if let l = c.link { linkGroups[l, default: []].append(c) } } }
+            /// Every clipitem of the clip and of the clips linked to it: picture first, then sound in track order.
             func links(_ c: Clip) -> [XMLElem] {
-                guard let v = places[itemId(c, sound: false)], let a = places[itemId(c, sound: true)] else { return [] }
-                return [v, a]
+                let members = c.link.flatMap { linkGroups[$0] } ?? [c]
+                let found = members.flatMap { m in [true, false].compactMap { places[itemId(m, sound: $0)] } }
+                guard found.count > 1 else { return [] }
+                return found.sorted { $0.order < $1.order }.map(\.elem)
+            }
+            /// A sound clip linked to a picture of its media, which Cutline reads back as detached rather than the picture's own sound.
+            func detached(_ c: Clip) -> Bool {
+                guard let l = c.link, c.kind == .media else { return false }
+                return linkGroups[l]?.contains { o in o.id != c.id && o.mediaId == c.mediaId && videoTracks.contains { $0.clips.contains { $0.id == o.id } } } ?? false
             }
 
             /// `sound` is the audio of a video track. Sound crossfades sit on the sound cut, dissolves on the picture cut.
@@ -3925,6 +3974,7 @@ extension Project {
                     if heard, overlapped.contains(c.id) || (into == nil && r0 != s) || (outOf == nil && r1 != e) || (track.kind == .audio && (hint.lead != 0 || hint.lag != 0)) {
                         soundNotes.append(leaf("mastercomment4", hint.text))
                     }
+                    if track.kind == .audio, detached(c) { soundNotes.append(leaf("clipcommenta", Project.detachedTag)) }
                     if !soundNotes.isEmpty { kids.append(XMLElem("comments", children: soundNotes)) }
                     if c.kind == .media || c.kind == .sequence { kids += links(c) }
                     if heard, into == nil, black.into == nil, c.audioFadeIn > 0 { items.append(fadeItem(r0, min(r1, r0 + max(1, f(c.audioFadeIn))), into: true)) }

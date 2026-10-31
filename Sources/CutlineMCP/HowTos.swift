@@ -150,6 +150,9 @@ extension Toolbox {
         HowTo(title: "Zoom in slowly (Ken Burns)", keywords: "push in, slow zoom, animate scale, ken burns", summary: "Animate transform.scale over the clip.", calls: [
             ("param_set", #"{"target":"<clip>","animate":{"transform.scale":[["<clip>.start",1],["<clip>.end",1.15,"easeOut"]]}}"#),
         ]),
+        HowTo(title: "Shape a move with a custom ease curve (graph editor)", keywords: "graph editor, bezier ease, cubic bezier, speed graph, value graph, ease curve, custom easing, keyframe interpolation", summary: "A key's ease shapes the move into it: linear, easeIn, easeOut, easeInOut, hold, back, elastic, bounce, or \"bezier(x1, y1, x2, y2)\" with the graph editor's handles (x within 0…1).", calls: [
+            ("param_set", #"{"target":"<clip>","animate":{"transform.x":[["<clip>.start",-0.3],["<clip>.start+1.2",0,"bezier(0.2, 0, 0, 1)"]]}}"#),
+        ]),
         HowTo(title: "Hide jump cuts with punch-ins", keywords: "punch in, alternate zoom, jump cut cover", summary: "Scales up alternate shots, centered on faces.", calls: [
             ("recipe", #"{"name":"punch_in","args":{"amount":1.15}}"#),
         ]),

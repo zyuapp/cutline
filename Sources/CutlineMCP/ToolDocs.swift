@@ -140,7 +140,7 @@ extension Toolbox {
         ], hide: ["sync_lock"]),
         "audio_bus": ToolBrief(text: "Add, change or remove a submix bus (effects, fader, automation, mute/solo, output); route tracks via track_update output/sends.", args: [
             "bus": "Bus id", "action": "", "name": "", "output": "master or a bus id", "tracks": "Tracks to route into it", "layout": "",
-            "volume": "", "gain_db": "", "volume_keys": "[{t, v}] timeline seconds", "muted": "", "solo": "",
+            "volume": "", "gain_db": "", "volume_keys": "[[t, v]], v 0–4 or \"-6dB\"", "muted": "", "solo": "",
             "type": "Effect type, as effect_add", "params": "", "effect_id": "", "index": "", "mix": "", "enabled": "", "remove_effect": "",
         ]),
         "captions_set": ToolBrief(text: "Turn on and style live captions from the transcripts.", args: [

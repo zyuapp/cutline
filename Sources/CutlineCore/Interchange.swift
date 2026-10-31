@@ -691,7 +691,18 @@ extension Project {
             RationalTime(n: Int((s * Double(grid.den) * 1000 / Double(grid.num)).rounded()) * grid.num, d: grid.den * 1000)
         }
         /// A media clip's first frame in its asset's time: the asset's timecode plus its local start.
-        func clipStart(_ clip: Clip, _ asset: MediaAsset) -> RationalTime { assetStart(asset) + RationalTime(frames: localStart(clip), grid) }
+        func clipStart(_ clip: Clip, _ asset: MediaAsset) -> RationalTime {
+            guard !clip.needsTimeMap, abs(clip.speed - 1) <= 1e-9, !asset.isImage else { return assetStart(asset) + RationalTime(frames: localStart(clip), grid) }
+            return assetStart(asset) + exactSource(clip.sourceIn, asset)
+        }
+        /// Source seconds on the asset's frame grid or the timeline's when they fall on one, else to the 48 kHz sample.
+        func exactSource(_ s: Seconds, _ asset: MediaAsset) -> RationalTime {
+            for g in [FrameGrid(fps: asset.hasVideo && asset.fps > 0 ? asset.fps : canvas.fps), grid] {
+                let n = (s * g.rate).rounded()
+                if abs(n / g.rate - s) < 1e-6 { return RationalTime(frames: Int(n), g) }
+            }
+            return RationalTime(n: Int((s * 48000).rounded()), d: 48000)
+        }
         func mediaElement(_ clip: Clip, asset: MediaAsset, track: Track, lane: Int?, offset: RationalTime, frames: Int, scope: Project) -> XMLElem {
             let audioOnly = track.kind == .audio
             let origin = assetStart(asset)
@@ -730,6 +741,9 @@ extension Project {
                 if case .pair = ch.form { a.append(("outCh", "L, R")) }
                 children.append(XMLElem("audio-channel-source", a))
                 md.append(XMLElem("md", [("key", Self.fcpChannelsKey), ("value", ch.rawValue)]))
+            }
+            if let l = clip.link, scope.tracks.contains(where: { $0.clips.contains { $0.link == l && $0.id != clip.id } }) {
+                md.append(XMLElem("md", [("key", Self.fcpLinkKey), ("value", l)]))
             }
             if !md.isEmpty { children.append(XMLElem("metadata", children: md)) }
             return XMLElem(asset.isImage ? "video" : "asset-clip", attrs, children: children)

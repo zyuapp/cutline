@@ -124,11 +124,11 @@ private func expectSameEdit(_ q: Project, _ p: Project, _ format: String, transi
     var p = timecodedProject()
     p.transitions = []
     let edl = p.edl(title: "Conform")
-    // In the drop-frame list: c1 (10:00:00:00 NDF + 150 frames) is the same frame relabeled drop frame; pal (25 fps,
-    // 14:22:10:05 + 1001 frames) the same time of day at 29.97; each with its own timecode in a comment.
-    #expect(edl.contains("001  TAPE7    AA/V  C        10:00:41;00 10:00:44;00 01:00:00;00 01:00:03;00"), "\(edl)")
+    // In the drop-frame list, non-drop sources keep non-drop notation: c1 (10:00:00:00 NDF + 150 frames) its own label;
+    // pal (25 fps, 14:22:10:05 + 1001 frames) the same time of day at 29.97 non-drop; each with its own timecode in a comment.
+    #expect(edl.contains("001  TAPE7    AA/V  C        10:00:05:00 10:00:08:00 01:00:00;00 01:00:03;00"), "\(edl)")
     #expect(edl.contains("* SOURCE TC: 10:00:05:00 10:00:08:00 (29.97 fps NDF)"), "\(edl)")
-    #expect(edl.contains("002  A001     AA/V  C        14:22:50;07 14:22:52;07 01:00:03;00 01:00:05;00"), "\(edl)")
+    #expect(edl.contains("002  A001     AA/V  C        14:22:50:07 14:22:52:07 01:00:03;00 01:00:05;00"), "\(edl)")
     #expect(edl.contains("* SOURCE TC: 14:22:50:06 14:22:52:06 (25 fps)"), "\(edl)")
     #expect(edl.contains("003  A002C003 AA/V  C        01:00:10;00 01:00:14;00"), "\(edl)")
     #expect(edl.components(separatedBy: "SOURCE TC").count == 3, "the DF source matches the list")

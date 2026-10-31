@@ -418,9 +418,10 @@ extension Toolbox {
             guard pad.before >= 0, pad.after >= 0, pad.before <= 2, pad.after <= 2 else { throw EditError("pad is 0–2 seconds") }
             var transcripts: [String: Transcript] = [:]
             var padded = 0
-            let requested = try raw.map { j -> SourceSegment in
+            let requested = try raw.enumerated().map { i, j -> SourceSegment in
                 let a = Args(j)
-                return SourceSegment(mediaId: try a.string("media_id"), sourceIn: try a.sourceTime("start"), sourceOut: try a.sourceTime("end"))
+                guard let id = a.optString("media_id") else { throw EditError("segments[\(i)] needs media_id; pass it in each segment or once at the top level (media_id) for all of them") }
+                return SourceSegment(mediaId: id, sourceIn: try a.sourceTime("start"), sourceOut: try a.sourceTime("end"))
             }
             let handled = requested.map { seg -> SourceSegment in
                 if transcripts[seg.mediaId] == nil { transcripts[seg.mediaId] = session.bundle?.transcript(seg.mediaId) }

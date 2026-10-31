@@ -17,6 +17,7 @@ extension Project {
                 out.append("\(c.id) on \(t.id) is only \(fmt2(c.duration))s, likely a flash frame")
             }
         }
+        out += sliverIssues()
         let pictureEnd = tracks.filter { $0.kind == .video }.map(\.end).max() ?? 0
         for t in tracks where t.kind == .audio {
             if let last = t.clips.last, pictureEnd > 0, last.end > pictureEnd + 0.5 {
@@ -66,6 +67,30 @@ extension Project {
         for t in tracks where t.kind == .audio && !t.muted {
             if let last = t.clips.last, last.kind == .media, !speech.contains(last.id), abs(last.end - duration) < 0.05, last.audioFadeOut < 0.3, last.anim["audio.volume"] == nil {
                 out.append("\(last.id) on \(t.id) stops abruptly at the end; add audio.fade_out (about 1–3 s)")
+            }
+        }
+        return out
+    }
+
+    /// Shots shorter than `threshold` between two cuts: picture clips butting a clip on each side (from 0.25 s, where
+    /// the flash-frame check takes over) and multicam angle ranges between two angle switches or a switch and the clip edge.
+    public func sliverIssues(threshold: Seconds = 0.5) -> [String] {
+        var out: [String] = []
+        let frames = { (d: Seconds) in Int((d * canvas.fps).rounded()) }
+        for t in tracks where t.kind == .video {
+            let clips = t.clips.sorted { $0.start < $1.start }
+            for (i, c) in clips.enumerated() where (c.kind == .media || c.kind == .sequence) && c.duration >= 0.25 && c.duration < threshold - eps {
+                guard i > 0, i + 1 < clips.count, abs(clips[i - 1].end - c.start) < eps, abs(clips[i + 1].start - c.end) < eps else { continue }
+                out.append("\(c.id) on \(t.id) is a \(fmt2(c.duration))s (\(frames(c.duration))-frame) sliver between \(clips[i - 1].id) and \(clips[i + 1].id); extend it or remove it")
+            }
+            for c in clips where c.kind == .sequence {
+                guard let setup = multicamSetup(c) else { continue }
+                let ranges = visibleAngleRanges(c)
+                guard ranges.count > 1 else { continue }
+                for (i, r) in ranges.enumerated() where r.range.duration < threshold - eps {
+                    let other = ranges[i > 0 ? i - 1 : i + 1].angle
+                    out.append("\(c.id) plays angle \(setup.number(r.angle)) \(r.angle) for only \(fmt2(r.range.duration))s (\(frames(r.range.duration)) frames, \(fmt2(r.range.start))–\(fmt2(r.range.end))s), a sliver between angle cuts; multicam_cut clip:\"\(c.id)\" from:\(fmt2(r.range.start)) to:\(fmt2(r.range.end)) angle:\(setup.number(other)) removes it")
+                }
             }
         }
         return out

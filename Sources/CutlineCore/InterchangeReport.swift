@@ -73,6 +73,11 @@ extension Project {
     static let channelsTag = "Cutline channels "
     /// FCPXML metadata key holding a clip's `audio.channels` routing.
     static let fcpChannelsKey = "com.cutline.channels"
+    /// FCPXML metadata key and AAF comment name holding a clip's link group, which detached sound shares with its picture.
+    static let fcpLinkKey = "com.cutline.link"
+    static let aafLinkComment = "Cutline link"
+    /// FCP7 XML clip comment marking a sound clipitem as a detached sound clip, kept apart from its linked picture.
+    static let detachedTag = "Cutline detached sound"
     /// EDL comment with an event's source timecodes in the source's own counting, when the list's differs.
     static let edlSourceTCTag = "SOURCE TC"
 

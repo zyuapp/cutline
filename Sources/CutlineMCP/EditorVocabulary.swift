@@ -213,8 +213,9 @@ extension Toolbox {
         EditorTerm(term: "Shape layer", aliases: "shape layer, trim paths, stroke animation, vector shapes, path animation", summary: "clip_add generator shape; animate a shape's properties as fx.gen.<shape id>.<property> (e.g. fx.gen.ring.trim_end), other generators as fx.gen.<param>.", calls: [
             ("param_set", #"{"target":"<clip>","relative":true,"animate":{"fx.gen.ring.trim_end":[[0,0],[0.8,1,"easeOut"]]}}"#),
         ]),
-        EditorTerm(term: "Keyframes", aliases: "keyframe, keyframes, animate, motion, position scale rotation, ease, bezier, graph editor", summary: "param_set animate takes [time, value, ease] keys on any path (transform.*, fx.<id>.<param>, text.*); catalog lists eases.", calls: [
+        EditorTerm(term: "Keyframes", aliases: "keyframe, keyframes, animate, motion, position scale rotation, ease, bezier, graph editor, speed graph, value graph, cubic bezier", summary: "param_set animate takes [time, value, ease] keys on any path (transform.*, fx.<id>.<param>, text.*). Eases: linear, easeIn, easeOut, easeInOut, hold, back, elastic, bounce, or \"bezier(x1, y1, x2, y2)\" for a graph-editor curve (CSS cubic-bezier handles, x within 0…1) shaping the move into that key.", calls: [
             ("param_set", #"{"target":"<clip>","animate":{"transform.scale":[[0,1],[4,1.2,"easeInOut"]]}}"#),
+            ("param_set", #"{"target":"<clip>","animate":{"transform.x":[[0,-0.3],[1.2,0,"bezier(0.2, 0, 0, 1)"]]}}"#),
         ]),
         EditorTerm(term: "Expressions", aliases: "expression, wiggle, loopout, time expression, pick whip, link parameters", summary: "param_set bind with source wiggle, time, loop or link:<clip>.<path> adds procedural motion.", calls: [
             ("param_set", #"{"target":"<clip>","bind":{"transform.x":{"source":"wiggle","freq":2,"amp":0.01}}}"#),

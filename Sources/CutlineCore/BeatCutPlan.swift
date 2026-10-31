@@ -32,8 +32,10 @@ public struct BeatFootage: Equatable, Sendable {
 ///
 /// Each shot takes the footage with the best score: ranked quality, plus (when the music's energy is known)
 /// how well the footage's ranked motion matches the ranked energy of that stretch of music, minus penalties for
-/// the media used just before and for media used more than the others. No shot shows source time an earlier shot
-/// showed while any unshown moment is long enough; after that, the moment shown longest ago comes back.
+/// the media used just before, for media used more than the others, and for source time within `spacing` seconds of
+/// time already shown from that media (so neighbouring slices of one take don't follow each other). No shot shows
+/// source time an earlier shot showed while any unshown moment is long enough; after that, the moment shown longest
+/// ago comes back.
 public enum BeatCutPlan {
     public struct Segment: Sendable {
         public var need: Seconds
@@ -86,7 +88,7 @@ public enum BeatCutPlan {
         return out
     }
 
-    public static func choose(_ footage: [BeatFootage], segments: [Segment]) -> Plan {
+    public static func choose(_ footage: [BeatFootage], segments: [Segment], spacing: Seconds = 3) -> Plan {
         let quality = ranks(footage.map(\.quality))
         let motion = ranks(footage.map(\.energy))
         let music = ranks(segments.map(\.energy))
@@ -103,15 +105,23 @@ public enum BeatCutPlan {
         func overlaps(_ r: TimeRange, _ id: String) -> Bool {
             (used[id] ?? []).contains { $0.start < r.end - 1e-6 && r.start < $0.end - 1e-6 }
         }
-        /// The window to use in a footage span: its middle when fresh, else the free stretch nearest the middle.
-        func window(_ f: BeatFootage, need: Seconds) -> (start: Seconds, fresh: Bool) {
+        /// Seconds between `r` and the nearest time already shown from `id`, up to `spacing`.
+        func clearance(_ r: TimeRange, _ id: String) -> Seconds {
+            (used[id] ?? []).reduce(spacing) { m, u in min(m, max(0, u.start - r.end, r.start - u.end)) }
+        }
+        /// The window to use in a footage span: the free stretch farthest (up to `spacing`) from shown time, then
+        /// nearest the middle; `clear` is its distance from shown time.
+        func window(_ f: BeatFootage, need: Seconds) -> (start: Seconds, fresh: Bool, clear: Seconds) {
             let middle = f.range.start + (f.range.duration - need) / 2
-            if !overlaps(TimeRange(middle, middle + need), f.mediaId) { return (middle, true) }
-            var starts = [f.range.start, f.range.end - need]
-            for u in used[f.mediaId] ?? [] { starts += [u.end, u.start - need] }
+            var starts = [middle, f.range.start, f.range.end - need]
+            for u in used[f.mediaId] ?? [] { starts += [u.end, u.start - need, u.end + spacing, u.start - spacing - need] }
             let free = starts.filter { $0 >= f.range.start - 1e-6 && $0 + need <= f.range.end + 1e-6 && !overlaps(TimeRange($0, $0 + need), f.mediaId) }
-            if let best = free.min(by: { abs($0 - middle) < abs($1 - middle) }) { return (best, true) }
-            return (middle, false)
+                .map { (start: $0, clear: clearance(TimeRange($0, $0 + need), f.mediaId)) }
+            let best = free.min { a, b in
+                abs(a.clear - b.clear) > 1e-6 ? a.clear > b.clear : abs(a.start - middle) < abs(b.start - middle)
+            }
+            guard let best else { return (middle, false, 0) }
+            return (best.start, true, best.clear)
         }
 
         /// Moments shown so far and the shot that last showed each.
@@ -128,6 +138,7 @@ public enum BeatCutPlan {
                 if mediaIds.count > 1, previous == f.mediaId { score -= 0.35 }
                 score -= 0.25 * Double((mediaUses[f.mediaId] ?? 0) - low)
                 score -= 0.1 * Double(footageUses[i])
+                if spacing > 0 { score -= 0.4 * (1 - w.clear / spacing) }
                 if best.map({ score > $0.score + 1e-9 }) ?? true { best = (score, i, w.start) }
             }
             if best == nil {

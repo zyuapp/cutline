@@ -47,6 +47,8 @@ final class AAFReader {
         var disabled = false
         /// Cutline's `SoundHint` for the clip around this sound.
         var hint: String?
+        /// Cutline's link group: a detached sound and its picture.
+        var link: String?
         /// A grade note: CDL and LUT files.
         var grade: String?
         /// Motion Control: source frames from the input's first at output frames from the effect's start, as
@@ -201,6 +203,7 @@ final class AAFReader {
                     c.anim["audio.volume"] = Curve(keys: ref.keys.map { CurveKey(t: seconds($0.at, sr) - c.start, v: .number($0.gain * ref.gain), ease: .linear) })
                 }
                 if let ch = ref.channel { channelOf[c.id] = ch }
+                c.link = ref.link
                 if let g = ref.grade { c.effects = Importer.noteColor(g) }
                 if ref.disabled { disabled.append(c); continue }
                 at[i] = out.count
@@ -342,6 +345,9 @@ final class AAFReader {
         let half = frame / 2
         var heard = Set<String>(), folded = Set<String>()
         var soundOf: [String: String] = [:]
+        // Sound Cutline detached from a picture still on the timeline stays a clip of its own.
+        let pictureLinks = Set(tracks.filter { $0.kind == .video }.flatMap(\.clips).compactMap(\.link))
+        func detached(_ a: Clip) -> Bool { a.link.map(pictureLinks.contains) ?? false }
         func hear(_ a: Clip, in v: inout Clip) {
             v.volume = a.volume
             v.audioFadeIn = a.audioFadeIn
@@ -358,7 +364,7 @@ final class AAFReader {
                 for a in tracks[t].clips where !folded.contains(a.id) {
                     for vt in tracks.indices where tracks[vt].kind == .video && !folded.contains(a.id) {
                         guard let i = tracks[vt].clips.firstIndex(where: { c in
-                            !heard.contains(c.id) && c.mediaId == a.mediaId && abs(c.speed - a.speed) < 1e-6
+                            !heard.contains(c.id) && c.mediaId == a.mediaId && abs(c.speed - a.speed) < 1e-6 && !detached(a)
                                 && (exact ? abs(c.start - a.start) < half && abs(c.duration - a.duration) < half && abs(c.sourceIn - a.sourceIn) < half
                                     : a.start < c.end + half && c.start < a.end + half && abs((a.sourceIn - a.start * a.speed) - (c.sourceIn - c.start * c.speed)) < half * max(a.speed, 1)
                                         && abs(c.start - a.start) <= Importer.maxSplit + half && abs(a.end - c.end) <= Importer.maxSplit + half)
@@ -373,7 +379,7 @@ final class AAFReader {
         }
         for t in tracks.indices where tracks[t].kind == .audio { tracks[t].clips.removeAll { folded.contains($0.id) } }
         tracks.removeAll { $0.kind == .audio && $0.clips.isEmpty }
-        Importer.linkSeparateSound(&tracks, half: half)
+        Importer.linkSeparateSound(&tracks, half: half, skip: Set(tracks.flatMap(\.clips).filter { $0.link != nil }.map(\.id)))
         for t in tracks.indices where tracks[t].kind == .video {
             for c in tracks[t].clips.indices where !heard.contains(tracks[t].clips[c].id) {
                 if tracks[t].clips[c].mediaId.flatMap(mediaAsset)?.hasAudio == true { tracks[t].clips[c].volume = 0 }
@@ -433,6 +439,7 @@ final class AAFReader {
                 ref.disabled = wrap.disabled
                 ref.name = comment(seg, "Name") ?? wrap.name ?? ref.name
                 ref.hint = comment(seg, "Cutline sound") ?? wrap.hint
+                ref.link = comment(seg, Project.aafLinkComment) ?? wrap.link
                 ref.grade = comment(seg, "Comment") ?? wrap.grade
                 ref.warp = wrap.warp
                 ref.picture = wrap.picture
@@ -449,6 +456,7 @@ final class AAFReader {
             var inner = wrap
             inner.name = comment(seg, "Name") ?? wrap.name
             inner.hint = comment(seg, "Cutline sound") ?? wrap.hint
+            inner.link = comment(seg, Project.aafLinkComment) ?? wrap.link
             inner.grade = comment(seg, "Comment") ?? wrap.grade
             let start = pos
             let opName = (op.flatMap { opNames[$0] } ?? "").lowercased()
